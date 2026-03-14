@@ -1,0 +1,19 @@
+# ═══════════════════════════════════════════════════════════════
+# SKYLIGHT CHAT SERVICE - REQUIREMENTS
+# ═══════════════════════════════════════════════════════════════
+
+# FastAPI & Server
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+
+# HTTP Client (for DeepInfra API)
+httpx==0.26.0
+
+# Validation
+pydantic==2.5.3
+
+# Utilities
+python-dateutil==2.8.2
+
+# Monitoring
+prometheus-client==0.19.0
