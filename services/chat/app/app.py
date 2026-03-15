@@ -1,6 +1,6 @@
 """
 ═══════════════════════════════════════════════════════════════
-SKYLIGHT CHAT SERVICE
+SKYLIGHT CHAT SERVICE - FIXED VERSION
 ═══════════════════════════════════════════════════════════════
 Handles all chat modes with mode-specific logic
 - Assistant Mode
@@ -8,6 +8,9 @@ Handles all chat modes with mode-specific logic
 - IT Expert Mode
 - Student Mode
 - Social Mode
+
+CHANGES:
+- ChatRequest.query → ChatRequest.prompt (compatibility with Gateway)
 ═══════════════════════════════════════════════════════════════
 """
 
@@ -87,7 +90,7 @@ class ChatMessage(BaseModel):
     content: str
 
 class ChatRequest(BaseModel):
-    query: str
+    prompt: str  # ✅ FIXED: Changed from "query" to "prompt"
     mode: str
     user_id: int
     conversation_id: Optional[str] = None
@@ -151,7 +154,7 @@ async def stream_deepinfra_completion(
 
 def build_messages(
     mode: str,
-    query: str,
+    user_prompt: str,  # Internal parameter name (can be anything)
     history: List[Dict],
     rag_context: Optional[str] = None,
     context: Optional[str] = None,
@@ -188,7 +191,7 @@ def build_messages(
             })
     
     # Current query
-    messages.append({"role": "user", "content": query})
+    messages.append({"role": "user", "content": user_prompt})
     
     return messages
 
@@ -212,7 +215,7 @@ async def chat(request: ChatRequest):
     # Build messages
     messages = build_messages(
         mode=request.mode,
-        query=request.query,
+        user_prompt=request.prompt,  # ✅ FIXED: Changed from request.query to request.prompt
         history=request.history or [],
         rag_context=request.rag_context,
         context=request.context,

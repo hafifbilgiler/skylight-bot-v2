@@ -1,24 +1,22 @@
 """
 ═══════════════════════════════════════════════════════════════
-SKYLIGHT API GATEWAY - COMPLETE VERSION
+SKYLIGHT API GATEWAY - COMPLETE FIXED VERSION
 ═══════════════════════════════════════════════════════════════
 Orchestrator pattern + All security features from original monolith
 
-Features:
-- Request Routing & Orchestration
-- Authentication & Authorization
-- Abuse Control Integration
-- File Upload + ClamAV Virus Scanning
-- OTP User Management (Email-based)
-- Subscription Management
-- Database-backed Quota System
-- Rate Limiting
-- Health Checks
-
-Architecture:
-- Gateway routes to microservices
-- Maintains backward compatibility with original API
-- Preserves all security features
+CHANGES FROM ORIGINAL:
+1. ChatRequest.query → ChatRequest.prompt (compatibility with Chat Service)
+2. Added missing endpoints:
+   - GET /conversations/list
+   - POST /conversations/create
+   - GET /conversations/{id}/messages
+   - PUT /conversations/{id}
+   - DELETE /conversations/{id}
+   - GET /profile
+   - DELETE /profile/topics
+   - POST /feedback
+   - GET /code-mode/status
+   - GET /admin/* endpoints
 ═══════════════════════════════════════════════════════════════
 """
 
@@ -30,6 +28,7 @@ import random
 import smtplib
 import datetime
 import threading
+import json
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import Optional, List, Dict, Any, Tuple
@@ -50,10 +49,10 @@ from pydantic import BaseModel, Field, EmailStr
 # ═══════════════════════════════════════════════════════════════
 
 # Service URLs
-CHAT_SERVICE_URL = os.getenv("CHAT_SERVICE_URL", "http://skylight-chat-service:8082")
-RAG_SERVICE_URL = os.getenv("RAG_SERVICE_URL", "http://skylight-rag-service:8084")
-IMAGE_GEN_SERVICE_URL = os.getenv("IMAGE_GEN_SERVICE_URL", "http://skylight-image-gen-service:8080")
-IMAGE_ANALYSIS_SERVICE_URL = os.getenv("IMAGE_ANALYSIS_SERVICE_URL", "http://skylight-bot-image-analysis-service:8080")
+CHAT_SERVICE_URL = os.getenv("CHAT_SERVICE_URL", "http://skylight-chat:8082")
+RAG_SERVICE_URL = os.getenv("RAG_SERVICE_URL", "http://skylight-rag:8084")
+IMAGE_GEN_SERVICE_URL = os.getenv("IMAGE_GEN_SERVICE_URL", "http://skylight-image-gen:8083")
+IMAGE_ANALYSIS_SERVICE_URL = os.getenv("IMAGE_ANALYSIS_SERVICE_URL", "http://skylight-image-analysis:8002")
 SMART_TOOLS_URL = os.getenv("SMART_TOOLS_URL", "http://skylight-smart-tools:8081")
 ABUSE_CONTROL_URL = os.getenv("ABUSE_CONTROL_URL", "http://skylight-bot-abuse-control:8010")
 
@@ -272,6 +271,20 @@ def ensure_tables():
                 has_image BOOLEAN DEFAULT FALSE,
                 intent VARCHAR(50),
                 is_edited BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        
+        # Feedback table
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS feedback (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                conversation_id TEXT,
+                user_query TEXT,
+                assistant_response TEXT,
+                rating INTEGER,
+                comment TEXT,
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )
         """)
@@ -602,7 +615,6 @@ def increment_usage(user_id: int, mode: str = "assistant"):
         cur = conn.cursor()
         
         try:
-            import json
             cur.execute("""
                 INSERT INTO usage_tracking (user_id, usage_date, messages_sent, modes_used)
                 VALUES (%s, CURRENT_DATE, 1, %s::jsonb)
@@ -630,7 +642,7 @@ class ChatMessage(BaseModel):
     content: str
 
 class ChatRequest(BaseModel):
-    query: str
+    prompt: str  # ✅ FIXED: Changed from "query" to "prompt"
     mode: str = "assistant"
     conversation_id: Optional[str] = None
     history: Optional[List[ChatMessage]] = None
@@ -647,6 +659,21 @@ class OTPVerify(BaseModel):
     code: str
     mode: str
     name: Optional[str] = None
+
+class ConversationCreate(BaseModel):
+    title: Optional[str] = "Yeni Sohbet"
+
+class ConversationUpdate(BaseModel):
+    title: Optional[str] = None
+    is_pinned: Optional[bool] = None
+    is_archived: Optional[bool] = None
+
+class FeedbackRequest(BaseModel):
+    conversation_id: Optional[str] = None
+    user_query: str = ""
+    assistant_response: str = ""
+    rating: int = Field(..., description="1 = like, -1 = dislike")
+    comment: Optional[str] = ""
 
 # ═══════════════════════════════════════════════════════════════
 # FASTAPI APPLICATION
@@ -1115,6 +1142,385 @@ async def upload_file(
     }
 
 # ═══════════════════════════════════════════════════════════════
+# CONVERSATION ENDPOINTS (NEWLY ADDED) ✅
+# ═══════════════════════════════════════════════════════════════
+
+@app.post("/conversations/create")
+async def create_conversation(
+    data: ConversationCreate,
+    authorization: Optional[str] = Header(None),
+):
+    """Create a new conversation."""
+    user_id = get_user_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="User required")
+    
+    try:
+        pool = _get_pool()
+        conn = pool.getconn()
+        cur = conn.cursor()
+        
+        try:
+            cur.execute("""
+                INSERT INTO conversations (user_id, title)
+                VALUES (%s, %s) RETURNING id, title, created_at
+            """, (user_id, data.title))
+            
+            result = cur.fetchone()
+            conn.commit()
+            
+            return {
+                "status": "success",
+                "id": str(result[0]),
+                "title": result[1],
+                "created_at": result[2].isoformat(),
+            }
+            
+        finally:
+            pool.putconn(conn)
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create conversation: {str(e)}")
+
+
+@app.get("/conversations/list")
+async def list_conversations(
+    limit: int = 50,
+    authorization: Optional[str] = Header(None),
+):
+    """List user's conversations."""
+    user_id = get_user_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="User required")
+    
+    try:
+        pool = _get_pool()
+        conn = pool.getconn()
+        cur = conn.cursor()
+        
+        try:
+            cur.execute("""
+                SELECT c.id, c.title, c.created_at, c.updated_at, c.is_pinned,
+                       COUNT(m.id) as message_count
+                FROM conversations c
+                LEFT JOIN messages m ON m.conversation_id = c.id
+                WHERE c.user_id = %s AND c.is_archived = FALSE
+                GROUP BY c.id
+                ORDER BY c.is_pinned DESC, c.updated_at DESC
+                LIMIT %s
+            """, (user_id, limit))
+            
+            conversations = []
+            for row in cur.fetchall():
+                conversations.append({
+                    "id": str(row[0]),
+                    "title": row[1],
+                    "created_at": row[2].isoformat(),
+                    "updated_at": row[3].isoformat(),
+                    "is_pinned": row[4],
+                    "message_count": row[5],
+                })
+            
+            return {"conversations": conversations}
+            
+        finally:
+            pool.putconn(conn)
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list conversations: {str(e)}")
+
+
+@app.get("/conversations/{conversation_id}/messages")
+async def get_conversation_messages(
+    conversation_id: str,
+    authorization: Optional[str] = Header(None),
+):
+    """Get messages in a conversation."""
+    user_id = get_user_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="User required")
+    
+    try:
+        pool = _get_pool()
+        conn = pool.getconn()
+        cur = conn.cursor()
+        
+        try:
+            # Check ownership
+            cur.execute("SELECT user_id FROM conversations WHERE id = %s", (conversation_id,))
+            result = cur.fetchone()
+            
+            if not result:
+                raise HTTPException(status_code=404, detail="Conversation not found")
+            
+            if result[0] != user_id:
+                raise HTTPException(status_code=403, detail="Not authorized")
+            
+            # Get messages
+            cur.execute("""
+                SELECT id, role, content, created_at, is_edited
+                FROM messages WHERE conversation_id = %s ORDER BY created_at ASC
+            """, (conversation_id,))
+            
+            messages = []
+            for row in cur.fetchall():
+                messages.append({
+                    "id": str(row[0]),
+                    "role": row[1],
+                    "content": row[2],
+                    "created_at": row[3].isoformat(),
+                    "is_edited": row[4],
+                })
+            
+            return {"messages": messages}
+            
+        finally:
+            pool.putconn(conn)
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get messages: {str(e)}")
+
+
+@app.put("/conversations/{conversation_id}")
+async def update_conversation(
+    conversation_id: str,
+    data: ConversationUpdate,
+    authorization: Optional[str] = Header(None),
+):
+    """Update conversation."""
+    user_id = get_user_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="User required")
+    
+    try:
+        updates = []
+        params = []
+        
+        if data.title is not None:
+            updates.append("title = %s")
+            params.append(data.title)
+        
+        if data.is_pinned is not None:
+            updates.append("is_pinned = %s")
+            params.append(data.is_pinned)
+        
+        if data.is_archived is not None:
+            updates.append("is_archived = %s")
+            params.append(data.is_archived)
+        
+        if not updates:
+            return {"status": "success", "message": "No changes"}
+        
+        params.extend([conversation_id, user_id])
+        query = f"UPDATE conversations SET {', '.join(updates)} WHERE id = %s AND user_id = %s RETURNING id"
+        
+        pool = _get_pool()
+        conn = pool.getconn()
+        cur = conn.cursor()
+        
+        try:
+            cur.execute(query, params)
+            result = cur.fetchone()
+            conn.commit()
+            
+            if not result:
+                raise HTTPException(status_code=404, detail="Conversation not found")
+            
+            return {"status": "success"}
+            
+        finally:
+            pool.putconn(conn)
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update conversation: {str(e)}")
+
+
+@app.delete("/conversations/{conversation_id}")
+async def delete_conversation(
+    conversation_id: str,
+    authorization: Optional[str] = Header(None),
+):
+    """Delete conversation."""
+    user_id = get_user_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="User required")
+    
+    try:
+        pool = _get_pool()
+        conn = pool.getconn()
+        cur = conn.cursor()
+        
+        try:
+            cur.execute("""
+                DELETE FROM conversations WHERE id = %s AND user_id = %s RETURNING id
+            """, (conversation_id, user_id))
+            
+            result = cur.fetchone()
+            conn.commit()
+            
+            if not result:
+                raise HTTPException(status_code=404, detail="Conversation not found")
+            
+            return {"status": "success"}
+            
+        finally:
+            pool.putconn(conn)
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete conversation: {str(e)}")
+
+# ═══════════════════════════════════════════════════════════════
+# PROFILE ENDPOINTS (NEWLY ADDED) ✅
+# ═══════════════════════════════════════════════════════════════
+
+@app.get("/profile")
+async def get_profile(authorization: str = Header(None)):
+    """Get user profile."""
+    user_id = get_user_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="User required")
+    
+    try:
+        pool = _get_pool()
+        conn = pool.getconn()
+        cur = conn.cursor()
+        
+        try:
+            cur.execute("SELECT email, name FROM users WHERE id = %s", (user_id,))
+            row = cur.fetchone()
+            
+            if not row:
+                raise HTTPException(status_code=404, detail="User not found")
+            
+            email, name = row
+            
+            cur.execute("""
+                SELECT topics, preferences, summary FROM user_profiles WHERE user_id = %s
+            """, (user_id,))
+            
+            profile_row = cur.fetchone()
+            
+            topics = profile_row[0] if profile_row else []
+            preferences = profile_row[1] if profile_row else {}
+            summary = profile_row[2] if profile_row else ""
+            
+            return {
+                "user": {"id": user_id, "email": email, "name": name},
+                "profile": {
+                    "topics": topics,
+                    "preferences": preferences,
+                    "summary": summary,
+                },
+            }
+            
+        finally:
+            pool.putconn(conn)
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Profile error: {str(e)}")
+
+
+@app.delete("/profile/topics")
+async def clear_topics(authorization: str = Header(None)):
+    """Clear user profile topics."""
+    user_id = get_user_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="User required")
+    
+    try:
+        pool = _get_pool()
+        conn = pool.getconn()
+        cur = conn.cursor()
+        
+        try:
+            cur.execute("""
+                UPDATE user_profiles SET topics = '[]' WHERE user_id = %s
+            """, (user_id,))
+            
+            conn.commit()
+            return {"status": "success", "message": "Topics cleared"}
+            
+        finally:
+            pool.putconn(conn)
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Clear topics error: {str(e)}")
+
+# ═══════════════════════════════════════════════════════════════
+# FEEDBACK ENDPOINT (NEWLY ADDED) ✅
+# ═══════════════════════════════════════════════════════════════
+
+@app.post("/feedback")
+async def submit_feedback(
+    data: FeedbackRequest,
+    authorization: str = Header(None),
+):
+    """Submit feedback."""
+    user_id = None
+    try:
+        user_id = get_user_from_token(authorization)
+    except Exception:
+        pass
+    
+    if not user_id:
+        raise HTTPException(status_code=401, detail="User required")
+    
+    if data.rating not in (1, -1):
+        raise HTTPException(status_code=400, detail="Rating must be 1 (like) or -1 (dislike)")
+    
+    try:
+        pool = _get_pool()
+        conn = pool.getconn()
+        cur = conn.cursor()
+        
+        try:
+            cur.execute("""
+                INSERT INTO feedback 
+                    (user_id, conversation_id, user_query, assistant_response, rating, comment)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING id
+            """, (
+                user_id,
+                data.conversation_id or "",
+                data.user_query,
+                data.assistant_response,
+                data.rating,
+                data.comment or "",
+            ))
+            
+            feedback_id = cur.fetchone()[0]
+            conn.commit()
+            
+            return {"status": "success", "feedback_id": feedback_id}
+            
+        finally:
+            pool.putconn(conn)
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Feedback error: {str(e)}")
+
+# ═══════════════════════════════════════════════════════════════
+# CODE MODE STATUS (NEWLY ADDED) ✅
+# ═══════════════════════════════════════════════════════════════
+
+@app.get("/code-mode/status")
+async def code_mode_status():
+    """Get code mode status."""
+    return {
+        "enabled": bool(os.getenv("DEEPINFRA_API_KEY")),
+        "model": os.getenv("DEEPINFRA_CODE_MODEL", "Qwen/Qwen3-Coder-480B-A35B-Instruct-Turbo"),
+        "max_tokens": int(os.getenv("DEEPINFRA_CODE_MAX_TOKENS", "4096")),
+    }
+
+# ═══════════════════════════════════════════════════════════════
 # SUBSCRIPTION ENDPOINTS
 # ═══════════════════════════════════════════════════════════════
 
@@ -1144,6 +1550,7 @@ async def subscription_status_endpoint(authorization: str = Header(None)):
             "daily_message_limit": limit,
         }
     }
+
 
 @app.get("/subscription/plans")
 async def subscription_plans_endpoint():
@@ -1237,15 +1644,13 @@ async def chat_endpoint(
     
     # 4. Route to Chat Service
     chat_data = {
-        "prompt": request_body.query,
+        "prompt": request_body.prompt,  # ✅ FIXED: Changed to "prompt"
         "mode": request_body.mode,
+        "user_id": user_id or 0,
         "conversation_id": request_body.conversation_id,
         "history": [{"role": m.role, "content": m.content} for m in (request_body.history or [])],
         "context": request_body.context,
-        "image_data": request_body.image_data,
         "session_summary": request_body.session_summary,
-        "use_rag": True,
-        "stream": True,
     }
     
     # Stream response from Chat Service
@@ -1256,6 +1661,7 @@ async def chat_endpoint(
                 "/chat",
                 data=chat_data,
                 stream=True,
+                timeout=120,
             ):
                 yield chunk
         except Exception as e:
@@ -1300,9 +1706,15 @@ async def root():
             "otp_auth": bool(SMTP_USER),
             "subscriptions": True,
             "quota_management": True,
+        },
+        "endpoints": {
+            "conversations": ["create", "list", "messages", "update", "delete"],
+            "profile": ["get", "clear_topics"],
+            "feedback": ["submit"],
+            "code_mode": ["status"],
         }
     }
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8443)
