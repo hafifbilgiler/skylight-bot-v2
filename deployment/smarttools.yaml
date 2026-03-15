@@ -1,0 +1,112 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: smart-tools-config
+  namespace: skylight-bot-v2
+data:
+  SEARXNG_URL: "http://searxng:8080"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: skylight-smart-tools
+  namespace: skylight-bot-v2
+  labels:
+    app: skylight-smart-tools
+    version: "2.0.0"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: skylight-smart-tools
+  template:
+    metadata:
+      labels:
+        app: skylight-smart-tools
+        version: "2.0.0"
+    spec:
+      containers:
+      - name: smart-tools
+        image: docker.io/hafifbilgiler/smarttols:1.6
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8081
+          name: http
+          protocol: TCP
+        env:
+        - name: SEARXNG_URL
+          valueFrom:
+            configMapKeyRef:
+              name: smart-tools-config
+              key: SEARXNG_URL
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8081
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8081
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: skylight-smart-tools
+  namespace: skylight-bot-v2
+  labels:
+    app: skylight-smart-tools
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8081
+    targetPort: 8081
+    protocol: TCP
+    name: http
+  selector:
+    app: skylight-smart-tools
+  sessionAffinity: None
+
+---
+# Optional: HorizontalPodAutoscaler
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: skylight-smart-tools-hpa
+  namespace: skylight-bot-v2
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: skylight-smart-tools
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
