@@ -1873,6 +1873,54 @@ def get_last_image_generation_prompt(user_id: int, conversation_id: str) -> tupl
         return (None, None, None)
 
 
+def get_last_image_from_conversation(conversation_id: str) -> str:
+    """
+    Get the last uploaded image_data from conversation history.
+    Used for follow-up questions after image analysis.
+    
+    Returns: image_data (base64 string) or None
+    """
+    if not conversation_id:
+        return None
+    
+    try:
+        pool = _get_pool()
+        conn = pool.getconn()
+        cur = conn.cursor()
+        
+        try:
+            # Find last message with image in this conversation
+            cur.execute("""
+                SELECT metadata
+                FROM messages
+                WHERE conversation_id = %s::uuid
+                  AND has_image = TRUE
+                  AND role = 'user'
+                ORDER BY created_at DESC
+                LIMIT 1
+            """, (conversation_id,))
+            
+            row = cur.fetchone()
+            if row and row[0]:
+                metadata = row[0]
+                # Extract image_data from metadata
+                if isinstance(metadata, dict):
+                    return metadata.get("image_data")
+                elif isinstance(metadata, str):
+                    import json
+                    meta_dict = json.loads(metadata)
+                    return meta_dict.get("image_data")
+            
+            return None
+            
+        finally:
+            pool.putconn(conn)
+            
+    except Exception as e:
+        print(f"[GET LAST IMAGE ERROR] {e}")
+        return None
+
+
 def combine_prompts_for_modification(original_prompt: str, modification_request: str) -> str:
     """
     Combine original image prompt with modification request.
@@ -1951,6 +1999,31 @@ async def chat_endpoint(
     # 3.5 Get conversation_id EARLY (before routing logic)
     conversation_id = request_body.conversation_id
     
+    # 3.55 CHECK FOR FOLLOW-UP IMAGE QUESTIONS (before image upload check)
+    # If user is asking about a previous image ("detaylandır", "bir önceki görsel")
+    # but didn't upload a new image, restore the image from conversation history
+    if not request_body.image_data and conversation_id:
+        follow_up_keywords = [
+            'bir önceki', 'önceki', 'yukarıdaki', 'yukardaki',
+            'detaylandır', 'daha fazla', 'daha detaylı',
+            'görseli', 'resmi', 'image', 'picture',
+            'previous', 'above', 'that image', 'the image'
+        ]
+        
+        prompt_lower = request_body.prompt.lower() if request_body.prompt else ""
+        is_followup_image_question = any(kw in prompt_lower for kw in follow_up_keywords)
+        
+        if is_followup_image_question:
+            # Get last image from conversation
+            last_image_data = get_last_image_from_conversation(conversation_id)
+            
+            if last_image_data:
+                print(f"[SMART ROUTING] Follow-up image question detected, restoring image context")
+                # Restore image_data for follow-up analysis
+                request_body.image_data = last_image_data
+            else:
+                print(f"[SMART ROUTING] Follow-up image question but no image in history")
+    
     # 3.6 SMART ROUTING - IMAGE ANALYSIS vs MODIFICATION vs GENERATION
     
     # ÖNCE: Image upload var mı kontrol et (Image Analysis)
@@ -1982,13 +2055,104 @@ async def chat_endpoint(
                 if response.status_code == 200:
                     print(f"[IMAGE ANALYSIS] Success - streaming response")
                     
-                    # ✅ Streaming text response'u direkt stream et
-                    async def stream_analysis():
+                    # Auto-create conversation if needed
+                    if not conversation_id and user_id:
+                        try:
+                            pool = _get_pool()
+                            conn = pool.getconn()
+                            cur = conn.cursor()
+                            
+                            try:
+                                title = request_body.prompt[:50] if request_body.prompt else "Görsel Analizi"
+                                if len(request_body.prompt or "") > 50:
+                                    title += "..."
+                                
+                                cur.execute("""
+                                    INSERT INTO conversations (user_id, title, created_at, updated_at)
+                                    VALUES (%s, %s, NOW(), NOW())
+                                    RETURNING id
+                                """, (user_id, title))
+                                
+                                conversation_id = str(cur.fetchone()[0])
+                                conn.commit()
+                                print(f"[IMAGE ANALYSIS] Auto-created conversation {conversation_id}")
+                                
+                            finally:
+                                pool.putconn(conn)
+                                
+                        except Exception as e:
+                            print(f"[IMAGE ANALYSIS] Conversation creation error: {e}")
+                    
+                    # Save user message to DB (with image reference)
+                    if conversation_id and user_id:
+                        try:
+                            pool = _get_pool()
+                            conn = pool.getconn()
+                            cur = conn.cursor()
+                            
+                            try:
+                                # Save user message with image metadata
+                                # IMPORTANT: Full image_data'yı kaydet (follow-up sorular için)
+                                cur.execute("""
+                                    INSERT INTO messages (conversation_id, role, content, has_image, metadata, created_at)
+                                    VALUES (%s::uuid, %s, %s, %s, %s, NOW())
+                                """, (
+                                    conversation_id,
+                                    "user",
+                                    request_body.prompt or "Görseli analiz et",
+                                    True,  # has_image = True
+                                    json.dumps({
+                                        "image_uploaded": True,
+                                        "analysis_mode": True,
+                                        "image_data": request_body.image_data  # ✅ Full image_data
+                                    })
+                                ))
+                                conn.commit()
+                                print(f"[IMAGE ANALYSIS] Saved user message with image to conversation")
+                                
+                            finally:
+                                pool.putconn(conn)
+                                
+                        except Exception as e:
+                            print(f"[IMAGE ANALYSIS] Message save error: {e}")
+                    
+                    # ✅ Streaming text response'u collect et ve DB'ye kaydet
+                    collected_response = ""
+                    
+                    async def stream_and_collect():
+                        nonlocal collected_response
                         async for chunk in response.aiter_text():
+                            collected_response += chunk
                             yield chunk
+                        
+                        # Stream bittikten sonra assistant message'ı kaydet
+                        if conversation_id and user_id and collected_response:
+                            try:
+                                pool = _get_pool()
+                                conn = pool.getconn()
+                                cur = conn.cursor()
+                                
+                                try:
+                                    cur.execute("""
+                                        INSERT INTO messages (conversation_id, role, content, mode, created_at)
+                                        VALUES (%s::uuid, %s, %s, %s, NOW())
+                                    """, (
+                                        conversation_id,
+                                        "assistant",
+                                        collected_response,
+                                        "vision"
+                                    ))
+                                    conn.commit()
+                                    print(f"[IMAGE ANALYSIS] Saved assistant response to conversation")
+                                    
+                                finally:
+                                    pool.putconn(conn)
+                                    
+                            except Exception as e:
+                                print(f"[IMAGE ANALYSIS] Response save error: {e}")
                     
                     return StreamingResponse(
-                        stream_analysis(),
+                        stream_and_collect(),
                         media_type="text/plain; charset=utf-8"
                     )
                 else:
@@ -2011,7 +2175,7 @@ async def chat_endpoint(
     # İKİNCİ: Image modification request mi? (Iterative Generation)
     # IMPORTANT: Image upload varsa modification DEĞİL, analysis'tir!
     if request_body.image_data:
-        # Image uploaded → This is analysis, not modification
+        # Image uploaded (or restored from history) → This is analysis, not modification
         is_modification = False
         is_generation = False
     else:
