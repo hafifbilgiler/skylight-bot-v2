@@ -1,0 +1,79 @@
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: skylight-redis-pvc
+  namespace: skylight-bot-v2
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: skylight-redis
+  namespace: skylight-bot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: skylight-redis
+  template:
+    metadata:
+      labels:
+        app: skylight-redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          command: ["redis-server"]
+          args:
+            - "--maxmemory"
+            - "256mb"
+            - "--maxmemory-policy"
+            - "allkeys-lru"
+            - "--save"
+            - "60 100"             # Her 60 saniyede 100 değişiklik → disk'e yaz
+            - "--appendonly"
+            - "yes"                # AOF persistence
+          ports:
+            - containerPort: 6379
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 3
+            periodSeconds: 5
+      volumes:
+        - name: redis-data
+          persistentVolumeClaim:
+            claimName: skylight-redis-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: skylight-redis
+  namespace: skylight-bot-v2
+spec:
+  selector:
+    app: skylight-redis
+  ports:
+    - port: 6379
+      targetPort: 6379
