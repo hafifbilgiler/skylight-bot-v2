@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
       - name: gateway
-        image: docker.io/hafifbilgiler/skylight-gateway:1.6
+        image: docker.io/hafifbilgiler/skylight-gateway:1.6  # ✅ YENİ IMAGE
         imagePullPolicy: Always
         ports:
         - containerPort: 8443
@@ -85,6 +85,18 @@ spec:
           value: "http://skylight-bot-abuse-control:8010"
         - name: ABUSE_CONTROL_ENABLED
           value: "true"
+        
+        # Microservices URLs (YENİ!)
+        - name: CHAT_SERVICE_URL
+          value: "http://skylight-chat:8082"
+        - name: RAG_SERVICE_URL
+          value: "http://skylight-rag:8084"
+        - name: IMAGE_GEN_SERVICE_URL
+          value: "http://skylight-image-gen:8083"
+        - name: IMAGE_ANALYSIS_SERVICE_URL
+          value: "http://skylight-image-analysis:8002"
+        - name: SMART_TOOLS_URL
+          value: "http://skylight-smart-tools:8081"
         
         resources:
           requests:
