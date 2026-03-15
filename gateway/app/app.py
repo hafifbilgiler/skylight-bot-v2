@@ -1910,21 +1910,73 @@ async def chat_endpoint(
                 yield f"⏰ Günlük mesaj limitine ulaştın ({limit}/gün).\n\nYarın tekrar deneyebilirsin! 🚀"
             return StreamingResponse(limit_exceeded_gen(), media_type="text/plain; charset=utf-8")
     
-    # 3.5 SMART ROUTING - IMAGE ANALYSIS vs MODIFICATION vs GENERATION
+    # 3.5 Get conversation_id EARLY (before routing logic)
+    conversation_id = request_body.conversation_id
+    
+    # 3.6 SMART ROUTING - IMAGE ANALYSIS vs MODIFICATION vs GENERATION
     
     # ÖNCE: Image upload var mı kontrol et (Image Analysis)
     if request_body.image_data:
         print(f"[SMART ROUTING] Image uploaded, routing to Image Analysis Service")
         
         # Route to Image Analysis Service
-        # TODO: Image Analysis Service integration
-        # For now, pass to chat service with image context
-        # Continue to normal chat flow with image...
-        pass  # Will be handled by chat service
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                # Prepare request for Image Analysis Service
+                analysis_request = {
+                    "image_data": request_body.image_data,
+                    "prompt": request_body.prompt or "Bu görseli analiz et",
+                    "conversation_id": conversation_id,
+                    "user_id": user_id,
+                }
+                
+                print(f"[IMAGE ANALYSIS] Sending request to {IMAGE_ANALYSIS_SERVICE_URL}")
+                
+                response = await client.post(
+                    f"{IMAGE_ANALYSIS_SERVICE_URL}/analyze",
+                    json=analysis_request,
+                    headers={"Authorization": authorization} if authorization else {}
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    analysis_text = result.get("analysis", result.get("response", ""))
+                    
+                    print(f"[IMAGE ANALYSIS] Success: {analysis_text[:100]}...")
+                    
+                    # Stream the analysis result back to user
+                    def analysis_stream():
+                        yield analysis_text
+                    
+                    return StreamingResponse(
+                        analysis_stream(),
+                        media_type="text/plain; charset=utf-8"
+                    )
+                else:
+                    print(f"[IMAGE ANALYSIS ERROR] Status {response.status_code}: {response.text}")
+                    # Fall through to chat service as fallback
+                    
+        except httpx.TimeoutException:
+            print(f"[IMAGE ANALYSIS ERROR] Timeout - falling back to chat service")
+        except httpx.RequestError as e:
+            print(f"[IMAGE ANALYSIS ERROR] Request failed: {e}")
+        except Exception as e:
+            print(f"[IMAGE ANALYSIS ERROR] Unexpected error: {e}")
+        
+        # If Image Analysis failed, fall through to chat service with image context
+        print(f"[IMAGE ANALYSIS] Falling back to chat service with image context")
+        # Continue to chat service flow below...
     
     # İKİNCİ: Image modification request mi? (Iterative Generation)
-    is_modification = detect_image_modification_request(request_body.prompt)
-    is_generation = detect_image_generation_request(request_body.prompt)
+    # IMPORTANT: Image upload varsa modification DEĞİL, analysis'tir!
+    if request_body.image_data:
+        # Image uploaded → This is analysis, not modification
+        is_modification = False
+        is_generation = False
+    else:
+        # No image upload → Check for modification or generation
+        is_modification = detect_image_modification_request(request_body.prompt)
+        is_generation = detect_image_generation_request(request_body.prompt)
     
     if is_modification and conversation_id and user_id:
         print(f"[SMART ROUTING] Image modification request detected: {request_body.prompt[:50]}...")
@@ -2005,7 +2057,7 @@ async def chat_endpoint(
                 print(f"[IMAGE LIMIT CHECK ERROR] {e}")
         
         # Auto-create conversation for image generation
-        conversation_id = request_body.conversation_id
+        # conversation_id already defined above
         if not conversation_id and user_id:
             try:
                 pool = _get_pool()
