@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: skylight-bot-antivirus
+  namespace: skylight-bot-v2
+  labels:
+    app: skylight-bot-antivirus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: skylight-bot-antivirus
+  template:
+    metadata:
+      labels:
+        app: skylight-bot-antivirus
+    spec:
+      containers:
+        - name: clamav
+          image: clamav/clamav:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3310
+              name: clamd
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "2Gi"
+          readinessProbe:
+            tcpSocket:
+              port: 3310
+            initialDelaySeconds: 40
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 12
+          livenessProbe:
+            tcpSocket:
+              port: 3310
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 6
+          volumeMounts:
+            - name: clamdb
+              mountPath: /var/lib/clamav
+      volumes:
+        - name: clamdb
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: skylight-bot-antivirus
+  labels:
+    app: skylight-bot-antivirus
+spec:
+  selector:
+    app: skylight-bot-antivirus
+  ports:
+    - name: clamd
+      port: 3310
+      targetPort: 3310
+      protocol: TCP
