@@ -25,7 +25,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 # Import production prompts
-from prompts_production import (
+from prompts.production import (
     VISION_ASSISTANT_SYSTEM_PROMPT,
     VISION_CODE_SYSTEM_PROMPT,
     VISION_FOLLOWUP_SYSTEM_PROMPT,
@@ -411,4 +411,4 @@ async def startup_event():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8084)
+    uvicorn.run(app, host="0.0.0.0", port=8002)
