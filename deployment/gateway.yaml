@@ -125,4 +125,4 @@ spec:
   - protocol: TCP
     port: 8443
     targetPort: 8443
-  type: ClusterIP
+  type: NodePort
