@@ -1926,8 +1926,8 @@ async def chat_endpoint(
                 analysis_request = {
                     "image_data": request_body.image_data,
                     "prompt": request_body.prompt or "Bu görseli analiz et",
-                    "conversation_id": conversation_id,
-                    "user_id": user_id,
+                    "conversation_id": str(conversation_id) if conversation_id else None,
+                    "user_id": str(user_id) if user_id else None,  # ✅ Convert to string
                 }
                 
                 print(f"[IMAGE ANALYSIS] Sending request to {IMAGE_ANALYSIS_SERVICE_URL}")

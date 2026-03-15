@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
       - name: gateway
-        image: docker.io/hafifbilgiler/skylight-gateway:2.1  # ✅ YENİ IMAGE
+        image: docker.io/hafifbilgiler/skylight-gateway:2.2  # ✅ YENİ IMAGE
         imagePullPolicy: Always
         ports:
         - containerPort: 8443
