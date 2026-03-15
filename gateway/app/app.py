@@ -1960,7 +1960,7 @@ async def chat_endpoint(
         # Route to Image Analysis Service
         image_analysis_success = False
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=60.0) as client:
                 # Prepare request for Image Analysis Service
                 analysis_request = {
                     "image_data": request_body.image_data,
@@ -1971,38 +1971,31 @@ async def chat_endpoint(
                 
                 print(f"[IMAGE ANALYSIS] Sending request to {IMAGE_ANALYSIS_SERVICE_URL}")
                 
+                # ✅ Image Analysis STREAMING response döndürüyor!
                 response = await client.post(
                     f"{IMAGE_ANALYSIS_SERVICE_URL}/analyze",
                     json=analysis_request,
                     headers={"Authorization": authorization} if authorization else {},
-                    timeout=30.0
+                    timeout=60.0
                 )
                 
                 if response.status_code == 200:
-                    try:
-                        result = response.json()
-                        analysis_text = result.get("analysis", result.get("response", ""))
-                        
-                        if analysis_text:
-                            print(f"[IMAGE ANALYSIS] Success: {analysis_text[:100]}...")
-                            
-                            # Stream the analysis result back to user
-                            def analysis_stream():
-                                yield analysis_text
-                            
-                            return StreamingResponse(
-                                analysis_stream(),
-                                media_type="text/plain; charset=utf-8"
-                            )
-                        else:
-                            print(f"[IMAGE ANALYSIS ERROR] Empty response from service")
-                    except json.JSONDecodeError as e:
-                        print(f"[IMAGE ANALYSIS ERROR] Invalid JSON response: {e}")
+                    print(f"[IMAGE ANALYSIS] Success - streaming response")
+                    
+                    # ✅ Streaming text response'u direkt stream et
+                    async def stream_analysis():
+                        async for chunk in response.aiter_text():
+                            yield chunk
+                    
+                    return StreamingResponse(
+                        stream_analysis(),
+                        media_type="text/plain; charset=utf-8"
+                    )
                 else:
                     print(f"[IMAGE ANALYSIS ERROR] Status {response.status_code}: {response.text}")
                     
         except httpx.TimeoutException:
-            print(f"[IMAGE ANALYSIS ERROR] Timeout (>30s)")
+            print(f"[IMAGE ANALYSIS ERROR] Timeout (>60s)")
         except httpx.RequestError as e:
             print(f"[IMAGE ANALYSIS ERROR] Request failed: {e}")
         except Exception as e:
