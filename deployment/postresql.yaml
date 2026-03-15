@@ -1,7 +1,8 @@
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: postgres
+  name: skylight-bot-postgres
+  namespace: skylight-bot-v2
 spec:
   serviceName: "postgres"
   replicas: 1
