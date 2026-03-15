@@ -1642,19 +1642,119 @@ async def chat_endpoint(
                 yield f"⏰ Günlük mesaj limitine ulaştın ({limit}/gün).\n\nYarın tekrar deneyebilirsin! 🚀"
             return StreamingResponse(limit_exceeded_gen(), media_type="text/plain; charset=utf-8")
     
+    # 3.5. Auto-create conversation if not provided (like Claude/Gemini)
+    conversation_id = request_body.conversation_id
+    auto_created = False
+    
+    if not conversation_id and user_id:
+        # Create new conversation automatically
+        try:
+            pool = _get_pool()
+            conn = pool.getconn()
+            cur = conn.cursor()
+            
+            try:
+                # Generate title from first message (max 100 chars)
+                title = request_body.prompt[:100]
+                if len(request_body.prompt) > 100:
+                    title += "..."
+                
+                cur.execute("""
+                    INSERT INTO conversations (user_id, title, created_at, updated_at)
+                    VALUES (%s, %s, NOW(), NOW())
+                    RETURNING id
+                """, (user_id, title))
+                
+                conversation_id = str(cur.fetchone()[0])
+                auto_created = True
+                conn.commit()
+                
+                print(f"[CHAT] Auto-created conversation {conversation_id} with title: {title}")
+                
+            finally:
+                pool.putconn(conn)
+                
+        except Exception as e:
+            print(f"[AUTO-CREATE CONVERSATION ERROR] {e}")
+            # Continue without conversation_id if creation fails
+    
+    # 3.6. Fetch conversation history from database if conversation_id exists
+    conversation_history = []
+    if conversation_id:
+        try:
+            pool = _get_pool()
+            conn = pool.getconn()
+            cur = conn.cursor()
+            
+            try:
+                # Verify conversation ownership
+                cur.execute(
+                    "SELECT user_id, title FROM conversations WHERE id = %s",
+                    (conversation_id,)
+                )
+                conv_row = cur.fetchone()
+                
+                if conv_row and (not user_id or conv_row[0] == user_id):
+                    # Fetch last 30 messages from this conversation (increased from 20)
+                    cur.execute("""
+                        SELECT role, content
+                        FROM messages
+                        WHERE conversation_id = %s
+                        ORDER BY created_at DESC
+                        LIMIT 30
+                    """, (conversation_id,))
+                    
+                    # Reverse to get chronological order
+                    messages = cur.fetchall()
+                    for row in reversed(messages):
+                        conversation_history.append({
+                            "role": row[0],
+                            "content": row[1],
+                        })
+                    
+                    print(f"[CHAT] Loaded {len(conversation_history)} messages from conversation {conversation_id}")
+                    
+                    # Update conversation title if it's still default and we have messages
+                    current_title = conv_row[1]
+                    if current_title == "Yeni Sohbet" and len(conversation_history) == 0:
+                        # This is the first message, update title
+                        new_title = request_body.prompt[:100]
+                        if len(request_body.prompt) > 100:
+                            new_title += "..."
+                        
+                        cur.execute("""
+                            UPDATE conversations SET title = %s WHERE id = %s
+                        """, (new_title, conversation_id))
+                        conn.commit()
+                        
+                        print(f"[CHAT] Updated conversation title to: {new_title}")
+                
+            finally:
+                pool.putconn(conn)
+                
+        except Exception as e:
+            print(f"[HISTORY FETCH ERROR] {e}")
+            # Continue without history rather than failing
+    
+    # Use database history if available, otherwise use client-provided history
+    final_history = conversation_history if conversation_history else (
+        [{"role": m.role, "content": m.content} for m in (request_body.history or [])]
+    )
+    
     # 4. Route to Chat Service
     chat_data = {
-        "prompt": request_body.prompt,  # ✅ FIXED: Changed to "prompt"
+        "prompt": request_body.prompt,
         "mode": request_body.mode,
         "user_id": user_id or 0,
-        "conversation_id": request_body.conversation_id,
-        "history": [{"role": m.role, "content": m.content} for m in (request_body.history or [])],
+        "conversation_id": conversation_id,
+        "history": final_history,  # ✅ Database history with up to 30 messages!
         "context": request_body.context,
         "session_summary": request_body.session_summary,
     }
     
     # Stream response from Chat Service
     async def stream_response():
+        assistant_response = ""
         try:
             generator = await call_service(
                 CHAT_SERVICE_URL,
@@ -1664,7 +1764,45 @@ async def chat_endpoint(
                 timeout=120,
             )
             async for chunk in generator:
+                assistant_response += chunk  # ✅ Collect response for saving
                 yield chunk
+            
+            # ✅ Save messages to database after streaming completes
+            if conversation_id and user_id:
+                try:
+                    pool = _get_pool()
+                    conn = pool.getconn()
+                    cur = conn.cursor()
+                    
+                    try:
+                        # Save user message
+                        cur.execute("""
+                            INSERT INTO messages (conversation_id, role, content, mode, created_at)
+                            VALUES (%s, %s, %s, %s, NOW())
+                        """, (conversation_id, "user", request_body.prompt, request_body.mode))
+                        
+                        # Save assistant response
+                        cur.execute("""
+                            INSERT INTO messages (conversation_id, role, content, mode, created_at)
+                            VALUES (%s, %s, %s, %s, NOW())
+                        """, (conversation_id, "assistant", assistant_response, request_body.mode))
+                        
+                        # Update conversation timestamp
+                        cur.execute("""
+                            UPDATE conversations SET updated_at = NOW()
+                            WHERE id = %s
+                        """, (conversation_id,))
+                        
+                        conn.commit()
+                        print(f"[CHAT] Saved messages to conversation {conversation_id}")
+                        
+                    finally:
+                        pool.putconn(conn)
+                        
+                except Exception as e:
+                    print(f"[MESSAGE SAVE ERROR] {e}")
+                    # Don't fail the request if save fails
+                    
         except Exception as e:
             print(f"[CHAT SERVICE ERROR] {e}")
             yield f"\n⚠️ Chat service error: {str(e)}"
@@ -1673,7 +1811,16 @@ async def chat_endpoint(
     if user_id:
         increment_usage(user_id, request_body.mode)
     
-    return StreamingResponse(stream_response(), media_type="text/plain; charset=utf-8")
+    # 6. Return response with conversation_id in header (like Claude/Gemini)
+    response = StreamingResponse(stream_response(), media_type="text/plain; charset=utf-8")
+    
+    # Add conversation_id to response headers so client can track it
+    if conversation_id:
+        response.headers["X-Conversation-ID"] = conversation_id
+        if auto_created:
+            response.headers["X-Conversation-Created"] = "true"
+    
+    return response
 
 # ═══════════════════════════════════════════════════════════════
 # HEALTH CHECK

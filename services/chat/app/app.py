@@ -1,6 +1,6 @@
 """
 ═══════════════════════════════════════════════════════════════
-SKYLIGHT CHAT SERVICE - FIXED VERSION
+SKYLIGHT CHAT SERVICE - FIXED VERSION WITH ENHANCED CONTEXT
 ═══════════════════════════════════════════════════════════════
 Handles all chat modes with mode-specific logic
 - Assistant Mode
@@ -11,6 +11,8 @@ Handles all chat modes with mode-specific logic
 
 CHANGES:
 - ChatRequest.query → ChatRequest.prompt (compatibility with Gateway)
+- Increased history limit from 10 to 15 message pairs (30 total)
+- Better conversation context like Claude AI / Gemini
 ═══════════════════════════════════════════════════════════════
 """
 
@@ -182,9 +184,9 @@ def build_messages(
     
     messages.append({"role": "system", "content": system_content})
     
-    # Add history (last 10 messages)
+    # Add history (last 15 message pairs = 30 total messages)
     if history:
-        for msg in history[-10:]:
+        for msg in history[-15:]:  # ✅ Increased from 10 to 15 for better context
             messages.append({
                 "role": msg["role"],
                 "content": msg["content"],
