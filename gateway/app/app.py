@@ -1771,6 +1771,82 @@ def detect_image_generation_request(prompt: str) -> bool:
     return has_creation
 
 
+def detect_image_modification_request(prompt: str) -> bool:
+    """
+    Detect if user is requesting modification of previously generated image.
+    
+    Examples:
+    - "bunu daha yeşil yap"
+    - "ağaçları kaldır"
+    - "make it more colorful"
+    - "remove the trees"
+    
+    Returns True if modification keywords detected.
+    """
+    modification_keywords = [
+        # Turkish - modification words
+        'bunu', 'şunu', 'bunun', 'daha', 'az', 'ekle', 'çıkar', 'kaldır',
+        'değiştir', 'güncelle', 'düzenle', 'ayarla',
+        # English - modification words
+        'this', 'it', 'more', 'less', 'add', 'remove', 'delete', 'change',
+        'modify', 'update', 'edit', 'adjust', 'make it'
+    ]
+    
+    prompt_lower = prompt.lower()
+    
+    # Check if any modification keyword exists
+    has_modification = any(kw in prompt_lower for kw in modification_keywords)
+    
+    return has_modification
+
+
+def get_last_image_generation_prompt(user_id: int, conversation_id: str) -> tuple:
+    """
+    Get the last image generation prompt from this conversation.
+    
+    Returns: (image_generation_id, user_prompt, generated_prompt)
+    """
+    try:
+        pool = _get_pool()
+        conn = pool.getconn()
+        cur = conn.cursor()
+        
+        try:
+            cur.execute("""
+                SELECT id, user_prompt, generated_prompt
+                FROM image_generations
+                WHERE user_id = %s AND conversation_id = %s
+                ORDER BY created_at DESC
+                LIMIT 1
+            """, (user_id, conversation_id))
+            
+            row = cur.fetchone()
+            if row:
+                return (row[0], row[1], row[2])
+            return (None, None, None)
+            
+        finally:
+            pool.putconn(conn)
+            
+    except Exception as e:
+        print(f"[GET LAST IMAGE PROMPT ERROR] {e}")
+        return (None, None, None)
+
+
+def combine_prompts_for_modification(original_prompt: str, modification_request: str) -> str:
+    """
+    Combine original image prompt with modification request.
+    
+    Example:
+    original: "beautiful mountain landscape with lake, sunset, trees"
+    modification: "bunu daha yeşil yap"
+    combined: "beautiful mountain landscape with lake, sunset, trees, MORE VIBRANT GREEN COLORS"
+    """
+    # Simple combination - Image Gen Service will handle the intelligent merge
+    combined = f"{original_prompt}\n\nMODIFICATION REQUEST: {modification_request}"
+    return combined
+
+
 # ═══════════════════════════════════════════════════════════════
 # MAIN CHAT ENDPOINT
 # ═══════════════════════════════════════════════════════════════
@@ -1832,10 +1908,57 @@ async def chat_endpoint(
                 yield f"⏰ Günlük mesaj limitine ulaştın ({limit}/gün).\n\nYarın tekrar deneyebilirsin! 🚀"
             return StreamingResponse(limit_exceeded_gen(), media_type="text/plain; charset=utf-8")
     
-    # 3.5 SMART ROUTING - IMAGE GENERATION DETECTION
-    is_image_request = detect_image_generation_request(request_body.prompt)
+    # 3.5 SMART ROUTING - IMAGE ANALYSIS vs MODIFICATION vs GENERATION
     
-    if is_image_request:
+    # ÖNCE: Image upload var mı kontrol et (Image Analysis)
+    if request_body.image_data:
+        print(f"[SMART ROUTING] Image uploaded, routing to Image Analysis Service")
+        
+        # Route to Image Analysis Service
+        # TODO: Image Analysis Service integration
+        # For now, pass to chat service with image context
+        # Continue to normal chat flow with image...
+        pass  # Will be handled by chat service
+    
+    # İKİNCİ: Image modification request mi? (Iterative Generation)
+    is_modification = detect_image_modification_request(request_body.prompt)
+    is_generation = detect_image_generation_request(request_body.prompt)
+    
+    if is_modification and conversation_id and user_id:
+        print(f"[SMART ROUTING] Image modification request detected: {request_body.prompt[:50]}...")
+        
+        # Get last image generation prompt from this conversation
+        last_img_id, last_user_prompt, last_generated_prompt = get_last_image_generation_prompt(
+            user_id, conversation_id
+        )
+        
+        if last_generated_prompt:
+            print(f"[SMART ROUTING] Found previous image prompt, combining...")
+            
+            # Combine prompts
+            combined_prompt = combine_prompts_for_modification(
+                last_generated_prompt, 
+                request_body.prompt
+            )
+            
+            # Override the prompt for Image Gen Service
+            original_user_prompt = request_body.prompt
+            request_body.prompt = combined_prompt
+            
+            # Set modification flag
+            modification_of_id = last_img_id
+            
+            # Continue to Image Generation flow with combined prompt
+            is_generation = True
+            print(f"[SMART ROUTING] Combined prompt ready for modification")
+        else:
+            print(f"[SMART ROUTING] No previous image found, treating as new generation")
+            modification_of_id = None
+    else:
+        modification_of_id = None
+    
+    # ÜÇÜNCÜ: Image generation request mi kontrol et
+    if is_generation and not request_body.image_data:
         print(f"[SMART ROUTING] Image generation request detected: {request_body.prompt[:50]}...")
         
         # Check if user has image_gen feature
@@ -1940,6 +2063,12 @@ async def chat_endpoint(
         # Route to Image Gen Service
         print(f"[SMART ROUTING] → Image Gen Service")
         
+        # Save original user prompt if this is a modification
+        if modification_of_id:
+            user_facing_prompt = original_user_prompt
+        else:
+            user_facing_prompt = request_body.prompt
+        
         async def stream_image_gen():
             try:
                 # Call Image Gen Service
@@ -1947,12 +2076,14 @@ async def chat_endpoint(
                     response = await client.post(
                         f"{IMAGE_GEN_SERVICE_URL}/generate",
                         json={
-                            "prompt": request_body.prompt,
+                            "prompt": request_body.prompt,  # This might be combined prompt
                             "user_id": str(user_id or 0),
                             "conversation_id": conversation_id,
                             "conversation_history": conversation_history,
                             "size": "1024x1024",
-                            "save_to_db": True
+                            "save_to_db": True,
+                            "modification_of": modification_of_id,  # Parent image ID if modification
+                            "original_user_prompt": user_facing_prompt  # What user actually typed
                         }
                     )
                     
@@ -2011,11 +2142,34 @@ async def chat_endpoint(
                                     cur = conn.cursor()
                                     
                                     try:
+                                        # Get generated_prompt from Image Gen Service response
+                                        generated_prompt_from_service = data.get("generated_prompt", request_body.prompt)
+                                        
                                         cur.execute("""
-                                            INSERT INTO image_generations (user_id, created_at)
-                                            VALUES (%s, NOW())
-                                        """, (user_id,))
+                                            INSERT INTO image_generations (
+                                                user_id, 
+                                                conversation_id,
+                                                user_prompt, 
+                                                generated_prompt,
+                                                modification_of,
+                                                image_b64,
+                                                created_at
+                                            )
+                                            VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                                            RETURNING id
+                                        """, (
+                                            user_id,
+                                            conversation_id,
+                                            user_facing_prompt,  # What user typed: "bir manzara resmi yap"
+                                            generated_prompt_from_service,  # Enhanced prompt from service
+                                            modification_of_id,  # Parent image ID if modification
+                                            image_b64[:5000] if image_b64 else None  # Store first 5000 chars as reference
+                                        ))
+                                        
+                                        new_img_id = cur.fetchone()[0]
                                         conn.commit()
+                                        
+                                        print(f"[IMAGE GEN] Tracked generation {new_img_id} (modification_of: {modification_of_id})")
                                         
                                     finally:
                                         pool.putconn(conn)
