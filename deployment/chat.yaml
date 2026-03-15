@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: skylight-chat
+  namespace: skylight-bot-v2
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: skylight-chat
+  template:
+    metadata:
+      labels:
+        app: skylight-chat
+    spec:
+      containers:
+      - name: chat
+        image: docker.io/hafifbilgiler/skylight-chat:1.0
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8082
+        env:
+        # Database
+        - name: DB_HOST
+          value: "postgres"
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: pg-secret
+              key: dbname
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: pg-secret
+              key: username
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: pg-secret
+              key: password
+        
+        # DeepInfra API
+        - name: DEEPINFRA_API_KEY
+          value: "4hcNLCkZvisyP6wuD2sdY5NPFU2GjBSn"
+        - name: DEEPINFRA_BASE_URL
+          value: "https://api.deepinfra.com/v1/openai"
+        
+        # Models
+        - name: DEEPINFRA_ASSISTANT_MODEL
+          value: "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"
+        - name: DEEPINFRA_ASSISTANT_MAX_TOKENS
+          value: "4096"
+        - name: DEEPINFRA_ASSISTANT_TEMPERATURE
+          value: "0.7"
+        - name: DEEPINFRA_CODE_MODEL
+          value: "Qwen/Qwen3-Coder-480B-A35B-Instruct-Turbo"
+        - name: DEEPINFRA_CODE_TEMPERATURE
+          value: "0.3"
+        - name: DEEPINFRA_CODE_MAX_TOKENS
+          value: "4096"
+        
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: skylight-chat
+  namespace: skylight-bot-v2
+spec:
+  selector:
+    app: skylight-chat
+  ports:
+  - protocol: TCP
+    port: 8082
+    targetPort: 8082
+  type: ClusterIP
