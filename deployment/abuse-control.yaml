@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: skylight-bot-abuse-control
+  namespace: skylight-bot-v2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: skylight-bot-abuse-control
+  template:
+    metadata:
+      labels:
+        app: skylight-bot-abuse-control
+    spec:
+      containers:
+        - name: skylight-bot-abuse-control
+          image: docker.io/hafifbilgiler/skylight-user-limit-controller:1.1
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8010
+          env:
+            - name: REDIS_URL
+              value: "redis://skylight-redis:6379/0"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "300m"
+              memory: "256Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: skylight-bot-abuse-control
+  namespace: skylight-bot-v2
+spec:
+  selector:
+    app: skylight-bot-abuse-control
+  ports:
+    - port: 8010
+      targetPort: 8010
