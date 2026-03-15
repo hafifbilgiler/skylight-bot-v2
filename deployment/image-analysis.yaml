@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
       - name: image-analysis
-        image: docker.io/hafifbilgiler/skylight-image-analysis:1.0
+        image: docker.io/hafifbilgiler/skylight-image-analysis:1.1
         imagePullPolicy: Always
         ports:
         - containerPort: 8002
