@@ -1653,17 +1653,21 @@ async def chat_endpoint(
         "session_summary": request_body.session_summary,
     }
     
+    # Stream response from Chat Service
     async def stream_response():
         try:
-            generator = await call_service(  # ✅ await var!
+            generator = await call_service(
                 CHAT_SERVICE_URL,
                 "/chat",
                 data=chat_data,
                 stream=True,
                 timeout=120,
             )
-            async for chunk in generator:  # ✅ generator üzerinde iterate
+            async for chunk in generator:
                 yield chunk
+        except Exception as e:
+            print(f"[CHAT SERVICE ERROR] {e}")
+            yield f"\n⚠️ Chat service error: {str(e)}"
     
     # 5. Increment usage in background
     if user_id:
