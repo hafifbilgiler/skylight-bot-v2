@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: skylight-rag
+  namespace: skylight-bot-v2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: skylight-rag
+  template:
+    metadata:
+      labels:
+        app: skylight-rag
+    spec:
+      containers:
+      - name: rag
+        image: docker.io/hafifbilgiler/skylight-rag:1.0
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8084
+        env:
+        # Qdrant
+        - name: QDRANT_URL
+          value: "http://qdrant:6333"
+        - name: QDRANT_HOST
+          value: "qdrant"
+        - name: QDRANT_COLLECTION
+          value: "skylight_docs"
+        - name: EMBED_VECTOR_SIZE
+          value: "1024"
+        
+        # DeepInfra API
+        - name: DEEPINFRA_API_KEY
+          value: "4hcNLCkZvisyP6wuD2sdY5NPFU2GjBSn"
+        - name: DEEPINFRA_EMBED_MODEL
+          value: "BAAI/bge-m3"
+        - name: EMBED_PROVIDER
+          value: "deepinfra"
+        
+        # Smart Tools (web search)
+        - name: SMART_TOOLS_URL
+          value: "http://skylight-smart-tools:8081"
+        - name: SMART_TOOLS_ENABLED
+          value: "true"
+        
+        # Local embed fallback
+        - name: EMBED_URL
+          value: "http://skylight-embed-service:80/embed"
+        
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: skylight-rag
+  namespace: skylight-bot-v2
+spec:
+  selector:
+    app: skylight-rag
+  ports:
+  - protocol: TCP
+    port: 8084
+    targetPort: 8084
+  type: ClusterIP

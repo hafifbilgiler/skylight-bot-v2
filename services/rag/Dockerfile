@@ -23,8 +23,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY app/ ./app/
-COPY ../shared/ ./shared/
+COPY app/app.py ./app.py
 
 # Create non-root user
 RUN useradd -m -u 1000 skylight && \
@@ -38,4 +37,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 
 EXPOSE 8084
 
-CMD ["uvicorn", "app.app:app", "--host", "0.0.0.0", "--port", "8084"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8084"]
