@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: skylight-image-gen
+  namespace: skylight-bot-v2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: skylight-image-gen
+  template:
+    metadata:
+      labels:
+        app: skylight-image-gen
+    spec:
+      containers:
+      - name: image-gen
+        image: docker.io/hafifbilgiler/skylight-image-gen:1.0
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8083
+        env:
+        # Database
+        - name: DB_HOST
+          value: "postgres"
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: pg-secret
+              key: dbname
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: pg-secret
+              key: username
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: pg-secret
+              key: password
+        
+        # Redis
+        - name: REDIS_URL
+          value: "redis://skylight-redis:6379/0"
+        - name: REDIS_TTL
+          value: "86400"
+        
+        # DeepInfra API
+        - name: DEEPINFRA_API_KEY
+          value: "4hcNLCkZvisyP6wuD2sdY5NPFU2GjBSn"
+        - name: DEEPINFRA_BASE_URL
+          value: "https://api.deepinfra.com/v1/openai"
+        
+        # Image Generation Models
+        - name: DEEPINFRA_IMAGE_MODEL
+          value: "black-forest-labs/FLUX-2-max"
+        - name: DEEPINFRA_IMAGE_SIZE
+          value: "1024x1024"
+        - name: DEEPINFRA_IMAGE_STEPS
+          value: "28"
+        - name: DEEPINFRA_PROMPT_MODEL
+          value: "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"
+        
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "300m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: skylight-image-gen
+  namespace: skylight-bot-v2
+spec:
+  selector:
+    app: skylight-image-gen
+  ports:
+  - protocol: TCP
+    port: 8083
+    targetPort: 8083
+  type: ClusterIP
