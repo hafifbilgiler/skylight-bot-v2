@@ -1,15 +1,22 @@
 """
 ═══════════════════════════════════════════════════════════════
-SKYLIGHT API GATEWAY - COMPLETE VERSION 2.0
+SKYLIGHT API GATEWAY - VERSION 2.1 (SMART ROUTING)
 ═══════════════════════════════════════════════════════════════
 Full-featured gateway with:
 - Authentication & OTP
 - Subscription management
 - File upload & virus scanning
+- **SMART ROUTING** - Auto-detects image generation requests ✨
 - Chat routing
-- Image generation (NEW)
+- Image generation (auto-routed)
 - Image analysis/vision (NEW)
 - All security features
+
+NEW IN v2.1:
+✅ Image generation keyword detection
+✅ Automatic routing to Image Gen Service
+✅ "bir manzara resmi yap" → Image Gen Service
+✅ Normal chat → Chat Service
 ═══════════════════════════════════════════════════════════════
 """
 
@@ -1722,6 +1729,49 @@ async def subscription_plans_endpoint():
         raise HTTPException(status_code=500, detail=f"Get plans error: {str(e)}")
 
 # ═══════════════════════════════════════════════════════════════
+# SMART ROUTING - IMAGE GENERATION DETECTION
+# ═══════════════════════════════════════════════════════════════
+
+def detect_image_generation_request(prompt: str) -> bool:
+    """
+    Detect if user prompt is requesting image generation.
+    
+    Returns True if prompt contains image generation keywords and creation indicators.
+    """
+    keywords = [
+        # Turkish - image/visual words
+        'görsel', 'resim', 'foto', 'fotoğraf', 'çiz', 'çizim', 
+        'manzara', 'portre', 'illüstrasyon', 'grafik',
+        # Turkish - creation words
+        'yap', 'oluştur', 'üret', 'tasarla', 'dizayn', 'çek',
+        # English - image/visual words
+        'image', 'picture', 'photo', 'drawing', 'illustration', 
+        'graphic', 'artwork', 'render',
+        # English - creation words
+        'create', 'generate', 'make', 'design', 'draw', 'sketch', 'produce'
+    ]
+    
+    prompt_lower = prompt.lower()
+    
+    # Check if any keyword exists
+    has_keyword = any(kw in prompt_lower for kw in keywords)
+    
+    if not has_keyword:
+        return False
+    
+    # Make sure it's requesting creation, not just mentioning
+    creation_indicators = [
+        'yap', 'oluştur', 'üret', 'çiz', 'tasarla', 'dizayn', 'çek',
+        'create', 'generate', 'make', 'draw', 'design', 'sketch', 'produce',
+        'ver', 'give', 'show', 'göster'
+    ]
+    
+    has_creation = any(ind in prompt_lower for ind in creation_indicators)
+    
+    return has_creation
+
+
+# ═══════════════════════════════════════════════════════════════
 # MAIN CHAT ENDPOINT
 # ═══════════════════════════════════════════════════════════════
 
@@ -1732,17 +1782,24 @@ async def chat_endpoint(
     authorization: str = Header(None),
 ):
     """
-    Main chat endpoint with full security integration.
+    Main chat endpoint with SMART ROUTING and full security integration.
     
     Flow:
     1. Authentication
     2. Abuse Control Check
     3. Usage Limit Check
+    3.5 **SMART ROUTING** - Detect image generation requests
+        → If image request: Route to Image Gen Service
+        → If normal chat: Continue to Chat Service
     4. Auto-create conversation
     5. Fetch conversation history from database
-    6. Route to Chat Service
+    6. Route to appropriate service (Chat or Image Gen)
     7. Save messages to database
     8. Increment usage
+    
+    Examples:
+    - "bir manzara resmi yap" → Image Gen Service
+    - "merhaba nasılsın" → Chat Service
     """
     
     # 1. Authentication
@@ -1775,7 +1832,212 @@ async def chat_endpoint(
                 yield f"⏰ Günlük mesaj limitine ulaştın ({limit}/gün).\n\nYarın tekrar deneyebilirsin! 🚀"
             return StreamingResponse(limit_exceeded_gen(), media_type="text/plain; charset=utf-8")
     
-    # 4. Auto-create conversation if not provided
+    # 3.5 SMART ROUTING - IMAGE GENERATION DETECTION
+    is_image_request = detect_image_generation_request(request_body.prompt)
+    
+    if is_image_request:
+        print(f"[SMART ROUTING] Image generation request detected: {request_body.prompt[:50]}...")
+        
+        # Check if user has image_gen feature
+        if user_id:
+            subscription = get_user_subscription(user_id)
+            if not subscription.get("features", {}).get("image_gen", False):
+                def premium_required_gen():
+                    yield "🔒 Görsel oluşturma özelliği Premium abonelikte mevcut.\n\n"
+                    yield "Premium'a geçerek:\n"
+                    yield "• Sınırsız görsel oluşturabilirsin\n"
+                    yield "• Görselleri analiz edebilirsin\n"
+                    yield "• Tüm özelliklere erişebilirsin\n"
+                return StreamingResponse(premium_required_gen(), media_type="text/plain; charset=utf-8")
+            
+            # Check image generation limit
+            try:
+                pool = _get_pool()
+                conn = pool.getconn()
+                cur = conn.cursor()
+                
+                try:
+                    cur.execute("""
+                        SELECT COUNT(*) FROM image_generations
+                        WHERE user_id = %s 
+                        AND DATE(created_at) = CURRENT_DATE
+                    """, (user_id,))
+                    
+                    daily_count = cur.fetchone()[0]
+                    daily_limit = subscription.get("limits", {}).get("image_gen_per_day", 0)
+                    
+                    if daily_limit > 0 and daily_count >= daily_limit:
+                        def limit_gen():
+                            yield f"⏰ Günlük görsel oluşturma limitine ulaştın ({daily_limit}/gün).\n\n"
+                            yield "Yarın tekrar deneyebilirsin! 🚀"
+                        return StreamingResponse(limit_gen(), media_type="text/plain; charset=utf-8")
+                        
+                finally:
+                    pool.putconn(conn)
+                    
+            except Exception as e:
+                print(f"[IMAGE LIMIT CHECK ERROR] {e}")
+        
+        # Auto-create conversation for image generation
+        conversation_id = request_body.conversation_id
+        if not conversation_id and user_id:
+            try:
+                pool = _get_pool()
+                conn = pool.getconn()
+                cur = conn.cursor()
+                
+                try:
+                    title = request_body.prompt[:100]
+                    if len(request_body.prompt) > 100:
+                        title += "..."
+                    
+                    cur.execute("""
+                        INSERT INTO conversations (user_id, title, created_at, updated_at)
+                        VALUES (%s, %s, NOW(), NOW())
+                        RETURNING id
+                    """, (user_id, title))
+                    
+                    conversation_id = str(cur.fetchone()[0])
+                    conn.commit()
+                    print(f"[IMAGE GEN] Auto-created conversation {conversation_id}")
+                    
+                finally:
+                    pool.putconn(conn)
+                    
+            except Exception as e:
+                print(f"[IMAGE GEN CONVERSATION ERROR] {e}")
+        
+        # Load conversation history for context
+        conversation_history = []
+        if conversation_id:
+            try:
+                pool = _get_pool()
+                conn = pool.getconn()
+                cur = conn.cursor()
+                
+                try:
+                    cur.execute("""
+                        SELECT role, content
+                        FROM messages
+                        WHERE conversation_id = %s
+                        ORDER BY created_at DESC
+                        LIMIT 15
+                    """, (conversation_id,))
+                    
+                    messages = cur.fetchall()
+                    for row in reversed(messages):
+                        conversation_history.append({
+                            "role": row[0],
+                            "content": row[1],
+                        })
+                        
+                finally:
+                    pool.putconn(conn)
+                    
+            except Exception as e:
+                print(f"[IMAGE GEN HISTORY ERROR] {e}")
+        
+        # Route to Image Gen Service
+        print(f"[SMART ROUTING] → Image Gen Service")
+        
+        async def stream_image_gen():
+            try:
+                # Call Image Gen Service
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    response = await client.post(
+                        f"{IMAGE_GEN_SERVICE_URL}/generate",
+                        json={
+                            "prompt": request_body.prompt,
+                            "user_id": str(user_id or 0),
+                            "conversation_id": conversation_id,
+                            "conversation_history": conversation_history,
+                            "size": "1024x1024",
+                            "save_to_db": True
+                        }
+                    )
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        
+                        if data.get("success"):
+                            yield "✨ **Görsel Başarıyla Oluşturuldu!**\n\n"
+                            
+                            image_b64 = data.get("image_b64")
+                            db_image_id = data.get("db_image_id")
+                            
+                            if image_b64:
+                                yield f"[IMAGE_B64]{image_b64}[/IMAGE_B64]"
+                            
+                            # Save to database
+                            if conversation_id and user_id:
+                                try:
+                                    pool = _get_pool()
+                                    conn = pool.getconn()
+                                    cur = conn.cursor()
+                                    
+                                    try:
+                                        # Save user message
+                                        cur.execute("""
+                                            INSERT INTO messages (conversation_id, role, content, mode, created_at)
+                                            VALUES (%s, %s, %s, %s, NOW())
+                                        """, (conversation_id, "user", request_body.prompt, "assistant"))
+                                        
+                                        # Save assistant response
+                                        response_text = f"[Görsel oluşturuldu - DB ID: {db_image_id}]"
+                                        cur.execute("""
+                                            INSERT INTO messages (conversation_id, role, content, mode, created_at)
+                                            VALUES (%s, %s, %s, %s, NOW())
+                                        """, (conversation_id, "assistant", response_text, "assistant"))
+                                        
+                                        # Update conversation
+                                        cur.execute("""
+                                            UPDATE conversations SET updated_at = NOW() WHERE id = %s
+                                        """, (conversation_id,))
+                                        
+                                        conn.commit()
+                                        print(f"[IMAGE GEN] Saved to conversation {conversation_id}")
+                                        
+                                    finally:
+                                        pool.putconn(conn)
+                                        
+                                except Exception as e:
+                                    print(f"[IMAGE GEN SAVE ERROR] {e}")
+                            
+                            # Increment image generation usage
+                            if user_id:
+                                try:
+                                    pool = _get_pool()
+                                    conn = pool.getconn()
+                                    cur = conn.cursor()
+                                    
+                                    try:
+                                        cur.execute("""
+                                            INSERT INTO image_generations (user_id, created_at)
+                                            VALUES (%s, NOW())
+                                        """, (user_id,))
+                                        conn.commit()
+                                        
+                                    finally:
+                                        pool.putconn(conn)
+                                        
+                                except Exception as e:
+                                    print(f"[IMAGE GEN INCREMENT ERROR] {e}")
+                        else:
+                            error_msg = data.get("error", "Bilinmeyen hata")
+                            yield f"⚠️ {error_msg}\n"
+                    else:
+                        yield f"⚠️ Image service error (HTTP {response.status_code})\n"
+                        
+            except Exception as e:
+                print(f"[IMAGE GEN SERVICE ERROR] {e}")
+                yield f"⚠️ Görsel oluşturma hatası: {str(e)}\n"
+        
+        response = StreamingResponse(stream_image_gen(), media_type="text/plain; charset=utf-8")
+        if conversation_id:
+            response.headers["X-Conversation-ID"] = conversation_id
+        return response
+    
+    # 4. Normal Chat Flow - Auto-create conversation if not provided
     conversation_id = request_body.conversation_id
     auto_created = False
     
