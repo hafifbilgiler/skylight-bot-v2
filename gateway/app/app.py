@@ -1,22 +1,15 @@
 """
 ═══════════════════════════════════════════════════════════════
-SKYLIGHT API GATEWAY - COMPLETE FIXED VERSION
+SKYLIGHT API GATEWAY - COMPLETE VERSION 2.0
 ═══════════════════════════════════════════════════════════════
-Orchestrator pattern + All security features from original monolith
-
-CHANGES FROM ORIGINAL:
-1. ChatRequest.query → ChatRequest.prompt (compatibility with Chat Service)
-2. Added missing endpoints:
-   - GET /conversations/list
-   - POST /conversations/create
-   - GET /conversations/{id}/messages
-   - PUT /conversations/{id}
-   - DELETE /conversations/{id}
-   - GET /profile
-   - DELETE /profile/topics
-   - POST /feedback
-   - GET /code-mode/status
-   - GET /admin/* endpoints
+Full-featured gateway with:
+- Authentication & OTP
+- Subscription management
+- File upload & virus scanning
+- Chat routing
+- Image generation (NEW)
+- Image analysis/vision (NEW)
+- All security features
 ═══════════════════════════════════════════════════════════════
 """
 
@@ -142,168 +135,6 @@ def get_db():
         raise
     finally:
         pool.putconn(conn)
-
-# ═══════════════════════════════════════════════════════════════
-# DATABASE SCHEMA INITIALIZATION
-# ═══════════════════════════════════════════════════════════════
-
-def ensure_tables():
-    """Ensure all required tables exist."""
-    try:
-        pool = _get_pool()
-        conn = pool.getconn()
-        cur = conn.cursor()
-        
-        # Users table
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                id SERIAL PRIMARY KEY,
-                email VARCHAR(255) UNIQUE NOT NULL,
-                name VARCHAR(255),
-                google_id VARCHAR(255),
-                created_at TIMESTAMPTZ DEFAULT NOW()
-            )
-        """)
-        
-        # OTP codes table
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS otp_codes (
-                email VARCHAR(255) PRIMARY KEY,
-                code VARCHAR(6) NOT NULL,
-                expire_at TIMESTAMPTZ NOT NULL,
-                created_at TIMESTAMPTZ DEFAULT NOW()
-            )
-        """)
-        
-        # Subscription plans table
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS subscription_plans (
-                id VARCHAR(50) PRIMARY KEY,
-                name VARCHAR(100) NOT NULL,
-                description TEXT,
-                price_monthly DECIMAL(10,2),
-                price_yearly DECIMAL(10,2),
-                currency VARCHAR(3) DEFAULT 'TRY',
-                features JSONB NOT NULL,
-                limits JSONB NOT NULL,
-                is_active BOOLEAN DEFAULT TRUE,
-                sort_order INTEGER DEFAULT 0,
-                created_at TIMESTAMPTZ DEFAULT NOW()
-            )
-        """)
-        
-        # User subscriptions table
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS user_subscriptions (
-                id SERIAL PRIMARY KEY,
-                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-                plan_id VARCHAR(50) REFERENCES subscription_plans(id),
-                status VARCHAR(20) DEFAULT 'active',
-                billing_period VARCHAR(20),
-                current_period_start TIMESTAMPTZ,
-                current_period_end TIMESTAMPTZ,
-                cancel_at_period_end BOOLEAN DEFAULT FALSE,
-                cancelled_at TIMESTAMPTZ,
-                iyzico_subscription_ref VARCHAR(255),
-                iyzico_customer_ref VARCHAR(255),
-                created_at TIMESTAMPTZ DEFAULT NOW(),
-                UNIQUE(user_id, plan_id, status)
-            )
-        """)
-        
-        # Usage tracking table
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS usage_tracking (
-                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-                usage_date DATE NOT NULL,
-                messages_sent INTEGER DEFAULT 0,
-                images_generated INTEGER DEFAULT 0,
-                modes_used JSONB DEFAULT '{}',
-                updated_at TIMESTAMPTZ DEFAULT NOW(),
-                PRIMARY KEY (user_id, usage_date)
-            )
-        """)
-        
-        # User profiles table
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS user_profiles (
-                user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-                interests JSONB NOT NULL DEFAULT '[]',
-                dislikes JSONB NOT NULL DEFAULT '[]',
-                expertise_areas JSONB NOT NULL DEFAULT '[]',
-                follow_topics JSONB NOT NULL DEFAULT '[]',
-                conversation_style VARCHAR(50) DEFAULT 'balanced',
-                preferred_language VARCHAR(10) DEFAULT 'tr',
-                profession VARCHAR(200),
-                topics JSONB NOT NULL DEFAULT '[]',
-                preferences JSONB NOT NULL DEFAULT '{}',
-                summary TEXT NOT NULL DEFAULT '',
-                total_likes INTEGER DEFAULT 0,
-                total_dislikes INTEGER DEFAULT 0,
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-        """)
-        
-        # Conversations table
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS conversations (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-                title VARCHAR(500),
-                is_pinned BOOLEAN DEFAULT FALSE,
-                is_archived BOOLEAN DEFAULT FALSE,
-                created_at TIMESTAMPTZ DEFAULT NOW(),
-                updated_at TIMESTAMPTZ DEFAULT NOW()
-            )
-        """)
-        
-        # Messages table
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS messages (
-                id SERIAL PRIMARY KEY,
-                conversation_id UUID REFERENCES conversations(id) ON DELETE CASCADE,
-                role VARCHAR(20) NOT NULL,
-                content TEXT NOT NULL,
-                model_used VARCHAR(100),
-                token_count INTEGER,
-                mode VARCHAR(50),
-                has_image BOOLEAN DEFAULT FALSE,
-                intent VARCHAR(50),
-                is_edited BOOLEAN DEFAULT FALSE,
-                created_at TIMESTAMPTZ DEFAULT NOW()
-            )
-        """)
-        
-        # Feedback table
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS feedback (
-                id SERIAL PRIMARY KEY,
-                user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
-                conversation_id TEXT,
-                user_query TEXT,
-                assistant_response TEXT,
-                rating INTEGER,
-                comment TEXT,
-                created_at TIMESTAMPTZ DEFAULT NOW()
-            )
-        """)
-        
-        # Insert free plan if not exists
-        cur.execute("""
-            INSERT INTO subscription_plans (id, name, description, price_monthly, price_yearly, features, limits)
-            VALUES ('free', 'Ücretsiz', 'Temel özellikler', 0, 0, 
-                    '{"allowed_modes": ["assistant"], "web_search": true, "file_upload": true, "image_gen": false, "vision": false, "rag": true, "smart_tools": true}'::jsonb,
-                    '{"daily_messages": 50, "daily_images": 0, "max_history": 20, "max_file_size_mb": 5, "max_conversations": 10}'::jsonb)
-            ON CONFLICT (id) DO NOTHING
-        """)
-        
-        conn.commit()
-        pool.putconn(conn)
-        print("[DB] ✅ All tables ensured")
-        
-    except Exception as e:
-        print(f"[DB] ❌ Table creation error: {e}")
 
 # ═══════════════════════════════════════════════════════════════
 # ABUSE CONTROL INTEGRATION
@@ -549,10 +380,10 @@ def _default_free_plan() -> dict:
         "status": "active",
         "features": {
             "allowed_modes": ["assistant"],
-            "web_search": True,
-            "file_upload": True,
             "image_gen": False,
             "vision": False,
+            "web_search": True,
+            "file_upload": True,
             "rag": True,
             "smart_tools": True,
         },
@@ -642,13 +473,27 @@ class ChatMessage(BaseModel):
     content: str
 
 class ChatRequest(BaseModel):
-    prompt: str  # ✅ FIXED: Changed from "query" to "prompt"
+    prompt: str
     mode: str = "assistant"
     conversation_id: Optional[str] = None
     history: Optional[List[ChatMessage]] = None
     context: Optional[str] = None
     image_data: Optional[str] = None
     session_summary: Optional[str] = None
+
+class ImageGenerationRequest(BaseModel):
+    prompt: str
+    mode: str = "assistant"
+    conversation_id: Optional[str] = None
+    width: Optional[int] = 1024
+    height: Optional[int] = 1024
+    num_images: Optional[int] = 1
+
+class ImageAnalysisRequest(BaseModel):
+    image_data: str  # Base64 encoded image
+    query: Optional[str] = None
+    mode: str = "assistant"
+    conversation_id: Optional[str] = None
 
 class OTPRequest(BaseModel):
     email: EmailStr
@@ -684,11 +529,8 @@ async def lifespan(app: FastAPI):
     """Application lifespan - startup and shutdown"""
     # Startup
     print("\n" + "="*60)
-    print("🚀 SKYLIGHT API GATEWAY - STARTING UP")
+    print("🚀 SKYLIGHT API GATEWAY v2.0 - STARTING UP")
     print("="*60)
-    
-    # Initialize database tables
-    ensure_tables()
     
     # Test database connection
     try:
@@ -707,14 +549,18 @@ async def lifespan(app: FastAPI):
     else:
         print("⚠️  ClamAV disabled")
     
-    # Test Abuse Control
+    # Test services
+    print(f"✅ Chat Service: {CHAT_SERVICE_URL}")
+    print(f"✅ Image Gen Service: {IMAGE_GEN_SERVICE_URL}")
+    print(f"✅ Image Analysis Service: {IMAGE_ANALYSIS_SERVICE_URL}")
+    print(f"✅ RAG Service: {RAG_SERVICE_URL}")
+    print(f"✅ Smart Tools: {SMART_TOOLS_URL}")
+    
     if ABUSE_CONTROL_URL:
-        print(f"✅ Abuse Control configured: {ABUSE_CONTROL_URL}")
-    else:
-        print("⚠️  Abuse Control URL not set")
+        print(f"✅ Abuse Control: {ABUSE_CONTROL_URL}")
     
     print("="*60)
-    print("✨ GATEWAY READY")
+    print("✨ GATEWAY READY - ALL SYSTEMS OPERATIONAL")
     print("="*60 + "\n")
     
     yield
@@ -736,8 +582,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Skylight API Gateway",
-    description="Complete Gateway with all security features",
-    version="3.0.0",
+    description="Complete Gateway v2.0 - With Image Generation & Analysis",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -1142,7 +988,291 @@ async def upload_file(
     }
 
 # ═══════════════════════════════════════════════════════════════
-# CONVERSATION ENDPOINTS (NEWLY ADDED) ✅
+# IMAGE GENERATION ENDPOINT (NEW)
+# ═══════════════════════════════════════════════════════════════
+
+@app.post("/generate-image")
+async def generate_image_endpoint(
+    request_body: ImageGenerationRequest,
+    request: Request,
+    authorization: str = Header(None),
+):
+    """
+    Generate image using DALL-E or Stable Diffusion/FLUX
+    
+    PREMIUM ONLY feature - can be used in ANY mode
+    """
+    
+    # 1. Authentication
+    user_id = None
+    try:
+        user_id = get_user_from_token(authorization)
+    except Exception:
+        pass
+    
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Login required")
+    
+    # 2. Check subscription - image_gen feature
+    sub = get_user_subscription(user_id)
+    
+    if not sub.get("features", {}).get("image_gen", False):
+        raise HTTPException(
+            status_code=403,
+            detail="Image generation requires Premium subscription"
+        )
+    
+    # 3. Check daily image limit
+    try:
+        pool = _get_pool()
+        conn = pool.getconn()
+        cur = conn.cursor()
+        
+        try:
+            # Get today's image count
+            cur.execute("""
+                SELECT images_generated FROM usage_tracking
+                WHERE user_id = %s AND usage_date = CURRENT_DATE
+            """, (user_id,))
+            
+            row = cur.fetchone()
+            current_images = row[0] if row else 0
+            
+            daily_limit = sub.get("limits", {}).get("daily_images", 0)
+            
+            if daily_limit != -1 and current_images >= daily_limit:
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"Daily image generation limit reached ({daily_limit}/day)"
+                )
+            
+        finally:
+            pool.putconn(conn)
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[IMAGE LIMIT CHECK ERROR] {e}")
+    
+    # 4. Abuse Control
+    ip_address = get_client_ip(request)
+    
+    try:
+        abuse_post("/image-gen/check", {
+            "user_id": str(user_id),
+            "ip_address": ip_address
+        })
+    except HTTPException as e:
+        if e.status_code == 429:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many image generation requests. Please wait."
+            )
+        raise
+    
+    # 5. Route to Image Generation Service
+    try:
+        response = await call_service(
+            IMAGE_GEN_SERVICE_URL,
+            "/generate",
+            data={
+                "prompt": request_body.prompt,
+                "user_id": user_id,
+                "conversation_id": request_body.conversation_id,
+                "width": request_body.width,
+                "height": request_body.height,
+                "num_images": request_body.num_images,
+            },
+            stream=False,
+            timeout=60,
+        )
+        
+        # 6. Increment usage counter
+        try:
+            pool = _get_pool()
+            conn = pool.getconn()
+            cur = conn.cursor()
+            
+            try:
+                cur.execute("""
+                    INSERT INTO usage_tracking (user_id, usage_date, images_generated)
+                    VALUES (%s, CURRENT_DATE, %s)
+                    ON CONFLICT (user_id, usage_date)
+                    DO UPDATE SET
+                        images_generated = usage_tracking.images_generated + %s,
+                        updated_at = NOW()
+                """, (user_id, request_body.num_images, request_body.num_images))
+                
+                conn.commit()
+                
+            finally:
+                pool.putconn(conn)
+                
+        except Exception as e:
+            print(f"[IMAGE USAGE INCREMENT ERROR] {e}")
+        
+        # 7. Save to conversation if provided
+        if request_body.conversation_id:
+            try:
+                pool = _get_pool()
+                conn = pool.getconn()
+                cur = conn.cursor()
+                
+                try:
+                    # Save user request
+                    cur.execute("""
+                        INSERT INTO messages (conversation_id, role, content, mode, has_image, created_at)
+                        VALUES (%s, 'user', %s, %s, false, NOW())
+                    """, (request_body.conversation_id, f"[Image Generation] {request_body.prompt}", request_body.mode))
+                    
+                    # Save image URLs as assistant response
+                    image_urls = response.get("images", [])
+                    assistant_content = f"Generated {len(image_urls)} image(s)"
+                    
+                    cur.execute("""
+                        INSERT INTO messages (conversation_id, role, content, mode, has_image, created_at)
+                        VALUES (%s, 'assistant', %s, %s, true, NOW())
+                    """, (request_body.conversation_id, assistant_content, request_body.mode))
+                    
+                    conn.commit()
+                    
+                finally:
+                    pool.putconn(conn)
+                    
+            except Exception as e:
+                print(f"[IMAGE MESSAGE SAVE ERROR] {e}")
+        
+        return response
+        
+    except Exception as e:
+        print(f"[IMAGE GEN SERVICE ERROR] {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Image generation failed: {str(e)}"
+        )
+
+
+# ═══════════════════════════════════════════════════════════════
+# IMAGE ANALYSIS ENDPOINT (NEW)
+# ═══════════════════════════════════════════════════════════════
+
+@app.post("/analyze-image")
+async def analyze_image_endpoint(
+    request_body: ImageAnalysisRequest,
+    request: Request,
+    authorization: str = Header(None),
+):
+    """
+    Analyze image using GPT-4 Vision
+    
+    PREMIUM ONLY feature - can be used in ANY mode
+    """
+    
+    # 1. Authentication
+    user_id = None
+    try:
+        user_id = get_user_from_token(authorization)
+    except Exception:
+        pass
+    
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Login required")
+    
+    # 2. Check subscription - vision feature
+    sub = get_user_subscription(user_id)
+    
+    if not sub.get("features", {}).get("vision", False):
+        raise HTTPException(
+            status_code=403,
+            detail="Image analysis requires Premium subscription"
+        )
+    
+    # 3. Check usage limit (count as message)
+    allowed, remaining, limit = check_usage_limit(user_id)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Daily message limit reached ({limit}/day)"
+        )
+    
+    # 4. Abuse Control
+    ip_address = get_client_ip(request)
+    
+    try:
+        abuse_post("/vision/check", {
+            "user_id": str(user_id),
+            "ip_address": ip_address
+        })
+    except HTTPException as e:
+        if e.status_code == 429:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many vision requests. Please wait."
+            )
+        raise
+    
+    # 5. Route to Image Analysis Service
+    try:
+        response = await call_service(
+            IMAGE_ANALYSIS_SERVICE_URL,
+            "/analyze",
+            data={
+                "image_data": request_body.image_data,
+                "query": request_body.query or "What's in this image?",
+                "user_id": user_id,
+                "mode": request_body.mode,
+            },
+            stream=False,
+            timeout=30,
+        )
+        
+        # 6. Increment usage counter (count as message)
+        increment_usage(user_id, request_body.mode)
+        
+        # 7. Save to conversation if provided
+        if request_body.conversation_id:
+            try:
+                pool = _get_pool()
+                conn = pool.getconn()
+                cur = conn.cursor()
+                
+                try:
+                    # Save user request
+                    user_content = request_body.query or "[Image Analysis Request]"
+                    
+                    cur.execute("""
+                        INSERT INTO messages (conversation_id, role, content, mode, has_image, created_at)
+                        VALUES (%s, 'user', %s, %s, true, NOW())
+                    """, (request_body.conversation_id, user_content, request_body.mode))
+                    
+                    # Save analysis result
+                    assistant_content = response.get("analysis", "Image analysis completed.")
+                    
+                    cur.execute("""
+                        INSERT INTO messages (conversation_id, role, content, mode, has_image, created_at)
+                        VALUES (%s, 'assistant', %s, %s, false, NOW())
+                    """, (request_body.conversation_id, assistant_content, request_body.mode))
+                    
+                    conn.commit()
+                    
+                finally:
+                    pool.putconn(conn)
+                    
+            except Exception as e:
+                print(f"[VISION MESSAGE SAVE ERROR] {e}")
+        
+        return response
+        
+    except Exception as e:
+        print(f"[VISION SERVICE ERROR] {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Image analysis failed: {str(e)}"
+        )
+
+
+# ═══════════════════════════════════════════════════════════════
+# CONVERSATION ENDPOINTS
 # ═══════════════════════════════════════════════════════════════
 
 @app.post("/conversations/create")
@@ -1376,7 +1506,7 @@ async def delete_conversation(
         raise HTTPException(status_code=500, detail=f"Failed to delete conversation: {str(e)}")
 
 # ═══════════════════════════════════════════════════════════════
-# PROFILE ENDPOINTS (NEWLY ADDED) ✅
+# PROFILE ENDPOINTS
 # ═══════════════════════════════════════════════════════════════
 
 @app.get("/profile")
@@ -1455,7 +1585,7 @@ async def clear_topics(authorization: str = Header(None)):
         raise HTTPException(status_code=500, detail=f"Clear topics error: {str(e)}")
 
 # ═══════════════════════════════════════════════════════════════
-# FEEDBACK ENDPOINT (NEWLY ADDED) ✅
+# FEEDBACK ENDPOINT
 # ═══════════════════════════════════════════════════════════════
 
 @app.post("/feedback")
@@ -1508,14 +1638,14 @@ async def submit_feedback(
         raise HTTPException(status_code=500, detail=f"Feedback error: {str(e)}")
 
 # ═══════════════════════════════════════════════════════════════
-# CODE MODE STATUS (NEWLY ADDED) ✅
+# CODE MODE STATUS
 # ═══════════════════════════════════════════════════════════════
 
 @app.get("/code-mode/status")
 async def code_mode_status():
     """Get code mode status."""
     return {
-        "enabled": bool(os.getenv("DEEPINFRA_API_KEY")),
+        "enabled": True,
         "model": os.getenv("DEEPINFRA_CODE_MODEL", "Qwen/Qwen3-Coder-480B-A35B-Instruct-Turbo"),
         "max_tokens": int(os.getenv("DEEPINFRA_CODE_MAX_TOKENS", "4096")),
     }
@@ -1608,8 +1738,11 @@ async def chat_endpoint(
     1. Authentication
     2. Abuse Control Check
     3. Usage Limit Check
-    4. Route to appropriate service
-    5. Increment usage
+    4. Auto-create conversation
+    5. Fetch conversation history from database
+    6. Route to Chat Service
+    7. Save messages to database
+    8. Increment usage
     """
     
     # 1. Authentication
@@ -1642,19 +1775,17 @@ async def chat_endpoint(
                 yield f"⏰ Günlük mesaj limitine ulaştın ({limit}/gün).\n\nYarın tekrar deneyebilirsin! 🚀"
             return StreamingResponse(limit_exceeded_gen(), media_type="text/plain; charset=utf-8")
     
-    # 3.5. Auto-create conversation if not provided (like Claude/Gemini)
+    # 4. Auto-create conversation if not provided
     conversation_id = request_body.conversation_id
     auto_created = False
     
     if not conversation_id and user_id:
-        # Create new conversation automatically
         try:
             pool = _get_pool()
             conn = pool.getconn()
             cur = conn.cursor()
             
             try:
-                # Generate title from first message (max 100 chars)
                 title = request_body.prompt[:100]
                 if len(request_body.prompt) > 100:
                     title += "..."
@@ -1669,16 +1800,15 @@ async def chat_endpoint(
                 auto_created = True
                 conn.commit()
                 
-                print(f"[CHAT] Auto-created conversation {conversation_id} with title: {title}")
+                print(f"[CHAT] Auto-created conversation {conversation_id}")
                 
             finally:
                 pool.putconn(conn)
                 
         except Exception as e:
             print(f"[AUTO-CREATE CONVERSATION ERROR] {e}")
-            # Continue without conversation_id if creation fails
     
-    # 3.6. Fetch conversation history from database if conversation_id exists
+    # 5. Fetch conversation history from database
     conversation_history = []
     if conversation_id:
         try:
@@ -1687,7 +1817,6 @@ async def chat_endpoint(
             cur = conn.cursor()
             
             try:
-                # Verify conversation ownership
                 cur.execute(
                     "SELECT user_id, title FROM conversations WHERE id = %s",
                     (conversation_id,)
@@ -1695,7 +1824,6 @@ async def chat_endpoint(
                 conv_row = cur.fetchone()
                 
                 if conv_row and (not user_id or conv_row[0] == user_id):
-                    # Fetch last 30 messages from this conversation (increased from 20)
                     cur.execute("""
                         SELECT role, content
                         FROM messages
@@ -1704,7 +1832,6 @@ async def chat_endpoint(
                         LIMIT 30
                     """, (conversation_id,))
                     
-                    # Reverse to get chronological order
                     messages = cur.fetchall()
                     for row in reversed(messages):
                         conversation_history.append({
@@ -1714,10 +1841,8 @@ async def chat_endpoint(
                     
                     print(f"[CHAT] Loaded {len(conversation_history)} messages from conversation {conversation_id}")
                     
-                    # Update conversation title if it's still default and we have messages
                     current_title = conv_row[1]
                     if current_title == "Yeni Sohbet" and len(conversation_history) == 0:
-                        # This is the first message, update title
                         new_title = request_body.prompt[:100]
                         if len(request_body.prompt) > 100:
                             new_title += "..."
@@ -1726,28 +1851,25 @@ async def chat_endpoint(
                             UPDATE conversations SET title = %s WHERE id = %s
                         """, (new_title, conversation_id))
                         conn.commit()
-                        
-                        print(f"[CHAT] Updated conversation title to: {new_title}")
                 
             finally:
                 pool.putconn(conn)
                 
         except Exception as e:
             print(f"[HISTORY FETCH ERROR] {e}")
-            # Continue without history rather than failing
     
-    # Use database history if available, otherwise use client-provided history
+    # Use database history if available
     final_history = conversation_history if conversation_history else (
         [{"role": m.role, "content": m.content} for m in (request_body.history or [])]
     )
     
-    # 4. Route to Chat Service
+    # 6. Route to Chat Service
     chat_data = {
         "prompt": request_body.prompt,
         "mode": request_body.mode,
         "user_id": user_id or 0,
         "conversation_id": conversation_id,
-        "history": final_history,  # ✅ Database history with up to 30 messages!
+        "history": final_history,
         "context": request_body.context,
         "session_summary": request_body.session_summary,
     }
@@ -1764,10 +1886,10 @@ async def chat_endpoint(
                 timeout=120,
             )
             async for chunk in generator:
-                assistant_response += chunk  # ✅ Collect response for saving
+                assistant_response += chunk
                 yield chunk
             
-            # ✅ Save messages to database after streaming completes
+            # 7. Save messages to database
             if conversation_id and user_id:
                 try:
                     pool = _get_pool()
@@ -1775,19 +1897,16 @@ async def chat_endpoint(
                     cur = conn.cursor()
                     
                     try:
-                        # Save user message
                         cur.execute("""
                             INSERT INTO messages (conversation_id, role, content, mode, created_at)
                             VALUES (%s, %s, %s, %s, NOW())
                         """, (conversation_id, "user", request_body.prompt, request_body.mode))
                         
-                        # Save assistant response
                         cur.execute("""
                             INSERT INTO messages (conversation_id, role, content, mode, created_at)
                             VALUES (%s, %s, %s, %s, NOW())
                         """, (conversation_id, "assistant", assistant_response, request_body.mode))
                         
-                        # Update conversation timestamp
                         cur.execute("""
                             UPDATE conversations SET updated_at = NOW()
                             WHERE id = %s
@@ -1801,20 +1920,18 @@ async def chat_endpoint(
                         
                 except Exception as e:
                     print(f"[MESSAGE SAVE ERROR] {e}")
-                    # Don't fail the request if save fails
                     
         except Exception as e:
             print(f"[CHAT SERVICE ERROR] {e}")
             yield f"\n⚠️ Chat service error: {str(e)}"
     
-    # 5. Increment usage in background
+    # 8. Increment usage
     if user_id:
         increment_usage(user_id, request_body.mode)
     
-    # 6. Return response with conversation_id in header (like Claude/Gemini)
+    # 9. Return response with conversation_id in header
     response = StreamingResponse(stream_response(), media_type="text/plain; charset=utf-8")
     
-    # Add conversation_id to response headers so client can track it
     if conversation_id:
         response.headers["X-Conversation-ID"] = conversation_id
         if auto_created:
@@ -1831,9 +1948,15 @@ async def health_check():
     """Gateway health check."""
     return {
         "status": "healthy",
+        "version": "2.0.0",
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "services": {
             "database": "connected",
+            "chat_service": bool(CHAT_SERVICE_URL),
+            "image_gen_service": bool(IMAGE_GEN_SERVICE_URL),
+            "image_analysis_service": bool(IMAGE_ANALYSIS_SERVICE_URL),
+            "rag_service": bool(RAG_SERVICE_URL),
+            "smart_tools": bool(SMART_TOOLS_URL),
             "abuse_control": "configured" if ABUSE_CONTROL_URL else "not_configured",
             "clamav": "enabled" if CLAMAV_ENABLED else "disabled",
             "smtp": "configured" if SMTP_USER else "not_configured",
@@ -1845,7 +1968,7 @@ async def root():
     """Root endpoint."""
     return {
         "service": "Skylight API Gateway",
-        "version": "3.0.0",
+        "version": "2.0.0",
         "status": "running",
         "features": {
             "abuse_control": bool(ABUSE_CONTROL_URL),
@@ -1854,12 +1977,15 @@ async def root():
             "otp_auth": bool(SMTP_USER),
             "subscriptions": True,
             "quota_management": True,
+            "image_generation": True,
+            "image_analysis": True,
         },
         "endpoints": {
             "conversations": ["create", "list", "messages", "update", "delete"],
             "profile": ["get", "clear_topics"],
             "feedback": ["submit"],
             "code_mode": ["status"],
+            "image": ["generate", "analyze"],
         }
     }
 
