@@ -4,7 +4,7 @@ metadata:
   name: skylight-gateway
   namespace: skylight-bot-v2
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: skylight-gateway
