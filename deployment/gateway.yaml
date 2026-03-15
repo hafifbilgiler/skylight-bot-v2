@@ -1,0 +1,136 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: skylight-bot
+ 
+---
+# ═══════════════════════════════════════════════════════════════
+# GATEWAY DEPLOYMENT
+# ═══════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: skylight-gateway
+  namespace: skylight-bot
+  labels:
+    app: skylight-gateway
+    version: v2.0
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: skylight-gateway
+  template:
+    metadata:
+      labels:
+        app: skylight-gateway
+        version: v2.0
+    spec:
+      containers:
+      - name: gateway
+        image: docker.io/hafifbilgiler/skylight-gateway:2.0.0
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8443
+          name: https
+          protocol: TCP
+        env:
+        # ── Service URLs ──
+        - name: CHAT_SERVICE_URL
+          value: "http://skylight-chat-service:8082"
+        - name: RAG_SERVICE_URL
+          value: "http://skylight-rag-service:8084"
+        - name: IMAGE_GEN_SERVICE_URL
+          value: "http://skylight-image-gen-service:8080"
+        - name: IMAGE_ANALYSIS_SERVICE_URL
+          value: "http://skylight-bot-image-analysis-service:8080"
+        - name: SMART_TOOLS_URL
+          value: "http://skylight-smart-tools:8081"
+        - name: ABUSE_CONTROL_URL
+          value: "http://skylight-bot-abuse-control:8010"
+        
+        # ── Authentication (matching original) ──
+        - name: JWT_SECRET
+          value: "31aad766798d891f4c587d7f3bc925cd7e1e14989c421ae3c38eb80c1d4ede05"
+        - name: API_TOKEN
+          value: "31aad766798d891f4c587d7f3bc925cd7e1e14989c421ae3c38eb80c1d4ede05"
+        
+        # ── Database (using pg-secret) ──
+        - name: DB_HOST
+          value: "postgres"
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: pg-secret
+              key: dbname
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: pg-secret
+              key: username
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: pg-secret
+              key: password       
+        # ── Redis ──
+        - name: REDIS_URL
+          value: "redis://skylight-redis:6379/0"               # ── SMTP (using smtp-secret) ──
+        - name: SMTP_SERVER
+          value: "smtp.hostinger.com"
+        - name: SMTP_PORT
+          value: "587"
+        - name: SMTP_USER
+          valueFrom:
+            secretKeyRef:
+              name: smtp-secret
+              key: smtp-user
+        - name: SMTP_PASS
+          valueFrom:
+            secretKeyRef:
+              name: smtp-secret
+              key: smtp-pass       
+        # ── ClamAV (Antivirus) ──
+        - name: CLAMAV_ENABLED
+          value: "true"
+        - name: CLAMAV_HOST
+          value: "skylight-bot-antivirus"
+        - name: CLAMAV_PORT
+          value: "3310"        
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "300m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        
+        volumeMounts:
+        - name: tls
+          mountPath: /tls
+          readOnly: true
+        
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8443
+            scheme: HTTPS
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3        
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8443
+            scheme: HTTPS
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3     
+      volumes:
+      - name: tls
+        secret:
+          secretName: skylight-api-tls
