@@ -1814,15 +1814,17 @@ def get_last_image_generation_prompt(user_id: int, conversation_id: str) -> tupl
         try:
             cur.execute("""
                 SELECT id, user_prompt, generated_prompt
-                FROM image_generations
-                WHERE user_id = %s AND conversation_id = %s
+                FROM generated_images
+                WHERE user_id = %s 
+                  AND conversation_id = %s::uuid
+                  AND is_deleted = FALSE
                 ORDER BY created_at DESC
                 LIMIT 1
             """, (user_id, conversation_id))
             
             row = cur.fetchone()
             if row:
-                return (row[0], row[1], row[2])
+                return (str(row[0]), row[1], row[2])
             return (None, None, None)
             
         finally:
@@ -1981,9 +1983,10 @@ async def chat_endpoint(
                 
                 try:
                     cur.execute("""
-                        SELECT COUNT(*) FROM image_generations
+                        SELECT COUNT(*) FROM generated_images
                         WHERE user_id = %s 
                         AND DATE(created_at) = CURRENT_DATE
+                        AND is_deleted = FALSE
                     """, (user_id,))
                     
                     daily_count = cur.fetchone()[0]
@@ -2146,22 +2149,26 @@ async def chat_endpoint(
                                         generated_prompt_from_service = data.get("generated_prompt", request_body.prompt)
                                         
                                         cur.execute("""
-                                            INSERT INTO image_generations (
+                                            INSERT INTO generated_images (
                                                 user_id, 
                                                 conversation_id,
+                                                prompt_turkish,
+                                                prompt_english,
                                                 user_prompt, 
                                                 generated_prompt,
                                                 modification_of,
                                                 image_b64,
                                                 created_at
                                             )
-                                            VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                                            VALUES (%s, %s::uuid, %s, %s, %s, %s, %s::uuid, %s, NOW())
                                             RETURNING id
                                         """, (
                                             user_id,
                                             conversation_id,
-                                            user_facing_prompt,  # What user typed: "bir manzara resmi yap"
-                                            generated_prompt_from_service,  # Enhanced prompt from service
+                                            user_facing_prompt,  # prompt_turkish: What user typed
+                                            generated_prompt_from_service,  # prompt_english: Enhanced prompt
+                                            user_facing_prompt,  # user_prompt: Original request
+                                            generated_prompt_from_service,  # generated_prompt: Full prompt used
                                             modification_of_id,  # Parent image ID if modification
                                             image_b64[:5000] if image_b64 else None  # Store first 5000 chars as reference
                                         ))
