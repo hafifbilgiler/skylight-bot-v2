@@ -1776,28 +1776,66 @@ def detect_image_modification_request(prompt: str) -> bool:
     Detect if user is requesting modification of previously generated image.
     
     Examples:
-    - "bunu daha yeşil yap"
-    - "ağaçları kaldır"
-    - "make it more colorful"
-    - "remove the trees"
+    - "bunu daha yeşil yap" ✅
+    - "ağaçları kaldır" ✅
+    - "make it more colorful" ✅
     
-    Returns True if modification keywords detected.
+    FALSE POSITIVES to avoid:
+    - "hayır be nsana görsel yükledim ve bunun ne olduğunu sordum" ❌
+    - "bu nedir" ❌
+    - "bunun hakkında bilgi ver" ❌
+    
+    Returns True if modification keywords detected AND context suggests modification.
     """
-    modification_keywords = [
-        # Turkish - modification words
-        'bunu', 'şunu', 'bunun', 'daha', 'az', 'ekle', 'çıkar', 'kaldır',
-        'değiştir', 'güncelle', 'düzenle', 'ayarla',
-        # English - modification words
-        'this', 'it', 'more', 'less', 'add', 'remove', 'delete', 'change',
-        'modify', 'update', 'edit', 'adjust', 'make it'
-    ]
-    
     prompt_lower = prompt.lower()
     
-    # Check if any modification keyword exists
-    has_modification = any(kw in prompt_lower for kw in modification_keywords)
+    # First, exclude clear non-modification contexts
+    exclusion_phrases = [
+        'görsel yükledim', 'resim yükledim', 'dosya yükledim',
+        'uploaded', 'i uploaded', 'sent you',
+        'nedir', 'ne demek', 'what is', 'explain',
+        'bilgi ver', 'anlat', 'tell me about',
+        'sordum', 'soruyu', 'question about'
+    ]
     
-    return has_modification
+    if any(excl in prompt_lower for excl in exclusion_phrases):
+        # This is NOT a modification request
+        return False
+    
+    # Core modification keywords (high confidence)
+    core_modification_keywords = [
+        # Turkish - strong modification indicators
+        'daha yeşil', 'daha mavi', 'daha büyük', 'daha küçük',
+        'ekle', 'çıkar', 'kaldır', 'sil',
+        'değiştir', 'güncelle', 'düzenle',
+        # English - strong modification indicators  
+        'make it more', 'make it less', 'make it bigger', 'make it smaller',
+        'add a', 'remove the', 'delete the', 'change the'
+    ]
+    
+    # Check for strong modification phrases first
+    if any(kw in prompt_lower for kw in core_modification_keywords):
+        return True
+    
+    # Weak modification keywords (need more context)
+    weak_keywords = ['bunu', 'şunu', 'bunun', 'this', 'it']
+    
+    # Only consider weak keywords with modification verbs
+    modification_verbs = [
+        'yap', 'et', 'değiştir', 'ayarla',
+        'make', 'change', 'adjust', 'modify'
+    ]
+    
+    has_weak_keyword = any(kw in prompt_lower for kw in weak_keywords)
+    has_modification_verb = any(verb in prompt_lower for verb in modification_verbs)
+    
+    # Both must be present for weak keywords to trigger
+    if has_weak_keyword and has_modification_verb:
+        # Additional check: prompt should be short (modification requests are usually brief)
+        if len(prompt.split()) <= 10:
+            return True
+    
+    return False
 
 
 def get_last_image_generation_prompt(user_id: int, conversation_id: str) -> tuple:
@@ -1920,6 +1958,7 @@ async def chat_endpoint(
         print(f"[SMART ROUTING] Image uploaded, routing to Image Analysis Service")
         
         # Route to Image Analysis Service
+        image_analysis_success = False
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 # Prepare request for Image Analysis Service
@@ -1927,7 +1966,7 @@ async def chat_endpoint(
                     "image_data": request_body.image_data,
                     "prompt": request_body.prompt or "Bu görseli analiz et",
                     "conversation_id": str(conversation_id) if conversation_id else None,
-                    "user_id": str(user_id) if user_id else None,  # ✅ Convert to string
+                    "user_id": str(user_id) if user_id else None,
                 }
                 
                 print(f"[IMAGE ANALYSIS] Sending request to {IMAGE_ANALYSIS_SERVICE_URL}")
@@ -1935,37 +1974,46 @@ async def chat_endpoint(
                 response = await client.post(
                     f"{IMAGE_ANALYSIS_SERVICE_URL}/analyze",
                     json=analysis_request,
-                    headers={"Authorization": authorization} if authorization else {}
+                    headers={"Authorization": authorization} if authorization else {},
+                    timeout=30.0
                 )
                 
                 if response.status_code == 200:
-                    result = response.json()
-                    analysis_text = result.get("analysis", result.get("response", ""))
-                    
-                    print(f"[IMAGE ANALYSIS] Success: {analysis_text[:100]}...")
-                    
-                    # Stream the analysis result back to user
-                    def analysis_stream():
-                        yield analysis_text
-                    
-                    return StreamingResponse(
-                        analysis_stream(),
-                        media_type="text/plain; charset=utf-8"
-                    )
+                    try:
+                        result = response.json()
+                        analysis_text = result.get("analysis", result.get("response", ""))
+                        
+                        if analysis_text:
+                            print(f"[IMAGE ANALYSIS] Success: {analysis_text[:100]}...")
+                            
+                            # Stream the analysis result back to user
+                            def analysis_stream():
+                                yield analysis_text
+                            
+                            return StreamingResponse(
+                                analysis_stream(),
+                                media_type="text/plain; charset=utf-8"
+                            )
+                        else:
+                            print(f"[IMAGE ANALYSIS ERROR] Empty response from service")
+                    except json.JSONDecodeError as e:
+                        print(f"[IMAGE ANALYSIS ERROR] Invalid JSON response: {e}")
                 else:
                     print(f"[IMAGE ANALYSIS ERROR] Status {response.status_code}: {response.text}")
-                    # Fall through to chat service as fallback
                     
         except httpx.TimeoutException:
-            print(f"[IMAGE ANALYSIS ERROR] Timeout - falling back to chat service")
+            print(f"[IMAGE ANALYSIS ERROR] Timeout (>30s)")
         except httpx.RequestError as e:
             print(f"[IMAGE ANALYSIS ERROR] Request failed: {e}")
         except Exception as e:
             print(f"[IMAGE ANALYSIS ERROR] Unexpected error: {e}")
         
-        # If Image Analysis failed, fall through to chat service with image context
-        print(f"[IMAGE ANALYSIS] Falling back to chat service with image context")
-        # Continue to chat service flow below...
+        # If Image Analysis failed, route to CHAT SERVICE with image
+        print(f"[IMAGE ANALYSIS] Failed - routing to Chat Service with image context")
+        
+        # IMPORTANT: Skip modification/generation checks when image uploaded
+        # Route directly to Chat Service and RETURN
+        # (Chat Service will be called at the end of this function with image_data)
     
     # İKİNCİ: Image modification request mi? (Iterative Generation)
     # IMPORTANT: Image upload varsa modification DEĞİL, analysis'tir!
