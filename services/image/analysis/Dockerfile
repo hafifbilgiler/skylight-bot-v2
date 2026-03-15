@@ -1,9 +1,7 @@
 # ═══════════════════════════════════════════════════════════════
 # SKYLIGHT IMAGE ANALYSIS SERVICE - DOCKERFILE
 # ═══════════════════════════════════════════════════════════════
-
 FROM python:3.11-slim
-
 LABEL maintainer="Skylight Team"
 LABEL description="Image Analysis Service - Qwen3-VL with Context Awareness"
 

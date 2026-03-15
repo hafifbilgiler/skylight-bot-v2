@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: skylight-image-analysis
+  namespace: skylight-bot-v2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: skylight-image-analysis
+  template:
+    metadata:
+      labels:
+        app: skylight-image-analysis
+    spec:
+      containers:
+      - name: image-analysis
+        image: docker.io/hafifbilgiler/skylight-image-analysis:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8002
+        env:
+        # Redis
+        - name: REDIS_URL
+          value: "redis://skylight-redis:6379/0"
+        - name: REDIS_TTL
+          value: "86400"
+        
+        # DeepInfra API
+        - name: DEEPINFRA_API_KEY
+          value: "4hcNLCkZvisyP6wuD2sdY5NPFU2GjBSn"
+        - name: DEEPINFRA_BASE_URL
+          value: "https://api.deepinfra.com/v1/openai"
+        
+        # Vision Model
+        - name: DEEPINFRA_VISION_MODEL
+          value: "Qwen/Qwen3-VL-30B-A3B-Instruct"
+        - name: DEEPINFRA_VISION_MAX_TOKENS
+          value: "4096"
+        - name: DEEPINFRA_VISION_TEMPERATURE
+          value: "0.4"
+        
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: skylight-image-analysis
+  namespace: skylight-bot-v2
+spec:
+  selector:
+    app: skylight-image-analysis
+  ports:
+  - protocol: TCP
+    port: 8002
+    targetPort: 8002
+  type: ClusterIP
