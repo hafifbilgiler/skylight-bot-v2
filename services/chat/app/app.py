@@ -1,6 +1,6 @@
 """
 ═══════════════════════════════════════════════════════════════
-SKYLIGHT CHAT SERVICE - FIXED VERSION WITH ENHANCED CONTEXT
+SKYLIGHT CHAT SERVICE - WITH SMART TOOLS INTEGRATION
 ═══════════════════════════════════════════════════════════════
 Handles all chat modes with mode-specific logic
 - Assistant Mode
@@ -9,10 +9,10 @@ Handles all chat modes with mode-specific logic
 - Student Mode
 - Social Mode
 
-CHANGES:
-- ChatRequest.query → ChatRequest.prompt (compatibility with Gateway)
-- Increased history limit from 10 to 15 message pairs (30 total)
-- Better conversation context like Claude AI / Gemini
+FEATURES:
+- Real-time data detection (weather, time, currency, news)
+- Smart Tools integration for current information
+- Enhanced conversation context (15 message pairs)
 ═══════════════════════════════════════════════════════════════
 """
 
@@ -38,11 +38,14 @@ from prompts_production import (
 # CONFIGURATION
 # ═══════════════════════════════════════════════════════════════
 
-# DeepInfra Configuration (from environment - matching original)
+# DeepInfra Configuration
 DEEPINFRA_API_KEY = os.getenv("DEEPINFRA_API_KEY", "")
 DEEPINFRA_BASE_URL = os.getenv("DEEPINFRA_BASE_URL", "https://api.deepinfra.com/v1/openai")
 
-# Model configurations per mode (using env vars from original deployment)
+# Smart Tools Configuration
+SMART_TOOLS_URL = os.getenv("SMART_TOOLS_URL", "http://skylight-smart-tools:8081")
+
+# Model configurations per mode
 MODE_CONFIGS = {
     "assistant": {
         "model": os.getenv("DEEPINFRA_ASSISTANT_MODEL", "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"),
@@ -81,7 +84,7 @@ MODE_CONFIGS = {
     },
 }
 
-app = FastAPI(title="Skylight Chat Service", version="1.0.0")
+app = FastAPI(title="Skylight Chat Service", version="2.0.0")
 
 # ═══════════════════════════════════════════════════════════════
 # MODELS
@@ -92,7 +95,7 @@ class ChatMessage(BaseModel):
     content: str
 
 class ChatRequest(BaseModel):
-    prompt: str  # ✅ FIXED: Changed from "query" to "prompt"
+    prompt: str
     mode: str
     user_id: int
     conversation_id: Optional[str] = None
@@ -100,6 +103,122 @@ class ChatRequest(BaseModel):
     rag_context: Optional[str] = None
     context: Optional[str] = None
     session_summary: Optional[str] = None
+
+# ═══════════════════════════════════════════════════════════════
+# SMART TOOLS INTEGRATION
+# ═══════════════════════════════════════════════════════════════
+
+REAL_TIME_KEYWORDS = {
+    # Zaman
+    "şuan", "şimdi", "an", "bugün", "güncel", "canlı", "son dakika",
+    "now", "current", "live", "today", "latest", "this moment",
+    
+    # Hava
+    "hava", "havadurumu", "havalar", "weather", "sıcaklık", "sicaklik",
+    "derece", "yağmur", "yagmur", "kar", "rüzgar", "ruzgar",
+    
+    # Finans
+    "dolar", "euro", "kur", "döviz", "doviz", "sterlin", "pound",
+    "bitcoin", "ethereum", "kripto", "crypto", "btc", "eth",
+    
+    # Haberler
+    "haber", "news", "gündem", "gundem", "gelişme", "gelisme",
+    
+    # Saat
+    "saat", "time", "kaç", "kac", "kaçta", "kacta",
+    
+    # Fiyat
+    "fiyat", "price", "ne kadar", "kac lira", "kaç lira",
+}
+
+def needs_real_time_data(query: str) -> bool:
+    """Detect if query needs real-time data from Smart Tools"""
+    query_lower = query.lower()
+    
+    # Check for real-time keywords
+    for keyword in REAL_TIME_KEYWORDS:
+        if keyword in query_lower:
+            return True
+    
+    return False
+
+async def call_smart_tools(query: str) -> Optional[str]:
+    """
+    Call Smart Tools service for real-time data
+    Returns formatted context string or None
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(
+                f"{SMART_TOOLS_URL}/unified",
+                json={"query": query}
+            )
+            
+            if response.status_code != 200:
+                print(f"[SMART TOOLS] Error: {response.status_code}")
+                return None
+            
+            data = response.json()
+            
+            if not data.get("success"):
+                print(f"[SMART TOOLS] Failed: {data.get('error')}")
+                return None
+            
+            # Format the tool response into context
+            tool_used = data.get("tool_used", "unknown")
+            tool_data = data.get("data", {})
+            
+            context_parts = [f"[Real-time Data - {tool_used.upper()}]"]
+            
+            if tool_used == "weather":
+                context_parts.append(
+                    f"Location: {tool_data.get('city')}, {tool_data.get('country')}\n"
+                    f"Temperature: {tool_data.get('temperature')}°C (feels like {tool_data.get('feels_like')}°C)\n"
+                    f"Conditions: {tool_data.get('description')}\n"
+                    f"Humidity: {tool_data.get('humidity')}%\n"
+                    f"Wind: {tool_data.get('wind_speed')} km/h"
+                )
+            
+            elif tool_used == "time":
+                context_parts.append(
+                    f"Current Time: {tool_data.get('short', tool_data.get('formatted_tr'))}"
+                )
+            
+            elif tool_used == "currency":
+                context_parts.append(
+                    f"Exchange Rate: {tool_data.get('formatted')}"
+                )
+            
+            elif tool_used == "crypto":
+                context_parts.append(
+                    f"Cryptocurrency: {tool_data.get('formatted')}\n"
+                    f"24h Change: {tool_data.get('change_24h')}%"
+                )
+            
+            elif tool_used == "news":
+                articles = tool_data.get('articles', [])[:3]
+                if articles:
+                    context_parts.append("Latest News:")
+                    for i, article in enumerate(articles, 1):
+                        context_parts.append(f"{i}. {article.get('title')}")
+            
+            elif tool_used == "web_search":
+                results = tool_data.get('results', [])[:3]
+                if results:
+                    context_parts.append("Search Results:")
+                    for i, result in enumerate(results, 1):
+                        context_parts.append(
+                            f"{i}. {result.get('title')}\n   {result.get('content', '')[:150]}"
+                        )
+            
+            formatted_context = "\n".join(context_parts)
+            print(f"[SMART TOOLS] Success: {tool_used} - {len(formatted_context)} chars")
+            
+            return formatted_context
+            
+    except Exception as e:
+        print(f"[SMART TOOLS ERROR] {e}")
+        return None
 
 # ═══════════════════════════════════════════════════════════════
 # DEEPINFRA CLIENT
@@ -154,9 +273,9 @@ async def stream_deepinfra_completion(
 # MESSAGE BUILDERS
 # ═══════════════════════════════════════════════════════════════
 
-def build_messages(
+async def build_messages(
     mode: str,
-    user_prompt: str,  # Internal parameter name (can be anything)
+    user_prompt: str,
     history: List[Dict],
     rag_context: Optional[str] = None,
     context: Optional[str] = None,
@@ -164,6 +283,7 @@ def build_messages(
 ) -> List[Dict]:
     """
     Build message array for DeepInfra API
+    Now with Smart Tools integration!
     """
     
     config = MODE_CONFIGS[mode]
@@ -172,7 +292,16 @@ def build_messages(
     # System prompt
     system_content = config["system_prompt"]
     
-    # Add context injections to system prompt
+    # ✅ SMART TOOLS: Check if real-time data needed
+    smart_tools_context = None
+    if needs_real_time_data(user_prompt):
+        print(f"[CHAT] Real-time data detected, calling Smart Tools...")
+        smart_tools_context = await call_smart_tools(user_prompt)
+    
+    # Add all contexts to system prompt
+    if smart_tools_context:
+        system_content += f"\n\n[Real-Time Data]\n{smart_tools_context}\n[/Real-Time Data]"
+    
     if rag_context:
         system_content += f"\n\n[Context Data]\n[RAG Context - Documentation]\n{rag_context}\n[/Context Data]"
     
@@ -186,7 +315,7 @@ def build_messages(
     
     # Add history (last 15 message pairs = 30 total messages)
     if history:
-        for msg in history[-15:]:  # ✅ Increased from 10 to 15 for better context
+        for msg in history[-15:]:
             messages.append({
                 "role": msg["role"],
                 "content": msg["content"],
@@ -205,6 +334,7 @@ def build_messages(
 async def chat(request: ChatRequest):
     """
     Main chat endpoint - handles all modes
+    Now with Smart Tools integration for real-time data!
     """
     
     # Validate mode
@@ -214,10 +344,10 @@ async def chat(request: ChatRequest):
     # Get mode configuration
     config = MODE_CONFIGS[request.mode]
     
-    # Build messages
-    messages = build_messages(
+    # Build messages (with Smart Tools integration)
+    messages = await build_messages(
         mode=request.mode,
-        user_prompt=request.prompt,  # ✅ FIXED: Changed from request.query to request.prompt
+        user_prompt=request.prompt,
         history=request.history or [],
         rag_context=request.rag_context,
         context=request.context,
@@ -254,14 +384,23 @@ async def health():
         "status": "healthy",
         "service": "chat",
         "modes": list(MODE_CONFIGS.keys()),
+        "features": {
+            "smart_tools": bool(SMART_TOOLS_URL),
+            "real_time_data": True,
+        }
     }
 
 @app.get("/")
 async def root():
     return {
         "service": "Skylight Chat Service",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "modes": list(MODE_CONFIGS.keys()),
+        "features": {
+            "conversation_context": "15 message pairs (30 total)",
+            "smart_tools_integration": True,
+            "real_time_data": ["weather", "time", "currency", "crypto", "news"],
+        }
     }
 
 if __name__ == "__main__":
