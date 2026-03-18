@@ -1737,38 +1737,65 @@ def detect_image_generation_request(prompt: str) -> bool:
     Detect if user prompt is requesting image generation.
     
     Returns True if prompt contains image generation keywords and creation indicators.
+    
+    FIXED: Use word boundaries to avoid false positives
+    - "yapılır" ≠ "yap" ✅
+    - "neler yapılır" → NOT image generation ✅
     """
-    keywords = [
-        # Turkish - image/visual words
-        'görsel', 'resim', 'foto', 'fotoğraf', 'çiz', 'çizim', 
-        'manzara', 'portre', 'illüstrasyon', 'grafik',
-        # Turkish - creation words
-        'yap', 'oluştur', 'üret', 'tasarla', 'dizayn', 'çek',
-        # English - image/visual words
-        'image', 'picture', 'photo', 'drawing', 'illustration', 
-        'graphic', 'artwork', 'render',
-        # English - creation words
-        'create', 'generate', 'make', 'design', 'draw', 'sketch', 'produce'
-    ]
+    import re
     
     prompt_lower = prompt.lower()
     
-    # Check if any keyword exists
-    has_keyword = any(kw in prompt_lower for kw in keywords)
-    
-    if not has_keyword:
-        return False
-    
-    # Make sure it's requesting creation, not just mentioning
-    creation_indicators = [
-        'yap', 'oluştur', 'üret', 'çiz', 'tasarla', 'dizayn', 'çek',
-        'create', 'generate', 'make', 'draw', 'design', 'sketch', 'produce',
-        'ver', 'give', 'show', 'göster'
+    # 🔴 KRİTİK: Exclude question patterns first
+    question_patterns = [
+        'neler yapılır', 'ne yapılır', 'nasıl yapılır', 'ne yapabilirim',
+        'nerede yapılır', 'kim yapar', 'ne zaman yapılır',
+        'what to do', 'how to', 'where to', 'when to', 'who does'
     ]
     
-    has_creation = any(ind in prompt_lower for ind in creation_indicators)
+    if any(q in prompt_lower for q in question_patterns):
+        # This is a QUESTION, not an image generation request
+        return False
     
-    return has_creation
+    # Image-related keywords (nouns)
+    image_keywords = [
+        # Turkish - image/visual words
+        'görsel', 'resim', 'foto', 'fotoğraf', 'çizim', 
+        'portre', 'illüstrasyon', 'grafik', 'fotoğrafı',
+        # English - image/visual words
+        'image', 'picture', 'photo', 'drawing', 'illustration', 
+        'graphic', 'artwork', 'render'
+    ]
+    
+    # Creation verbs - USE WORD BOUNDARIES
+    creation_verbs = [
+        r'\byap\b', r'\boluştur\b', r'\büret\b', r'\bçiz\b', 
+        r'\btasarla\b', r'\bdizayn\b', r'\bçek\b',
+        r'\bcreate\b', r'\bgenerate\b', r'\bmake\b', r'\bdraw\b', 
+        r'\bdesign\b', r'\bsketch\b', r'\bproduce\b',
+        r'\bver\b', r'\bgive\b', r'\bshow\b', r'\bgöster\b'
+    ]
+    
+    # Check if any image keyword exists (simple substring match for nouns is OK)
+    has_keyword = any(kw in prompt_lower for kw in image_keywords)
+    
+    # Check if creation verb exists with WORD BOUNDARIES
+    has_creation = any(re.search(verb, prompt_lower) for verb in creation_verbs)
+    
+    # BOTH must be present
+    if has_keyword and has_creation:
+        return True
+    
+    # Special case: Direct generation phrases (no noun needed)
+    direct_phrases = [
+        'bir .* yap', 'bir .* oluştur', 'bir .* çiz',
+        'create a', 'generate a', 'make a', 'draw a'
+    ]
+    
+    if any(re.search(phrase, prompt_lower) for phrase in direct_phrases):
+        return True
+    
+    return False
 
 
 def detect_image_modification_request(prompt: str) -> bool:
