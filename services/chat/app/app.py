@@ -1043,10 +1043,12 @@ async def chat(request: ChatRequest):
     """
     Main chat endpoint - FULL VERSION
     ✅ Memory Loading
-    ✅ Thinking Display
+    ✅ Thinking Display (optional)
     ✅ Web Search Synthesis
     ✅ Auto Summaries
     ✅ Context Management
+    
+    STREAMING: Plain text (no JSON wrapper)
     """
     
     # Validate mode
@@ -1072,22 +1074,21 @@ async def chat(request: ChatRequest):
         config=config,
     )
     
-    # Stream response with thinking display
+    # Stream response (BUFFERED - kelime bazlı)
     async def response_generator():
         try:
-            # ✅ THINKING DISPLAY (if complex task)
+            buffer = ""
+            
+            # ✅ THINKING DISPLAY (if complex task) - OPTIONAL
             if show_thinking:
                 thinking_steps = await generate_thinking_steps(request.prompt, request.mode)
                 
                 for step in thinking_steps:
-                    # Send thinking step as JSON
-                    yield f"data: {json.dumps(step.dict())}\n\n"
-                    await asyncio.sleep(0.3)  # Small delay for visual effect
+                    yield f"{step.emoji} {step.message}\n"
                 
-                # Send completion marker for thinking
-                yield f"data: {json.dumps({'type': 'thinking_done'})}\n\n"
+                yield "\n"  # Separator
             
-            # ✅ STREAM ACTUAL RESPONSE
+            # ✅ STREAM ACTUAL RESPONSE (Buffered chunks)
             async for chunk in stream_deepinfra_completion(
                 messages=messages,
                 model=config["model"],
@@ -1095,8 +1096,16 @@ async def chat(request: ChatRequest):
                 temperature=config["temperature"],
                 top_p=config["top_p"],
             ):
-                # Send content as SSE
-                yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
+                buffer += chunk
+                
+                # Yield when we have meaningful content (space, punctuation, or buffer is large)
+                if any(char in buffer for char in [' ', '.', '!', '?', '\n', ',']) or len(buffer) > 10:
+                    yield buffer
+                    buffer = ""
+            
+            # Yield remaining buffer
+            if buffer:
+                yield buffer
             
             # ✅ PERIODIC SUMMARY CHECK (after response)
             if request.conversation_id:
@@ -1107,16 +1116,12 @@ async def chat(request: ChatRequest):
                 ))
             
         except Exception as e:
-            error_msg = f"⚠️ Bir hata oluştu: {str(e)}"
-            yield f"data: {json.dumps({'type': 'error', 'content': error_msg})}\n\n"
+            error_msg = f"\n\n⚠️ Bir hata oluştu: {str(e)}"
+            yield error_msg
     
     return StreamingResponse(
         response_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-        }
+        media_type="text/plain; charset=utf-8",  # Plain text, NOT SSE
     )
 
 async def check_and_create_summary_async(
