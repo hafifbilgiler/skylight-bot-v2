@@ -624,6 +624,21 @@ async def build_code_messages(
         context_parts.append("[/CODE CONTEXT]")
         system_content += "\n\n" + "\n".join(context_parts)
     
+    # ✅ 4. SMART TOOLS (if needed even in code mode)
+    if needs_real_time_data(user_prompt):
+        location = extract_location_from_query(user_prompt)
+        smart_tools_context = await call_smart_tools(user_prompt, force_location=location)
+        if smart_tools_context:
+            system_content += f"\n\n[Real-Time Data]\n{smart_tools_context}\n[/Real-Time Data]"
+    
+    # ✅ 5. RAG CONTEXT
+    if kwargs.get('rag_context'):
+        system_content += f"\n\n[RAG Context]\n{kwargs['rag_context']}\n[/RAG Context]"
+    
+    # ✅ 6. WEB SEARCH (if provided)
+    if kwargs.get('context'):
+        system_content += f"\n\n[Web Search]\n{kwargs['context']}\n[/Web Search]"
+    
     messages.append({"role": "system", "content": system_content})
     
     # ✅ 4. CHECK COMPRESSION NEEDED
@@ -777,7 +792,7 @@ Be concise but comprehensive. Use markdown formatting sparingly."""
         return raw_results  # Fallback to raw results
 
 # ═══════════════════════════════════════════════════════════════
-# SMART TOOLS INTEGRATION
+# SMART TOOLS INTEGRATION - ENHANCED DETECTION
 # ═══════════════════════════════════════════════════════════════
 
 REAL_TIME_KEYWORDS = {
@@ -785,9 +800,11 @@ REAL_TIME_KEYWORDS = {
     "şuan", "şimdi", "an", "bugün", "güncel", "canlı", "son dakika",
     "now", "current", "live", "today", "latest", "this moment",
     
-    # Hava
-    "hava", "havadurumu", "havalar", "weather", "sıcaklık", "sicaklik",
-    "derece", "yağmur", "yagmur", "kar", "rüzgar", "ruzgar",
+    # Hava durumu (ENHANCED)
+    "hava", "havalar", "havadurumu", "hava durumu", "weather", 
+    "sıcaklık", "sicaklik", "derece", "yağmur", "yagmur", "kar", 
+    "rüzgar", "ruzgar", "güneş", "gunes", "bulut", "yağış", "yagis",
+    "nasıl", "bakarmısın", "bakar mısın", "kontrol", "check",
     
     # Finans
     "dolar", "euro", "kur", "döviz", "doviz", "sterlin", "pound",
@@ -803,27 +820,83 @@ REAL_TIME_KEYWORDS = {
     "fiyat", "price", "ne kadar", "kac lira", "kaç lira",
 }
 
+# Location keywords for weather
+LOCATION_KEYWORDS = {
+    "ankara", "istanbul", "izmir", "antalya", "bursa", "adana", 
+    "konya", "gaziantep", "şanlıurfa", "kayseri", "diyarbakır",
+    "mersin", "eskişehir", "denizli", "samsun", "trabzon",
+    "new york", "london", "paris", "berlin", "tokyo", "dubai",
+}
+
 def needs_real_time_data(query: str) -> bool:
-    """Detect if query needs real-time data from Smart Tools"""
+    """
+    Detect if query needs real-time data from Smart Tools
+    ENHANCED: More aggressive detection
+    """
     query_lower = query.lower()
     
     # Check for real-time keywords
     for keyword in REAL_TIME_KEYWORDS:
         if keyword in query_lower:
+            print(f"[REAL-TIME] Keyword detected: '{keyword}'")
+            return True
+    
+    # Check for location + weather pattern
+    for location in LOCATION_KEYWORDS:
+        if location in query_lower:
+            # If location mentioned + any weather-related word
+            weather_words = ["hava", "weather", "sıcak", "soğuk", "yağmur", "kar"]
+            if any(w in query_lower for w in weather_words):
+                print(f"[REAL-TIME] Location+Weather: '{location}'")
+                return True
+    
+    # Aggressive weather detection
+    weather_patterns = [
+        "hava nasıl", "havalar nasıl", "hava durumu",
+        "bakar mısın", "bakarmısın", "kontrol et",
+        "weather", "temperature", "forecast"
+    ]
+    
+    for pattern in weather_patterns:
+        if pattern in query_lower:
+            print(f"[REAL-TIME] Weather pattern: '{pattern}'")
             return True
     
     return False
 
-async def call_smart_tools(query: str) -> Optional[str]:
+def extract_location_from_query(query: str) -> Optional[str]:
+    """Extract location from query if present"""
+    query_lower = query.lower()
+    
+    # Check known locations
+    for location in LOCATION_KEYWORDS:
+        if location in query_lower:
+            return location.title()
+    
+    # Default to None if no location found
+    return None
+
+async def call_smart_tools(query: str, force_location: Optional[str] = None) -> Optional[str]:
     """
     Call Smart Tools service for real-time data
-    Returns formatted context string or None
+    ENHANCED: Better location handling
     """
     try:
+        # Extract location from query if not forced
+        location = force_location or extract_location_from_query(query)
+        
+        # Build query with location if available
+        if location and "hava" in query.lower() or "weather" in query.lower():
+            enhanced_query = f"{location} hava durumu"
+        else:
+            enhanced_query = query
+        
+        print(f"[SMART TOOLS] Calling with query: '{enhanced_query}'")
+        
         async with httpx.AsyncClient(timeout=10) as client:
             response = await client.post(
                 f"{SMART_TOOLS_URL}/unified",
-                json={"query": query}
+                json={"query": enhanced_query}
             )
             
             if response.status_code != 200:
@@ -845,39 +918,39 @@ async def call_smart_tools(query: str) -> Optional[str]:
             if tool_used == "weather":
                 context_parts.append(
                     f"Location: {tool_data.get('city')}, {tool_data.get('country')}\n"
-                    f"Temperature: {tool_data.get('temperature')}°C (feels like {tool_data.get('feels_like')}°C)\n"
-                    f"Conditions: {tool_data.get('description')}\n"
-                    f"Humidity: {tool_data.get('humidity')}%\n"
-                    f"Wind: {tool_data.get('wind_speed')} km/h"
+                    f"Temperature: {tool_data.get('temperature')}°C (hissedilen: {tool_data.get('feels_like')}°C)\n"
+                    f"Durum: {tool_data.get('description')}\n"
+                    f"Nem: {tool_data.get('humidity')}%\n"
+                    f"Rüzgar: {tool_data.get('wind_speed')} km/h"
                 )
             
             elif tool_used == "time":
                 context_parts.append(
-                    f"Current Time: {tool_data.get('short', tool_data.get('formatted_tr'))}"
+                    f"Güncel Saat: {tool_data.get('short', tool_data.get('formatted_tr'))}"
                 )
             
             elif tool_used == "currency":
                 context_parts.append(
-                    f"Exchange Rate: {tool_data.get('formatted')}"
+                    f"Döviz Kuru: {tool_data.get('formatted')}"
                 )
             
             elif tool_used == "crypto":
                 context_parts.append(
-                    f"Cryptocurrency: {tool_data.get('formatted')}\n"
-                    f"24h Change: {tool_data.get('change_24h')}%"
+                    f"Kripto: {tool_data.get('formatted')}\n"
+                    f"24 Saat Değişim: {tool_data.get('change_24h')}%"
                 )
             
             elif tool_used == "news":
                 articles = tool_data.get('articles', [])[:3]
                 if articles:
-                    context_parts.append("Latest News:")
+                    context_parts.append("Son Haberler:")
                     for i, article in enumerate(articles, 1):
                         context_parts.append(f"{i}. {article.get('title')}")
             
             elif tool_used == "web_search":
                 results = tool_data.get('results', [])[:3]
                 if results:
-                    context_parts.append("Search Results:")
+                    context_parts.append("Arama Sonuçları:")
                     for i, result in enumerate(results, 1):
                         context_parts.append(
                             f"{i}. {result.get('title')}\n   {result.get('content', '')[:150]}"
@@ -999,7 +1072,11 @@ async def build_messages(
     smart_tools_context = None
     if needs_real_time_data(user_prompt):
         print(f"[CHAT] Real-time data detected, calling Smart Tools...")
-        smart_tools_context = await call_smart_tools(user_prompt)
+        
+        # Extract location if available
+        location = extract_location_from_query(user_prompt)
+        
+        smart_tools_context = await call_smart_tools(user_prompt, force_location=location)
     
     if smart_tools_context:
         system_content += f"\n\n[Real-Time Data]\n{smart_tools_context}\n[/Real-Time Data]"
