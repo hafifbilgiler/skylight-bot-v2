@@ -1,19 +1,22 @@
-# SKYLIGHT CHAT SERVICE - REQUIREMENTS
-# Python 3.11+
+# ═══════════════════════════════════════════════════════════════
+# CHAT SERVICE REQUIREMENTS - FULL VERSION
+# ═══════════════════════════════════════════════════════════════
 
-# FastAPI framework
-fastapi==0.109.0
-uvicorn[standard]==0.27.0
-pydantic==2.5.3
+# FastAPI & Server
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
 
-# Database
-psycopg2-binary==2.9.9
+# HTTP Client
+httpx==0.25.1
 
-# HTTP client (for DeepInfra)
-httpx==0.26.0
-
-# Utilities
-python-dotenv==1.0.0
 # Database (NEW - for memory system)
 asyncpg==0.29.0
 psycopg2-binary==2.9.9
+
+# Utilities
+python-multipart==0.0.6
+python-dotenv==1.0.0
+
+# Optional (if using)
+aiofiles==23.2.1
