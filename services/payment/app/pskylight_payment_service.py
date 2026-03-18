@@ -60,8 +60,8 @@ DB_USER = os.getenv("DB_USER", "skylight_user")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "")
 
 # Pricing
-PREMIUM_MONTHLY_PRICE = "199.00"
-PREMIUM_YEARLY_PRICE = "1990.00"
+PREMIUM_MONTHLY_PRICE = "64.00"  # TRY
+PREMIUM_YEARLY_PRICE = "640.00"  # TRY (10 aylık fiyat - 2 ay bedava)
 
 # Database pool
 db_pool = None
