@@ -41,11 +41,6 @@ spec:
                 secretKeyRef:
                   name: iyzico-secret
                   key: monthly-plan-code
-            - name: IYZICO_YEARLY_PLAN_CODE
-              valueFrom:
-                secretKeyRef:
-                  name: iyzico-secret
-                  key: yearly-plan-code
             - name: PAYMENT_HTTP_TIMEOUT
               value: "45"
           readinessProbe:
