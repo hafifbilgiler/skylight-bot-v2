@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
       - name: payment-service
-        image: your-registry/skylight-payment:v1.0.0
+        image: docker.io/hafifbilgiler/skylight-payment:1.0
         ports:
         - containerPort: 8083
         
