@@ -1,102 +1,75 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: skylight-payment
-  namespace: skylight-bot-v2
+  name: payment-service
+  namespace: skylight-bot
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
-      app: payment
+      app: payment-service
   template:
     metadata:
       labels:
-        app: payment
+        app: payment-service
     spec:
       containers:
-      - name: payment-service
-        image: docker.io/hafifbilgiler/skylight-payment:1.0
-        ports:
-        - containerPort: 8083
-        
-        env:
-          # iyzico
-          - name: IYZICO_API_KEY
-            valueFrom:
-              secretKeyRef:
-                name: iyzico-secret
-                key: api-key
-          
-          - name: IYZICO_SECRET_KEY
-            valueFrom:
-              secretKeyRef:
-                name: iyzico-secret
-                key: secret-key
-          
-          - name: IYZICO_BASE_URL
-            value: "https://sandbox-api.iyzipay.com"
-          
-          - name: IYZICO_CALLBACK_URL
-            value: "https://skylight.ai/api/payment/callback"
-          
-          # Database (using existing pg-secret)
-          - name: DB_HOST
-            value: "postgres"
-          
-          - name: DB_PORT
-            value: "5432"
-          
-          - name: DB_NAME
-            valueFrom:
-              secretKeyRef:
-                name: pg-secret
-                key: dbname
-          
-          - name: DB_USER
-            valueFrom:
-              secretKeyRef:
-                name: pg-secret
-                key: username
-          
-          - name: DB_PASSWORD
-            valueFrom:
-              secretKeyRef:
-                name: pg-secret
-                key: password
-        
-        resources:
-          requests:
-            memory: "256Mi"
-            cpu: "250m"
-          limits:
-            memory: "512Mi"
-            cpu: "500m"
-        
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 8083
-          initialDelaySeconds: 10
-          periodSeconds: 30
-        
-        readinessProbe:
-          httpGet:
-            path: /health
-            port: 8083
-          initialDelaySeconds: 5
-          periodSeconds: 10
- 
+        - name: payment-service
+          image: docker.io/hafifbilgiler/skylight-payment:1.0
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8001
+          env:
+            - name: IYZICO_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: iyzico-secret
+                  key: api-key
+            - name: IYZICO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: iyzico-secret
+                  key: secret-key
+            - name: IYZICO_BASE_URL
+              value: "https://sandbox-api.iyzipay.com"
+            - name: PAYMENT_CALLBACK_URL
+              value: "https://one-bune.com/payment/iyzico-callback.php"
+            - name: APP_PUBLIC_URL
+              value: "https://one-bune.com"
+            - name: IYZICO_MONTHLY_PLAN_CODE
+              valueFrom:
+                secretKeyRef:
+                  name: iyzico-secret
+                  key: monthly-plan-code
+            - name: IYZICO_YEARLY_PLAN_CODE
+              valueFrom:
+                secretKeyRef:
+                  name: iyzico-secret
+                  key: yearly-plan-code
+            - name: PAYMENT_HTTP_TIMEOUT
+              value: "45"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 15
+            periodSeconds: 20
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: skylight-payment
-  namespace: skylight-bot-v2
+  name: payment-service
+  namespace: skylight-bot
 spec:
   selector:
-    app: payment
+    app: payment-service
   ports:
-  - protocol: TCP
-    port: 8083
-    targetPort: 8083
-  type: ClusterIP
+    - protocol: TCP
+      port: 8001
+      targetPort: 8001
