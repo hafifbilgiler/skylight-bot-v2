@@ -14,3 +14,6 @@ httpx==0.26.0
 
 # Utilities
 python-dotenv==1.0.0
+# Database (NEW - for memory system)
+asyncpg==0.29.0
+psycopg2-binary==2.9.9
