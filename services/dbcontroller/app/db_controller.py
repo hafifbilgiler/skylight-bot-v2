@@ -1,12 +1,12 @@
-# db_controller.py - COMPLETE VERSION WITH ITERATIVE IMAGE GENERATION
+# db_controller.py - COMPLETE VERSION WITH MEMORY SYSTEM
 """
 ═══════════════════════════════════════════════════════════════
 ONE-BUNE AI Platform - Database Controller Service
 ═══════════════════════════════════════════════════════════════
-COMPLETE VERSION - All Tables + Iterative Image Generation
+COMPLETE VERSION - All Tables + Iterative Image Generation + MEMORY SYSTEM
 
-Version: 2.1.0
-New: Iterative image generation support (modification tracking)
+Version: 2.2.0
+New: Memory System, Context Management, Periodic Summaries
 Purpose: Manage PostgreSQL schema only (no data seeding)
 ═══════════════════════════════════════════════════════════════
 """
@@ -140,7 +140,7 @@ def ensure_constraint(cur, table_name: str, constraint_name: str, constraint_sql
 def init_database_schema() -> bool:
     log_info("=" * 70)
     log_info("DATABASE SCHEMA INITIALIZATION STARTED")
-    log_info("Version: 2.1.0 - With Iterative Image Generation")
+    log_info("Version: 2.2.0 - With Memory System & Context Management")
     log_info("=" * 70)
 
     try:
@@ -282,28 +282,140 @@ def init_database_schema() -> bool:
         log_success("MESSAGES table OK")
 
         # =================================================
-        # 5. CONVERSATION_SUMMARIES
+        # 5. CONVERSATION_SUMMARIES (EXTENDED FOR MEMORY SYSTEM)
         # =================================================
-        log_info("Creating/checking CONVERSATION_SUMMARIES table...")
+        log_info("Creating/checking CONVERSATION_SUMMARIES table (extended)...")
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS conversation_summaries (
                 id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id                 INTEGER REFERENCES users(id) ON DELETE CASCADE,
                 conversation_id         UUID REFERENCES conversations(id) ON DELETE CASCADE,
-                summary_text            TEXT NOT NULL,
-                messages_summarized     INTEGER NOT NULL,
+                
+                -- Message range
+                messages_start          INTEGER NOT NULL DEFAULT 0,
+                messages_end            INTEGER NOT NULL DEFAULT 0,
+                messages_summarized     INTEGER NOT NULL DEFAULT 0,
                 start_message_id        UUID,
                 end_message_id          UUID,
-                created_at              TIMESTAMPTZ DEFAULT NOW(),
+                
+                -- Summary content
+                topic                   VARCHAR(200),
+                subtopics               TEXT[] DEFAULT '{}',
+                summary_text            TEXT NOT NULL,
+                progress                TEXT,
+                decisions_made          TEXT[] DEFAULT '{}',
+                unresolved_issues       TEXT[] DEFAULT '{}',
+                next_steps              TEXT[] DEFAULT '{}',
+                
+                -- Artifacts
+                code_artifacts          TEXT[] DEFAULT '{}',
+                
+                -- Learned facts (for user memory updates)
+                learned_facts           JSONB DEFAULT '{}',
+                
+                -- Metadata
                 token_count             INTEGER,
-                model_used              VARCHAR(100)
+                model_used              VARCHAR(100),
+                created_at              TIMESTAMPTZ DEFAULT NOW()
             );
             """
         )
-        log_success("CONVERSATION_SUMMARIES table OK")
+        
+        # Ensure new columns for memory system
+        ensure_column(cur, "conversation_summaries", "user_id", "INTEGER REFERENCES users(id) ON DELETE CASCADE")
+        ensure_column(cur, "conversation_summaries", "messages_start", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column(cur, "conversation_summaries", "messages_end", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column(cur, "conversation_summaries", "topic", "VARCHAR(200)")
+        ensure_column(cur, "conversation_summaries", "subtopics", "TEXT[] DEFAULT '{}'")
+        ensure_column(cur, "conversation_summaries", "progress", "TEXT")
+        ensure_column(cur, "conversation_summaries", "decisions_made", "TEXT[] DEFAULT '{}'")
+        ensure_column(cur, "conversation_summaries", "unresolved_issues", "TEXT[] DEFAULT '{}'")
+        ensure_column(cur, "conversation_summaries", "next_steps", "TEXT[] DEFAULT '{}'")
+        ensure_column(cur, "conversation_summaries", "code_artifacts", "TEXT[] DEFAULT '{}'")
+        ensure_column(cur, "conversation_summaries", "learned_facts", "JSONB DEFAULT '{}'")
+        
+        log_success("CONVERSATION_SUMMARIES table OK (extended for memory)")
 
         # =================================================
-        # 6. USER_INTENTS
+        # 6. USER_MEMORY (NEW - MEMORY SYSTEM)
+        # =================================================
+        log_info("Creating/checking USER_MEMORY table (NEW)...")
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_memory (
+                id                          SERIAL PRIMARY KEY,
+                user_id                     INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+                created_at                  TIMESTAMPTZ DEFAULT NOW(),
+                updated_at                  TIMESTAMPTZ DEFAULT NOW(),
+                
+                -- Personal Context
+                user_name                   VARCHAR(100),
+                location                    VARCHAR(100),
+                role                        VARCHAR(100),
+                experience_level            VARCHAR(50),
+                
+                -- Preferences (JSONB for flexibility)
+                technical_preferences       JSONB DEFAULT '{}',
+                communication_style         JSONB DEFAULT '{}',
+                project_context             JSONB DEFAULT '{}',
+                likes_dislikes              JSONB DEFAULT '{}',
+                
+                -- Relationship Level
+                message_count               INTEGER DEFAULT 0,
+                familiarity_level           VARCHAR(20) DEFAULT 'new',
+                tone_preference             VARCHAR(20) DEFAULT 'professional'
+            );
+            """
+        )
+        
+        # Ensure all columns
+        ensure_column(cur, "user_memory", "user_name", "VARCHAR(100)")
+        ensure_column(cur, "user_memory", "location", "VARCHAR(100)")
+        ensure_column(cur, "user_memory", "role", "VARCHAR(100)")
+        ensure_column(cur, "user_memory", "experience_level", "VARCHAR(50)")
+        ensure_column(cur, "user_memory", "technical_preferences", "JSONB DEFAULT '{}'")
+        ensure_column(cur, "user_memory", "communication_style", "JSONB DEFAULT '{}'")
+        ensure_column(cur, "user_memory", "project_context", "JSONB DEFAULT '{}'")
+        ensure_column(cur, "user_memory", "likes_dislikes", "JSONB DEFAULT '{}'")
+        ensure_column(cur, "user_memory", "message_count", "INTEGER DEFAULT 0")
+        ensure_column(cur, "user_memory", "familiarity_level", "VARCHAR(20) DEFAULT 'new'")
+        ensure_column(cur, "user_memory", "tone_preference", "VARCHAR(20) DEFAULT 'professional'")
+        
+        log_success("USER_MEMORY table OK (NEW)")
+
+        # =================================================
+        # 7. CONTEXT_SNAPSHOTS (NEW - CONTEXT MANAGEMENT)
+        # =================================================
+        log_info("Creating/checking CONTEXT_SNAPSHOTS table (NEW)...")
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS context_snapshots (
+                id                      SERIAL PRIMARY KEY,
+                conversation_id         UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+                created_at              TIMESTAMPTZ DEFAULT NOW(),
+                
+                -- Snapshot Metadata
+                message_count           INTEGER NOT NULL,
+                context_window_size     INTEGER,
+                
+                -- Compressed Context
+                full_summary            TEXT,
+                key_decisions           JSONB DEFAULT '{}',
+                active_topics           TEXT[] DEFAULT '{}',
+                pending_tasks           TEXT[] DEFAULT '{}',
+                
+                -- File Context
+                uploaded_files          JSONB DEFAULT '[]',
+                code_artifacts          JSONB DEFAULT '[]'
+            );
+            """
+        )
+        
+        log_success("CONTEXT_SNAPSHOTS table OK (NEW)")
+
+        # =================================================
+        # 8. USER_INTENTS
         # =================================================
         log_info("Creating/checking USER_INTENTS table...")
         cur.execute(
@@ -324,7 +436,7 @@ def init_database_schema() -> bool:
         log_success("USER_INTENTS table OK")
 
         # =================================================
-        # 7. USER_PREFERENCES
+        # 9. USER_PREFERENCES
         # =================================================
         log_info("Creating/checking USER_PREFERENCES table...")
         cur.execute(
@@ -345,7 +457,7 @@ def init_database_schema() -> bool:
         log_success("USER_PREFERENCES table OK")
 
         # =================================================
-        # 8. USER_PROFILES
+        # 10. USER_PROFILES
         # =================================================
         log_info("Creating/checking USER_PROFILES table...")
         cur.execute(
@@ -402,7 +514,7 @@ def init_database_schema() -> bool:
         log_success("USER_PROFILES table OK")
 
         # =================================================
-        # 9. FEEDBACK
+        # 11. FEEDBACK
         # =================================================
         log_info("Creating/checking FEEDBACK table...")
         cur.execute(
@@ -424,7 +536,7 @@ def init_database_schema() -> bool:
         log_success("FEEDBACK table OK")
 
         # =================================================
-        # 10. USER_LEARNING
+        # 12. USER_LEARNING
         # =================================================
         log_info("Creating/checking USER_LEARNING table...")
         cur.execute(
@@ -444,7 +556,7 @@ def init_database_schema() -> bool:
         log_success("USER_LEARNING table OK")
 
         # =================================================
-        # 11. QUERY_LOGS
+        # 13. QUERY_LOGS
         # =================================================
         log_info("Creating/checking QUERY_LOGS table...")
         cur.execute(
@@ -473,7 +585,7 @@ def init_database_schema() -> bool:
         log_success("QUERY_LOGS table OK")
 
         # =================================================
-        # 12. SUBSCRIPTION_PLANS
+        # 14. SUBSCRIPTION_PLANS
         # =================================================
         log_info("Creating/checking SUBSCRIPTION_PLANS table...")
         cur.execute(
@@ -497,7 +609,7 @@ def init_database_schema() -> bool:
         log_success("SUBSCRIPTION_PLANS table OK")
 
         # =================================================
-        # 13. USER_SUBSCRIPTIONS
+        # 15. USER_SUBSCRIPTIONS
         # =================================================
         log_info("Creating/checking USER_SUBSCRIPTIONS table...")
         cur.execute(
@@ -536,7 +648,7 @@ def init_database_schema() -> bool:
         log_success("USER_SUBSCRIPTIONS table OK")
 
         # =================================================
-        # 14. PAYMENT_HISTORY
+        # 16. PAYMENT_HISTORY
         # =================================================
         log_info("Creating/checking PAYMENT_HISTORY table...")
         cur.execute(
@@ -570,7 +682,7 @@ def init_database_schema() -> bool:
         log_success("PAYMENT_HISTORY table OK")
 
         # =================================================
-        # 15. USAGE_TRACKING
+        # 17. USAGE_TRACKING
         # =================================================
         log_info("Creating/checking USAGE_TRACKING table...")
         cur.execute(
@@ -601,7 +713,7 @@ def init_database_schema() -> bool:
         log_success("USAGE_TRACKING table OK")
 
         # =================================================
-        # 16. GENERATED_IMAGES (WITH ITERATIVE GENERATION SUPPORT)
+        # 18. GENERATED_IMAGES (WITH ITERATIVE GENERATION SUPPORT)
         # =================================================
         log_info("Creating/checking GENERATED_IMAGES table...")
         cur.execute(
@@ -696,7 +808,7 @@ def init_database_schema() -> bool:
         log_success("GENERATED_IMAGES table OK (with iterative generation support)")
 
         # =================================================
-        # 17. CHAT_LOGS (LEGACY)
+        # 19. CHAT_LOGS (LEGACY)
         # =================================================
         log_info("Creating/checking CHAT_LOGS table (legacy)...")
         cur.execute(
@@ -718,51 +830,72 @@ def init_database_schema() -> bool:
         log_info("Creating indexes...")
 
         index_statements = [
+            # Users
             "CREATE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id);",
             "CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);",
 
+            # OTP
             "CREATE INDEX IF NOT EXISTS idx_otp_email ON otp_codes(email);",
 
+            # Conversations
             "CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations(user_id);",
             "CREATE INDEX IF NOT EXISTS idx_conversations_updated_at ON conversations(updated_at DESC);",
             "CREATE INDEX IF NOT EXISTS idx_conversations_pinned ON conversations(is_pinned) WHERE is_pinned = TRUE;",
             "CREATE INDEX IF NOT EXISTS idx_conversations_compaction ON conversations(compaction_count, last_compaction_at);",
 
+            # Messages
             "CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);",
             "CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);",
             "CREATE INDEX IF NOT EXISTS idx_messages_role ON messages(role);",
             "CREATE INDEX IF NOT EXISTS idx_messages_mode ON messages(mode);",
 
+            # Conversation Summaries
             "CREATE INDEX IF NOT EXISTS idx_conv_summaries_conv_id ON conversation_summaries(conversation_id);",
             "CREATE INDEX IF NOT EXISTS idx_conv_summaries_created ON conversation_summaries(created_at DESC);",
+            "CREATE INDEX IF NOT EXISTS idx_conv_summaries_user_id ON conversation_summaries(user_id);",
 
+            # User Memory (NEW)
+            "CREATE INDEX IF NOT EXISTS idx_user_memory_user_id ON user_memory(user_id);",
+            "CREATE INDEX IF NOT EXISTS idx_user_memory_updated ON user_memory(updated_at DESC);",
+
+            # Context Snapshots (NEW)
+            "CREATE INDEX IF NOT EXISTS idx_context_snapshots_conv ON context_snapshots(conversation_id);",
+
+            # User Intents
             "CREATE INDEX IF NOT EXISTS idx_user_intents_conv_id ON user_intents(conversation_id);",
             "CREATE INDEX IF NOT EXISTS idx_user_intents_user_id ON user_intents(user_id);",
             "CREATE INDEX IF NOT EXISTS idx_user_intents_intent ON user_intents(detected_intent);",
 
+            # User Profiles
             "CREATE INDEX IF NOT EXISTS idx_user_profiles_updated ON user_profiles(updated_at DESC);",
 
+            # Feedback
             "CREATE INDEX IF NOT EXISTS idx_feedback_user_id ON feedback(user_id);",
             "CREATE INDEX IF NOT EXISTS idx_feedback_rating ON feedback(rating);",
             "CREATE INDEX IF NOT EXISTS idx_feedback_created ON feedback(created_at DESC);",
 
+            # User Learning
             "CREATE INDEX IF NOT EXISTS idx_user_learning_user_id ON user_learning(user_id);",
             "CREATE INDEX IF NOT EXISTS idx_user_learning_topic ON user_learning(topic);",
 
+            # Query Logs
             "CREATE INDEX IF NOT EXISTS idx_query_logs_user_id ON query_logs(user_id);",
             "CREATE INDEX IF NOT EXISTS idx_query_logs_created_at ON query_logs(created_at DESC);",
             "CREATE INDEX IF NOT EXISTS idx_query_logs_intent ON query_logs(intent);",
 
+            # Subscriptions
             "CREATE INDEX IF NOT EXISTS idx_user_subscriptions_user_id ON user_subscriptions(user_id);",
             "CREATE INDEX IF NOT EXISTS idx_user_subscriptions_status ON user_subscriptions(status);",
             "CREATE INDEX IF NOT EXISTS idx_user_subscriptions_plan ON user_subscriptions(plan_id);",
             "CREATE INDEX IF NOT EXISTS idx_user_subscriptions_period_end ON user_subscriptions(current_period_end);",
 
+            # Payment History
             "CREATE INDEX IF NOT EXISTS idx_payment_history_user ON payment_history(user_id);",
             "CREATE INDEX IF NOT EXISTS idx_payment_history_status ON payment_history(status);",
             "CREATE INDEX IF NOT EXISTS idx_payment_history_created ON payment_history(created_at DESC);",
             "CREATE INDEX IF NOT EXISTS idx_payment_history_iyzico ON payment_history(iyzico_payment_id);",
 
+            # Usage Tracking
             "CREATE INDEX IF NOT EXISTS idx_usage_tracking_user ON usage_tracking(user_id);",
             "CREATE INDEX IF NOT EXISTS idx_usage_tracking_date ON usage_tracking(usage_date);",
         ]
@@ -801,14 +934,172 @@ def init_database_schema() -> bool:
             ON user_learning(user_id, topic, pattern_type);
             """
         )
+        
+        # GIN indexes for MEMORY SYSTEM (NEW)
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_user_memory_technical
+            ON user_memory USING gin(technical_preferences);
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_user_memory_communication
+            ON user_memory USING gin(communication_style);
+            """
+        )
 
         log_success("Indexes OK")
 
         # =================================================
-        # TRIGGERS
+        # HELPER FUNCTIONS (MEMORY SYSTEM)
+        # =================================================
+        log_info("Creating helper functions for memory system...")
+        
+        # Function: get_user_memory_for_prompt
+        cur.execute(
+            """
+            CREATE OR REPLACE FUNCTION get_user_memory_for_prompt(p_user_id INTEGER)
+            RETURNS TEXT AS $$
+            DECLARE
+                memory_text TEXT;
+            BEGIN
+                SELECT format(
+                    E'[USER MEMORY]\\n' ||
+                    'Name: %s\\n' ||
+                    'Role: %s (%s)\\n' ||
+                    'Message History: %s messages (%s relationship)\\n' ||
+                    'Tech Preferences: %s\\n' ||
+                    'Communication Style: %s\\n' ||
+                    'Current Projects: %s\\n' ||
+                    'Likes: %s\\n' ||
+                    'Dislikes: %s\\n' ||
+                    '[/USER MEMORY]',
+                    COALESCE(user_name, 'Not shared'),
+                    COALESCE(role, 'Not specified'),
+                    COALESCE(experience_level, 'Unknown'),
+                    message_count,
+                    familiarity_level,
+                    COALESCE(technical_preferences->>'languages', 'Not specified'),
+                    COALESCE(communication_style->>'formality', 'professional'),
+                    COALESCE(project_context->>'current_projects', 'None'),
+                    COALESCE(likes_dislikes->>'likes', 'Unknown'),
+                    COALESCE(likes_dislikes->>'dislikes', 'Unknown')
+                ) INTO memory_text
+                FROM user_memory
+                WHERE user_id = p_user_id;
+                
+                RETURN COALESCE(memory_text, E'[USER MEMORY]\\nNo memory data yet\\n[/USER MEMORY]');
+            END;
+            $$ LANGUAGE plpgsql;
+            """
+        )
+        
+        # Function: get_conversation_summary
+        cur.execute(
+            """
+            CREATE OR REPLACE FUNCTION get_conversation_summary(p_conversation_id UUID)
+            RETURNS TEXT AS $$
+            DECLARE
+                summary_text TEXT;
+            BEGIN
+                SELECT format(
+                    E'[CONVERSATION SUMMARY]\\n' ||
+                    'Topic: %s\\n' ||
+                    'Progress: %s\\n' ||
+                    'Decisions: %s\\n' ||
+                    'Next Steps: %s\\n' ||
+                    '[/CONVERSATION SUMMARY]',
+                    COALESCE(topic, 'New conversation'),
+                    COALESCE(progress, 'Just started'),
+                    COALESCE(array_to_string(decisions_made, ', '), 'None yet'),
+                    COALESCE(array_to_string(next_steps, ', '), 'To be determined')
+                ) INTO summary_text
+                FROM conversation_summaries
+                WHERE conversation_id = p_conversation_id
+                ORDER BY created_at DESC
+                LIMIT 1;
+                
+                RETURN COALESCE(summary_text, E'[CONVERSATION SUMMARY]\\nNew conversation\\n[/CONVERSATION SUMMARY]');
+            END;
+            $$ LANGUAGE plpgsql;
+            """
+        )
+        
+        # Function: update_technical_preference
+        cur.execute(
+            """
+            CREATE OR REPLACE FUNCTION update_technical_preference(
+                p_user_id INTEGER,
+                p_key TEXT,
+                p_value JSONB
+            )
+            RETURNS VOID AS $$
+            BEGIN
+                INSERT INTO user_memory (user_id, technical_preferences)
+                VALUES (p_user_id, jsonb_build_object(p_key, p_value))
+                ON CONFLICT (user_id)
+                DO UPDATE SET
+                    technical_preferences = user_memory.technical_preferences || jsonb_build_object(p_key, p_value),
+                    updated_at = NOW();
+            END;
+            $$ LANGUAGE plpgsql;
+            """
+        )
+        
+        # Function: create_conversation_summary
+        cur.execute(
+            """
+            CREATE OR REPLACE FUNCTION create_conversation_summary(
+                p_user_id INTEGER,
+                p_conversation_id UUID,
+                p_messages_start INTEGER,
+                p_messages_end INTEGER,
+                p_topic VARCHAR,
+                p_summary_text TEXT,
+                p_decisions TEXT[],
+                p_next_steps TEXT[]
+            )
+            RETURNS UUID AS $$
+            DECLARE
+                summary_id UUID;
+            BEGIN
+                INSERT INTO conversation_summaries (
+                    user_id,
+                    conversation_id,
+                    messages_start,
+                    messages_end,
+                    messages_summarized,
+                    topic,
+                    summary_text,
+                    decisions_made,
+                    next_steps
+                ) VALUES (
+                    p_user_id,
+                    p_conversation_id,
+                    p_messages_start,
+                    p_messages_end,
+                    (p_messages_end - p_messages_start + 1),
+                    p_topic,
+                    p_summary_text,
+                    p_decisions,
+                    p_next_steps
+                ) RETURNING id INTO summary_id;
+                
+                RETURN summary_id;
+            END;
+            $$ LANGUAGE plpgsql;
+            """
+        )
+        
+        log_success("Helper functions created")
+
+        # =================================================
+        # TRIGGERS (MEMORY SYSTEM)
         # =================================================
         log_info("Creating triggers...")
 
+        # Standard update_updated_at trigger function
         cur.execute(
             """
             CREATE OR REPLACE FUNCTION update_updated_at_column()
@@ -821,6 +1112,47 @@ def init_database_schema() -> bool:
             """
         )
 
+        # Increment message count trigger
+        cur.execute(
+            """
+            CREATE OR REPLACE FUNCTION increment_message_count()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                -- Only count user messages
+                IF NEW.role = 'user' THEN
+                    INSERT INTO user_memory (user_id, message_count)
+                    SELECT 
+                        (SELECT user_id FROM conversations WHERE id = NEW.conversation_id),
+                        1
+                    ON CONFLICT (user_id) DO UPDATE
+                    SET message_count = user_memory.message_count + 1;
+                END IF;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+            """
+        )
+        
+        # Update familiarity level trigger
+        cur.execute(
+            """
+            CREATE OR REPLACE FUNCTION update_familiarity_level()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                IF NEW.message_count >= 100 THEN
+                    NEW.familiarity_level = 'close';
+                ELSIF NEW.message_count >= 30 THEN
+                    NEW.familiarity_level = 'familiar';
+                ELSE
+                    NEW.familiarity_level = 'new';
+                END IF;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+            """
+        )
+
+        # Apply triggers
         trigger_tables = [
             "conversations",
             "user_profiles",
@@ -829,6 +1161,7 @@ def init_database_schema() -> bool:
             "usage_tracking",
             "user_preferences",
             "subscription_plans",
+            "user_memory",  # NEW
         ]
 
         for tbl in trigger_tables:
@@ -841,6 +1174,28 @@ def init_database_schema() -> bool:
                 EXECUTE FUNCTION update_updated_at_column();
                 """
             )
+
+        # Message count trigger (NEW)
+        cur.execute("DROP TRIGGER IF EXISTS trigger_increment_message_count ON messages;")
+        cur.execute(
+            """
+            CREATE TRIGGER trigger_increment_message_count
+            AFTER INSERT ON messages
+            FOR EACH ROW
+            EXECUTE FUNCTION increment_message_count();
+            """
+        )
+        
+        # Familiarity level trigger (NEW)
+        cur.execute("DROP TRIGGER IF EXISTS trigger_update_familiarity ON user_memory;")
+        cur.execute(
+            """
+            CREATE TRIGGER trigger_update_familiarity
+            BEFORE UPDATE OF message_count ON user_memory
+            FOR EACH ROW
+            EXECUTE FUNCTION update_familiarity_level();
+            """
+        )
 
         log_success("Triggers OK")
 
@@ -889,6 +1244,8 @@ def health_check() -> Dict[str, Any]:
             "conversations",
             "messages",
             "conversation_summaries",
+            "user_memory",  # NEW
+            "context_snapshots",  # NEW
             "user_intents",
             "user_profiles",
             "query_logs",
@@ -930,7 +1287,7 @@ def health_check() -> Dict[str, Any]:
 
 def main():
     log_info("🚀 ONE-BUNE DATABASE CONTROLLER SERVICE STARTING...")
-    log_info("📦 Version: 2.1.0 - With Iterative Image Generation")
+    log_info("📦 Version: 2.2.0 - With Memory System & Context Management")
     log_info(f"🐘 PostgreSQL Host: {os.getenv('DB_HOST', 'postgres')}")
     log_info(f"🗄️ Database Name: {os.getenv('DB_NAME', 'N/A')}")
     log_info("=" * 70)
