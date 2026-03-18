@@ -66,10 +66,13 @@ MODE_CONFIGS = {
     },
     "code": {
         "model": os.getenv("DEEPINFRA_CODE_MODEL", "Qwen/Qwen3-Coder-480B-A35B-Instruct-Turbo"),
-        "max_tokens": int(os.getenv("DEEPINFRA_CODE_MAX_TOKENS", "4096")),
-        "temperature": float(os.getenv("DEEPINFRA_CODE_TEMPERATURE", "0.3")),
+        "max_tokens": int(os.getenv("DEEPINFRA_CODE_MAX_TOKENS", "8000")),  # ⬆️ INCREASED for large code
+        "temperature": float(os.getenv("DEEPINFRA_CODE_TEMPERATURE", "0.2")),  # ⬇️ LOWER for deterministic
         "top_p": 0.85,
         "system_prompt": CODE_SYSTEM_PROMPT,
+        # Context management
+        "compression_threshold": 12,
+        "large_file_threshold": 2000,
     },
     "it_expert": {
         "model": os.getenv("DEEPINFRA_ASSISTANT_MODEL", "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"),
@@ -392,6 +395,269 @@ async def update_user_memory_from_summary(user_id: int, learned_facts: Dict):
         print(f"[MEMORY UPDATE ERROR] {e}")
 
 # ═══════════════════════════════════════════════════════════════
+# CODE MODE SPECIALIZED FUNCTIONS
+# ═══════════════════════════════════════════════════════════════
+
+async def load_code_context(conversation_id: str) -> Optional[Dict]:
+    """Load code-specific context from database"""
+    if not db_pool or not conversation_id:
+        return None
+    
+    try:
+        async with db_pool.acquire() as conn:
+            result = await conn.fetchrow("""
+                SELECT 
+                    last_code,
+                    last_language,
+                    last_file_name,
+                    tech_stack,
+                    compressed_history,
+                    messages_since_compression
+                FROM code_context
+                WHERE conversation_id = $1::uuid
+            """, conversation_id)
+            
+            if result:
+                print(f"[CODE CONTEXT] Loaded for {conversation_id}: {result['last_language'] or 'none'}")
+                return dict(result)
+            else:
+                # Create if not exists
+                await conn.execute("""
+                    INSERT INTO code_context (conversation_id, user_id)
+                    SELECT $1::uuid, user_id FROM conversations WHERE id = $1::uuid
+                    ON CONFLICT (conversation_id) DO NOTHING
+                """, conversation_id)
+                return None
+                
+    except Exception as e:
+        print(f"[CODE CONTEXT ERROR] {e}")
+        return None
+
+def extract_code_from_message(message: str) -> Optional[Dict[str, str]]:
+    """Extract code block from message"""
+    pattern = r'```(\w+)\n(.*?)```'
+    match = re.search(pattern, message, re.DOTALL)
+    
+    if not match:
+        return None
+    
+    language = match.group(1).lower()
+    code = match.group(2).strip()
+    
+    # Try to extract file name from comments
+    file_name = None
+    
+    # Python: # File: app.py
+    if language == 'python':
+        file_match = re.search(r'#\s*(?:File:|Dosya:)?\s*([a-zA-Z0-9_\-\.\/]+\.py)', code, re.IGNORECASE)
+        if file_match:
+            file_name = file_match.group(1)
+    
+    # JavaScript/TypeScript: // File: app.js
+    elif language in ['javascript', 'typescript', 'js', 'ts']:
+        file_match = re.search(r'//\s*(?:File:|Dosya:)?\s*([a-zA-Z0-9_\-\.\/]+\.(?:js|ts))', code, re.IGNORECASE)
+        if file_match:
+            file_name = file_match.group(1)
+    
+    return {
+        "code": code,
+        "language": language,
+        "file_name": file_name,
+        "line_count": len(code.split('\n'))
+    }
+
+async def track_shared_code(
+    conversation_id: str,
+    code: str,
+    language: str,
+    file_name: Optional[str]
+):
+    """Background task: Track shared code in database"""
+    if not db_pool:
+        return
+    
+    try:
+        async with db_pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE code_context
+                SET 
+                    last_code = $2,
+                    last_language = $3,
+                    last_file_name = COALESCE($4, last_file_name),
+                    messages_since_compression = messages_since_compression + 1,
+                    updated_at = NOW()
+                WHERE conversation_id = $1::uuid
+            """, conversation_id, code, language, file_name)
+            
+            print(f"[CODE TRACKING] Updated: {language} ({len(code)} chars)")
+    except Exception as e:
+        print(f"[CODE TRACKING ERROR] {e}")
+
+async def should_compress_code_context(
+    conversation_id: str,
+    threshold: int = 12
+) -> bool:
+    """Check if code context should be compressed"""
+    if not db_pool:
+        return False
+    
+    try:
+        async with db_pool.acquire() as conn:
+            count = await conn.fetchval("""
+                SELECT messages_since_compression
+                FROM code_context
+                WHERE conversation_id = $1::uuid
+            """, conversation_id)
+            
+            return count and count >= threshold
+    except:
+        return False
+
+async def compress_code_context(
+    conversation_id: str,
+    messages: List[Dict],
+    config: Dict
+):
+    """Compress old code conversation messages using LLM"""
+    if len(messages) < 5:
+        return
+    
+    # Build conversation text (old messages only)
+    conversation_text = "\n\n".join([
+        f"{msg['role'].upper()}: {msg['content'][:500]}"
+        for msg in messages[:-5]  # Don't compress last 5
+    ])
+    
+    compression_prompt = f"""Analyze this code conversation and create a BRIEF summary (max 150 words):
+
+{conversation_text}
+
+Extract ONLY:
+- Files discussed
+- Issues fixed
+- Technical decisions
+- Current project context
+
+Format as compact bullet points. Skip code details.
+Use Turkish if conversation is Turkish, English otherwise."""
+
+    try:
+        compressed = ""
+        async for chunk in stream_deepinfra_completion(
+            messages=[
+                {"role": "system", "content": "You summarize code conversations concisely."},
+                {"role": "user", "content": compression_prompt}
+            ],
+            model=config["model"],
+            max_tokens=400,
+            temperature=0.3,
+            top_p=0.85,
+        ):
+            compressed += chunk
+        
+        reduction = 100 - int(len(compressed)/len(conversation_text)*100) if conversation_text else 0
+        print(f"[CODE COMPRESSION] {len(conversation_text)} → {len(compressed)} chars ({reduction}% reduction)")
+        
+        # Store in database
+        async with db_pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE code_context
+                SET 
+                    compressed_history = $2,
+                    compression_metadata = $3::jsonb,
+                    messages_since_compression = 0,
+                    last_compression_at = NOW()
+                WHERE conversation_id = $1::uuid
+            """, conversation_id, compressed, json.dumps({"compressed_at": datetime.now().isoformat()}))
+        
+    except Exception as e:
+        print(f"[CODE COMPRESSION ERROR] {e}")
+
+async def build_code_messages(
+    user_id: int,
+    conversation_id: str,
+    user_prompt: str,
+    history: List[Dict],
+    config: Dict,
+    **kwargs
+) -> List[Dict]:
+    """
+    Build optimized message array for CODE mode
+    With context compression, code tracking, continuity
+    """
+    
+    messages = []
+    
+    # ✅ 1. LOAD CODE CONTEXT
+    code_context = await load_code_context(conversation_id) if conversation_id else None
+    
+    # ✅ 2. SYSTEM PROMPT
+    system_content = config["system_prompt"]
+    
+    # Inject user memory
+    user_memory = await load_user_memory(user_id)
+    if user_memory:
+        system_content = system_content.replace("{user_memory}", user_memory)
+    else:
+        system_content = system_content.replace("{user_memory}", "[USER MEMORY]\nNo memory yet\n[/USER MEMORY]")
+    
+    # ✅ 3. ADD CODE CONTEXT
+    if code_context:
+        context_parts = ["[CODE CONTEXT]"]
+        
+        # Last shared code (for "bunu düzelt" continuity)
+        last_code = code_context.get('last_code')
+        if last_code and len(last_code) < 5000:
+            context_parts.append(f"\nLast shared code ({code_context.get('last_language')}):")
+            context_parts.append(f"```{code_context.get('last_language')}\n{last_code[:3000]}\n```\n")
+        
+        # Tech stack
+        tech_stack = code_context.get('tech_stack')
+        if tech_stack:
+            context_parts.append(f"Project stack: {', '.join(tech_stack)}")
+        
+        # Compressed history
+        compressed = code_context.get('compressed_history')
+        if compressed:
+            context_parts.append(f"\nPrevious conversation summary:\n{compressed}\n")
+        
+        context_parts.append("[/CODE CONTEXT]")
+        system_content += "\n\n" + "\n".join(context_parts)
+    
+    messages.append({"role": "system", "content": system_content})
+    
+    # ✅ 4. CHECK COMPRESSION NEEDED
+    if conversation_id and await should_compress_code_context(conversation_id, config.get("compression_threshold", 12)):
+        print(f"[CODE] Compressing context...")
+        asyncio.create_task(compress_code_context(conversation_id, history, config))
+    
+    # ✅ 5. ADD HISTORY (Smart selection)
+    if code_context and code_context.get('compressed_history') and len(history) > 10:
+        # If compressed exists, keep only recent
+        recent_history = history[-8:]
+    else:
+        # Otherwise more history
+        recent_history = history[-20:]
+    
+    for msg in recent_history:
+        messages.append({"role": msg["role"], "content": msg["content"]})
+    
+    # ✅ 6. CURRENT PROMPT
+    messages.append({"role": "user", "content": user_prompt})
+    
+    # ✅ 7. TRACK CODE (Background)
+    code_data = extract_code_from_message(user_prompt)
+    if code_data and conversation_id:
+        asyncio.create_task(track_shared_code(
+            conversation_id,
+            code_data['code'],
+            code_data['language'],
+            code_data.get('file_name')
+        ))
+    
+    return messages
+
+# ═══════════════════════════════════════════════════════════════
 # THINKING DISPLAY FUNCTIONS
 # ═══════════════════════════════════════════════════════════════
 
@@ -693,8 +959,24 @@ async def build_messages(
     """
     Build message array for DeepInfra API
     WITH FULL CONTEXT: Memory + Summary + Smart Tools + Web Synthesis
+    
+    CODE MODE gets special handling for large files and context compression
     """
     
+    # ✅ SPECIAL: CODE MODE uses optimized message builder
+    if mode == "code":
+        return await build_code_messages(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            user_prompt=user_prompt,
+            history=history,
+            config=config,
+            rag_context=rag_context,
+            context=context,
+            session_summary=session_summary,
+        )
+    
+    # ✅ REGULAR MODES: Standard context building
     messages = []
     
     # Get base system prompt
