@@ -24,8 +24,8 @@ import asyncpg
 import asyncio
 from datetime import datetime
 
-# Load ENHANCED production prompts
-from system_prompts import (
+# Load production prompts (FROM YOUR EXISTING STRUCTURE)
+from prompts_production import (
     ASSISTANT_SYSTEM_PROMPT,
     CODE_SYSTEM_PROMPT,
     IT_EXPERT_SYSTEM_PROMPT,

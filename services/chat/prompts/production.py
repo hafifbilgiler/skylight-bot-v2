@@ -5,6 +5,9 @@ SKYLIGHT - PRODUCTION SYSTEM PROMPTS (ENHANCED)
 Claude 3.5 Sonnet / GPT-4 level prompt engineering
 With Memory, Context Management, Thinking Display, Web Search Synthesis
 Mode-specific, context-aware, production-ready
+
+FILE: production.py (for your existing structure)
+LOCATION: services/chat/prompts/production.py
 ═══════════════════════════════════════════════════════════════
 """
 
