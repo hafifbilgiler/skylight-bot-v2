@@ -4,11 +4,11 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # Install dependencies
-COPY payment_requirements.txt ./requirements.txt
+COPY app/payment_requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application
-COPY skylight_payment_service.py ./app.py
+COPY app/skylight_payment_service.py ./app.py
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
