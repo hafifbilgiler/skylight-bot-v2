@@ -5,8 +5,8 @@ ONE-BUNE AI Platform - Database Controller Service
 ═══════════════════════════════════════════════════════════════
 COMPLETE VERSION - All Tables + Payment System + Memory System
 
-Version: 2.3.0
-New: Payment Tables (subscription_checkouts, payment_audit_log)
+Version: 2.4.0
+New: code_context table for CODE mode conversation tracking
 Purpose: Manage PostgreSQL schema only (no data seeding)
 ═══════════════════════════════════════════════════════════════
 """
@@ -140,7 +140,7 @@ def ensure_constraint(cur, table_name: str, constraint_name: str, constraint_sql
 def init_database_schema() -> bool:
     log_info("=" * 70)
     log_info("DATABASE SCHEMA INITIALIZATION STARTED")
-    log_info("Version: 2.3.0 - With Payment System + Memory System")
+    log_info("Version: 2.4.0 - With Payment System + Memory System + Code Context")
     log_info("=" * 70)
 
     try:
@@ -872,6 +872,49 @@ def init_database_schema() -> bool:
         log_success("CHAT_LOGS table OK (legacy)")
 
         # =================================================
+        # 20. CODE_CONTEXT (NEW - v2.4.0)
+        # Chat service'deki CODE modu için conversation başına
+        # son kod, dil, dosya adı ve sıkıştırılmış geçmiş saklar.
+        # =================================================
+        log_info("Creating/checking CODE_CONTEXT table...")
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS code_context (
+                id                          SERIAL PRIMARY KEY,
+                conversation_id             UUID NOT NULL UNIQUE
+                                            REFERENCES conversations(id) ON DELETE CASCADE,
+                user_id                     INTEGER REFERENCES users(id) ON DELETE CASCADE,
+
+                last_code                   TEXT,
+                last_language               VARCHAR(50),
+                last_file_name              VARCHAR(255),
+
+                tech_stack                  TEXT[],
+
+                compressed_history          TEXT,
+                compression_metadata        JSONB DEFAULT '{}',
+                messages_since_compression  INTEGER DEFAULT 0,
+                last_compression_at         TIMESTAMPTZ,
+
+                created_at                  TIMESTAMPTZ DEFAULT NOW(),
+                updated_at                  TIMESTAMPTZ DEFAULT NOW()
+            );
+            """
+        )
+
+        ensure_column(cur, "code_context", "user_id", "INTEGER REFERENCES users(id) ON DELETE CASCADE")
+        ensure_column(cur, "code_context", "last_code", "TEXT")
+        ensure_column(cur, "code_context", "last_language", "VARCHAR(50)")
+        ensure_column(cur, "code_context", "last_file_name", "VARCHAR(255)")
+        ensure_column(cur, "code_context", "tech_stack", "TEXT[]")
+        ensure_column(cur, "code_context", "compressed_history", "TEXT")
+        ensure_column(cur, "code_context", "compression_metadata", "JSONB DEFAULT '{}'")
+        ensure_column(cur, "code_context", "messages_since_compression", "INTEGER DEFAULT 0")
+        ensure_column(cur, "code_context", "last_compression_at", "TIMESTAMPTZ")
+
+        log_success("CODE_CONTEXT table OK (NEW)")
+
+        # =================================================
         # INDEXES
         # =================================================
         log_info("Creating indexes...")
@@ -959,6 +1002,10 @@ def init_database_schema() -> bool:
             # Usage Tracking
             "CREATE INDEX IF NOT EXISTS idx_usage_tracking_user ON usage_tracking(user_id);",
             "CREATE INDEX IF NOT EXISTS idx_usage_tracking_date ON usage_tracking(usage_date);",
+
+            # Code Context (NEW)
+            "CREATE INDEX IF NOT EXISTS idx_code_context_conversation_id ON code_context(conversation_id);",
+            "CREATE INDEX IF NOT EXISTS idx_code_context_user_id ON code_context(user_id);",
         ]
 
         for stmt in index_statements:
@@ -1212,6 +1259,7 @@ def init_database_schema() -> bool:
             "user_preferences",
             "subscription_plans",
             "user_memory",
+            "code_context",  # NEW
         ]
 
         for tbl in trigger_tables:
@@ -1304,6 +1352,7 @@ def health_check() -> Dict[str, Any]:
             "payment_history",
             "usage_tracking",
             "generated_images",
+            "code_context",            # NEW
         ]
 
         cur.execute(
@@ -1338,7 +1387,7 @@ def health_check() -> Dict[str, Any]:
 
 def main():
     log_info("🚀 ONE-BUNE DATABASE CONTROLLER SERVICE STARTING...")
-    log_info("📦 Version: 2.3.0 - With Payment System + Memory System")
+    log_info("📦 Version: 2.4.0 - With Payment System + Memory System + Code Context")
     log_info(f"🐘 PostgreSQL Host: {os.getenv('DB_HOST', 'postgres')}")
     log_info(f"🗄️ Database Name: {os.getenv('DB_NAME', 'N/A')}")
     log_info("=" * 70)
