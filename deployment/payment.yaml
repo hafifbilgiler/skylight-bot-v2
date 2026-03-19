@@ -1,24 +1,24 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: payment-service
-  namespace: skylight-bot
+  name: one-bune-payment-service
+  namespace: skylight-bot-v2
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: payment-service
+      app: one-bune-payment-service
   template:
     metadata:
       labels:
-        app: payment-service
+        app: one-bune-payment-service
     spec:
       containers:
         - name: payment-service
-          image: docker.io/hafifbilgiler/skylight-payment:1.0
+          image: docker.io/hafifbilgiler/onebune-payment-service:1.0
           imagePullPolicy: Always
           ports:
-            - containerPort: 8001
+            - containerPort: 8005
           env:
             - name: IYZICO_API_KEY
               valueFrom:
@@ -43,28 +43,17 @@ spec:
                   key: monthly-plan-code
             - name: PAYMENT_HTTP_TIMEOUT
               value: "45"
-          readinessProbe:
-            httpGet:
-              path: /health
-              port: 8001
-            initialDelaySeconds: 5
-            periodSeconds: 10
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: 8001
-            initialDelaySeconds: 15
-            periodSeconds: 20
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: payment-service
-  namespace: skylight-bot
+  name: one-bune-payment-service
+  namespace: skylight-bot-v2
 spec:
   selector:
-    app: payment-service
+    app: one-bune-payment-service
   ports:
-    - protocol: TCP
-      port: 8001
-      targetPort: 8001
+    - name: http
+      port: 8005
+      targetPort: 8005
+  type: ClusterIP

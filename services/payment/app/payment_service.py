@@ -5,7 +5,7 @@ import base64
 import hashlib
 import hmac
 import secrets
-from typing import Optional
+from typing import Optional, Dict, Any
 
 import httpx
 from fastapi import FastAPI, HTTPException, Header, Body
@@ -32,22 +32,21 @@ APP_PUBLIC_URL = os.getenv(
     "https://one-bune.com",
 ).strip()
 
+# SADECE AYLIK PLAN
 IYZICO_MONTHLY_PLAN_CODE = os.getenv("IYZICO_MONTHLY_PLAN_CODE", "").strip()
-IYZICO_YEARLY_PLAN_CODE = os.getenv("IYZICO_YEARLY_PLAN_CODE", "").strip()
 
 REQUEST_TIMEOUT = float(os.getenv("PAYMENT_HTTP_TIMEOUT", "45"))
 
 
 def ensure_config() -> None:
     missing = []
+
     if not IYZICO_API_KEY:
         missing.append("IYZICO_API_KEY")
     if not IYZICO_SECRET_KEY:
         missing.append("IYZICO_SECRET_KEY")
     if not IYZICO_MONTHLY_PLAN_CODE:
         missing.append("IYZICO_MONTHLY_PLAN_CODE")
-    if not IYZICO_YEARLY_PLAN_CODE:
-        missing.append("IYZICO_YEARLY_PLAN_CODE")
 
     if missing:
         raise HTTPException(
@@ -59,6 +58,7 @@ def ensure_config() -> None:
 def build_auth(uri: str, body: str = "") -> tuple[str, str]:
     rnd = secrets.token_hex(16)
     payload = f"{rnd}{uri}{body}"
+
     signature = hmac.new(
         IYZICO_SECRET_KEY.encode("utf-8"),
         payload.encode("utf-8"),
@@ -67,10 +67,11 @@ def build_auth(uri: str, body: str = "") -> tuple[str, str]:
 
     raw = f"apiKey:{IYZICO_API_KEY}&randomKey:{rnd}&signature:{signature}"
     encoded = base64.b64encode(raw.encode("utf-8")).decode("utf-8")
+
     return f"IYZWSv2 {encoded}", rnd
 
 
-async def iyzico_post(uri: str, payload: dict) -> dict:
+async def iyzico_post(uri: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
     auth, rnd = build_auth(uri, body)
 
@@ -100,7 +101,7 @@ async def iyzico_post(uri: str, payload: dict) -> dict:
     return data
 
 
-async def iyzico_get(uri: str) -> dict:
+async def iyzico_get(uri: str) -> Dict[str, Any]:
     auth, rnd = build_auth(uri, "")
 
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
@@ -128,7 +129,7 @@ async def iyzico_get(uri: str) -> dict:
 
 
 @app.get("/health")
-async def health() -> dict:
+async def health() -> Dict[str, Any]:
     return {
         "status": "healthy",
         "service": "payment-service",
@@ -136,7 +137,6 @@ async def health() -> dict:
         "has_api_key": bool(IYZICO_API_KEY),
         "has_secret_key": bool(IYZICO_SECRET_KEY),
         "has_monthly_plan": bool(IYZICO_MONTHLY_PLAN_CODE),
-        "has_yearly_plan": bool(IYZICO_YEARLY_PLAN_CODE),
     }
 
 
@@ -150,22 +150,15 @@ async def payment_checkout(
     if not authorization:
         raise HTTPException(status_code=401, detail="Login required")
 
-    billing_period = (body.get("billing_period") or "monthly").strip().lower()
-    if billing_period not in {"monthly", "yearly"}:
-        raise HTTPException(status_code=400, detail="Invalid billing_period")
+    # Şimdilik tek plan: AYLIK
+    pricing_plan_reference_code = IYZICO_MONTHLY_PLAN_CODE
 
-    pricing_plan_reference_code = (
-        IYZICO_MONTHLY_PLAN_CODE
-        if billing_period == "monthly"
-        else IYZICO_YEARLY_PLAN_CODE
-    )
-
-    # Şimdilik gateway/user bilgisi gelmese bile servis çalışsın diye fallback bırakıldı.
-    customer_email = body.get("email") or "customer@one-bune.com"
-    customer_name = body.get("name") or "ONE"
-    customer_surname = body.get("surname") or "BUNE"
-    customer_gsm = body.get("gsmNumber") or "+905000000000"
-    customer_identity = body.get("identityNumber") or "11111111111"
+    # Gateway daha sonra gerçek kullanıcı bilgisini iletecek
+    customer_email = (body.get("email") or "customer@one-bune.com").strip()
+    customer_name = (body.get("name") or "ONE").strip()
+    customer_surname = (body.get("surname") or "BUNE").strip()
+    customer_gsm = (body.get("gsmNumber") or "+905000000000").strip()
+    customer_identity = (body.get("identityNumber") or "11111111111").strip()
 
     conversation_id = f"checkout-{int(time.time())}"
 
