@@ -59,7 +59,7 @@ spec:
         - name: DEEPINFRA_CODE_TEMPERATURE
           value: "0.3"
         - name: DEEPINFRA_CODE_MAX_TOKENS
-          value: "4096"
+          value: "16000"   # 4096 → 16000
         
         # Smart Tools (YENİ!)
         - name: SMART_TOOLS_URL

@@ -97,7 +97,8 @@ spec:
           value: "http://skylight-image-analysis:8002"
         - name: SMART_TOOLS_URL
           value: "http://skylight-smart-tools:8081"
-        
+        - name: DEEPINFRA_CODE_MAX_TOKENS
+          value: "16000"   # 4096 → 16000
         resources:
           requests:
             memory: "256Mi"
