@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
       - name: controller
-        image: docker.io/hafifbilgiler/dbcontroller:2.7 # Kendi image adını yaz 1.8,1.9
+        image: docker.io/hafifbilgiler/dbcontroller:2.8 # Kendi image adını yaz 1.8,1.9
         imagePullPolicy: Always
         env:
         - name: DB_USER

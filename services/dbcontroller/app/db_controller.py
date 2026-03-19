@@ -1,12 +1,12 @@
-# db_controller.py - COMPLETE VERSION WITH MEMORY SYSTEM
+# db_controller.py - COMPLETE VERSION WITH PAYMENT SYSTEM
 """
 ═══════════════════════════════════════════════════════════════
 ONE-BUNE AI Platform - Database Controller Service
 ═══════════════════════════════════════════════════════════════
-COMPLETE VERSION - All Tables + Iterative Image Generation + MEMORY SYSTEM
+COMPLETE VERSION - All Tables + Payment System + Memory System
 
-Version: 2.2.0
-New: Memory System, Context Management, Periodic Summaries
+Version: 2.3.0
+New: Payment Tables (subscription_checkouts, payment_audit_log)
 Purpose: Manage PostgreSQL schema only (no data seeding)
 ═══════════════════════════════════════════════════════════════
 """
@@ -140,7 +140,7 @@ def ensure_constraint(cur, table_name: str, constraint_name: str, constraint_sql
 def init_database_schema() -> bool:
     log_info("=" * 70)
     log_info("DATABASE SCHEMA INITIALIZATION STARTED")
-    log_info("Version: 2.2.0 - With Memory System & Context Management")
+    log_info("Version: 2.3.0 - With Payment System + Memory System")
     log_info("=" * 70)
 
     try:
@@ -180,7 +180,13 @@ def init_database_schema() -> bool:
         ensure_column(cur, "users", "picture", "TEXT")
         ensure_column(cur, "users", "created_at", "TIMESTAMPTZ DEFAULT NOW()")
         ensure_column(cur, "users", "last_login", "TIMESTAMPTZ DEFAULT NOW()")
-        log_success("USERS table OK")
+        
+        # Payment-related columns (NEW)
+        ensure_column(cur, "users", "is_premium", "BOOLEAN DEFAULT FALSE")
+        ensure_column(cur, "users", "subscription_active", "BOOLEAN DEFAULT FALSE")
+        ensure_column(cur, "users", "auth_token", "VARCHAR(255)")
+        
+        log_success("USERS table OK (with payment columns)")
 
         # =================================================
         # 2. OTP_CODES
@@ -282,9 +288,9 @@ def init_database_schema() -> bool:
         log_success("MESSAGES table OK")
 
         # =================================================
-        # 5. CONVERSATION_SUMMARIES (EXTENDED FOR MEMORY SYSTEM)
+        # 5. CONVERSATION_SUMMARIES
         # =================================================
-        log_info("Creating/checking CONVERSATION_SUMMARIES table (extended)...")
+        log_info("Creating/checking CONVERSATION_SUMMARIES table...")
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS conversation_summaries (
@@ -292,14 +298,12 @@ def init_database_schema() -> bool:
                 user_id                 INTEGER REFERENCES users(id) ON DELETE CASCADE,
                 conversation_id         UUID REFERENCES conversations(id) ON DELETE CASCADE,
                 
-                -- Message range
                 messages_start          INTEGER NOT NULL DEFAULT 0,
                 messages_end            INTEGER NOT NULL DEFAULT 0,
                 messages_summarized     INTEGER NOT NULL DEFAULT 0,
                 start_message_id        UUID,
                 end_message_id          UUID,
                 
-                -- Summary content
                 topic                   VARCHAR(200),
                 subtopics               TEXT[] DEFAULT '{}',
                 summary_text            TEXT NOT NULL,
@@ -308,13 +312,9 @@ def init_database_schema() -> bool:
                 unresolved_issues       TEXT[] DEFAULT '{}',
                 next_steps              TEXT[] DEFAULT '{}',
                 
-                -- Artifacts
                 code_artifacts          TEXT[] DEFAULT '{}',
-                
-                -- Learned facts (for user memory updates)
                 learned_facts           JSONB DEFAULT '{}',
                 
-                -- Metadata
                 token_count             INTEGER,
                 model_used              VARCHAR(100),
                 created_at              TIMESTAMPTZ DEFAULT NOW()
@@ -322,7 +322,6 @@ def init_database_schema() -> bool:
             """
         )
         
-        # Ensure new columns for memory system
         ensure_column(cur, "conversation_summaries", "user_id", "INTEGER REFERENCES users(id) ON DELETE CASCADE")
         ensure_column(cur, "conversation_summaries", "messages_start", "INTEGER NOT NULL DEFAULT 0")
         ensure_column(cur, "conversation_summaries", "messages_end", "INTEGER NOT NULL DEFAULT 0")
@@ -335,12 +334,12 @@ def init_database_schema() -> bool:
         ensure_column(cur, "conversation_summaries", "code_artifacts", "TEXT[] DEFAULT '{}'")
         ensure_column(cur, "conversation_summaries", "learned_facts", "JSONB DEFAULT '{}'")
         
-        log_success("CONVERSATION_SUMMARIES table OK (extended for memory)")
+        log_success("CONVERSATION_SUMMARIES table OK")
 
         # =================================================
-        # 6. USER_MEMORY (NEW - MEMORY SYSTEM)
+        # 6. USER_MEMORY
         # =================================================
-        log_info("Creating/checking USER_MEMORY table (NEW)...")
+        log_info("Creating/checking USER_MEMORY table...")
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS user_memory (
@@ -349,19 +348,16 @@ def init_database_schema() -> bool:
                 created_at                  TIMESTAMPTZ DEFAULT NOW(),
                 updated_at                  TIMESTAMPTZ DEFAULT NOW(),
                 
-                -- Personal Context
                 user_name                   VARCHAR(100),
                 location                    VARCHAR(100),
                 role                        VARCHAR(100),
                 experience_level            VARCHAR(50),
                 
-                -- Preferences (JSONB for flexibility)
                 technical_preferences       JSONB DEFAULT '{}',
                 communication_style         JSONB DEFAULT '{}',
                 project_context             JSONB DEFAULT '{}',
                 likes_dislikes              JSONB DEFAULT '{}',
                 
-                -- Relationship Level
                 message_count               INTEGER DEFAULT 0,
                 familiarity_level           VARCHAR(20) DEFAULT 'new',
                 tone_preference             VARCHAR(20) DEFAULT 'professional'
@@ -369,7 +365,6 @@ def init_database_schema() -> bool:
             """
         )
         
-        # Ensure all columns
         ensure_column(cur, "user_memory", "user_name", "VARCHAR(100)")
         ensure_column(cur, "user_memory", "location", "VARCHAR(100)")
         ensure_column(cur, "user_memory", "role", "VARCHAR(100)")
@@ -382,12 +377,12 @@ def init_database_schema() -> bool:
         ensure_column(cur, "user_memory", "familiarity_level", "VARCHAR(20) DEFAULT 'new'")
         ensure_column(cur, "user_memory", "tone_preference", "VARCHAR(20) DEFAULT 'professional'")
         
-        log_success("USER_MEMORY table OK (NEW)")
+        log_success("USER_MEMORY table OK")
 
         # =================================================
-        # 7. CONTEXT_SNAPSHOTS (NEW - CONTEXT MANAGEMENT)
+        # 7. CONTEXT_SNAPSHOTS
         # =================================================
-        log_info("Creating/checking CONTEXT_SNAPSHOTS table (NEW)...")
+        log_info("Creating/checking CONTEXT_SNAPSHOTS table...")
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS context_snapshots (
@@ -395,24 +390,21 @@ def init_database_schema() -> bool:
                 conversation_id         UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
                 created_at              TIMESTAMPTZ DEFAULT NOW(),
                 
-                -- Snapshot Metadata
                 message_count           INTEGER NOT NULL,
                 context_window_size     INTEGER,
                 
-                -- Compressed Context
                 full_summary            TEXT,
                 key_decisions           JSONB DEFAULT '{}',
                 active_topics           TEXT[] DEFAULT '{}',
                 pending_tasks           TEXT[] DEFAULT '{}',
                 
-                -- File Context
                 uploaded_files          JSONB DEFAULT '[]',
                 code_artifacts          JSONB DEFAULT '[]'
             );
             """
         )
         
-        log_success("CONTEXT_SNAPSHOTS table OK (NEW)")
+        log_success("CONTEXT_SNAPSHOTS table OK")
 
         # =================================================
         # 8. USER_INTENTS
@@ -648,6 +640,69 @@ def init_database_schema() -> bool:
         log_success("USER_SUBSCRIPTIONS table OK")
 
         # =================================================
+        # 15.5 SUBSCRIPTION_CHECKOUTS (NEW - PAYMENT)
+        # =================================================
+        log_info("Creating/checking SUBSCRIPTION_CHECKOUTS table...")
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS subscription_checkouts (
+                id                      SERIAL PRIMARY KEY,
+                user_id                 INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                conversation_id         VARCHAR(100) NOT NULL,
+                iyzico_token            VARCHAR(255),
+                pricing_plan_code       VARCHAR(100),
+                status                  VARCHAR(20) NOT NULL DEFAULT 'pending'
+                                        CHECK (status IN ('pending', 'completed', 'failed', 'cancelled')),
+                customer_email          VARCHAR(255),
+                customer_name           VARCHAR(100),
+                customer_surname        VARCHAR(100),
+                iyzico_response         JSONB DEFAULT '{}',
+                created_at              TIMESTAMPTZ DEFAULT NOW(),
+                completed_at            TIMESTAMPTZ
+            );
+            """
+        )
+        
+        ensure_column(cur, "subscription_checkouts", "user_id", "INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE")
+        ensure_column(cur, "subscription_checkouts", "conversation_id", "VARCHAR(100) NOT NULL")
+        ensure_column(cur, "subscription_checkouts", "iyzico_token", "VARCHAR(255)")
+        ensure_column(cur, "subscription_checkouts", "pricing_plan_code", "VARCHAR(100)")
+        ensure_column(cur, "subscription_checkouts", "status", "VARCHAR(20) NOT NULL DEFAULT 'pending'")
+        ensure_column(cur, "subscription_checkouts", "customer_email", "VARCHAR(255)")
+        ensure_column(cur, "subscription_checkouts", "customer_name", "VARCHAR(100)")
+        ensure_column(cur, "subscription_checkouts", "customer_surname", "VARCHAR(100)")
+        ensure_column(cur, "subscription_checkouts", "iyzico_response", "JSONB DEFAULT '{}'")
+        ensure_column(cur, "subscription_checkouts", "created_at", "TIMESTAMPTZ DEFAULT NOW()")
+        ensure_column(cur, "subscription_checkouts", "completed_at", "TIMESTAMPTZ")
+        
+        log_success("SUBSCRIPTION_CHECKOUTS table OK (PAYMENT)")
+
+        # =================================================
+        # 15.6 PAYMENT_AUDIT_LOG (NEW - PAYMENT)
+        # =================================================
+        log_info("Creating/checking PAYMENT_AUDIT_LOG table...")
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS payment_audit_log (
+                id                  SERIAL PRIMARY KEY,
+                event_type          VARCHAR(50) NOT NULL,
+                user_id             INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                data                JSONB DEFAULT '{}',
+                ip_address          VARCHAR(50),
+                created_at          TIMESTAMPTZ DEFAULT NOW()
+            );
+            """
+        )
+        
+        ensure_column(cur, "payment_audit_log", "event_type", "VARCHAR(50) NOT NULL")
+        ensure_column(cur, "payment_audit_log", "user_id", "INTEGER REFERENCES users(id) ON DELETE SET NULL")
+        ensure_column(cur, "payment_audit_log", "data", "JSONB DEFAULT '{}'")
+        ensure_column(cur, "payment_audit_log", "ip_address", "VARCHAR(50)")
+        ensure_column(cur, "payment_audit_log", "created_at", "TIMESTAMPTZ DEFAULT NOW()")
+        
+        log_success("PAYMENT_AUDIT_LOG table OK (PAYMENT)")
+
+        # =================================================
         # 16. PAYMENT_HISTORY
         # =================================================
         log_info("Creating/checking PAYMENT_HISTORY table...")
@@ -713,7 +768,7 @@ def init_database_schema() -> bool:
         log_success("USAGE_TRACKING table OK")
 
         # =================================================
-        # 18. GENERATED_IMAGES (WITH ITERATIVE GENERATION SUPPORT)
+        # 18. GENERATED_IMAGES
         # =================================================
         log_info("Creating/checking GENERATED_IMAGES table...")
         cur.execute(
@@ -723,41 +778,34 @@ def init_database_schema() -> bool:
                 user_id                 INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 conversation_id         UUID REFERENCES conversations(id) ON DELETE CASCADE,
                 
-                -- Prompts (for iterative generation)
                 prompt_turkish          TEXT NOT NULL,
                 prompt_english          TEXT NOT NULL,
                 user_prompt             TEXT,
                 generated_prompt        TEXT,
                 modification_of         UUID,
                 
-                -- Image Data
                 image_url               TEXT,
                 image_b64               TEXT,
                 image_hash              VARCHAR(64),
                 image_size_bytes        INTEGER DEFAULT 0,
                 
-                -- Metadata
                 model_used              VARCHAR(100) DEFAULT 'FLUX-2-max',
                 generation_cost         DECIMAL(10,4) DEFAULT 0,
                 generation_time_ms      INTEGER DEFAULT 0,
                 
-                -- Expiration (3 days)
                 expires_at              TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '3 days'),
                 is_deleted              BOOLEAN DEFAULT FALSE,
                 deleted_at              TIMESTAMPTZ,
                 
-                -- Timestamps
                 created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
             """
         )
         
-        # Ensure new columns for iterative generation
         ensure_column(cur, "generated_images", "user_prompt", "TEXT")
         ensure_column(cur, "generated_images", "generated_prompt", "TEXT")
         ensure_column(cur, "generated_images", "modification_of", "UUID")
         
-        # Add foreign key constraint for modification_of (if not exists)
         try:
             ensure_constraint(
                 cur,
@@ -773,7 +821,6 @@ def init_database_schema() -> bool:
         except Exception as e:
             log_warning(f"Constraint warning (may already exist): {e}")
         
-        # Indexes for performance
         ensure_index(
             cur,
             "idx_generated_images_user_id",
@@ -805,7 +852,7 @@ def init_database_schema() -> bool:
             "CREATE INDEX IF NOT EXISTS idx_generated_images_created_at ON generated_images(created_at DESC);"
         )
         
-        log_success("GENERATED_IMAGES table OK (with iterative generation support)")
+        log_success("GENERATED_IMAGES table OK")
 
         # =================================================
         # 19. CHAT_LOGS (LEGACY)
@@ -833,6 +880,8 @@ def init_database_schema() -> bool:
             # Users
             "CREATE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id);",
             "CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);",
+            "CREATE INDEX IF NOT EXISTS idx_users_premium ON users(is_premium) WHERE is_premium = TRUE;",
+            "CREATE INDEX IF NOT EXISTS idx_users_subscription ON users(subscription_active) WHERE subscription_active = TRUE;",
 
             # OTP
             "CREATE INDEX IF NOT EXISTS idx_otp_email ON otp_codes(email);",
@@ -854,11 +903,11 @@ def init_database_schema() -> bool:
             "CREATE INDEX IF NOT EXISTS idx_conv_summaries_created ON conversation_summaries(created_at DESC);",
             "CREATE INDEX IF NOT EXISTS idx_conv_summaries_user_id ON conversation_summaries(user_id);",
 
-            # User Memory (NEW)
+            # User Memory
             "CREATE INDEX IF NOT EXISTS idx_user_memory_user_id ON user_memory(user_id);",
             "CREATE INDEX IF NOT EXISTS idx_user_memory_updated ON user_memory(updated_at DESC);",
 
-            # Context Snapshots (NEW)
+            # Context Snapshots
             "CREATE INDEX IF NOT EXISTS idx_context_snapshots_conv ON context_snapshots(conversation_id);",
 
             # User Intents
@@ -888,6 +937,18 @@ def init_database_schema() -> bool:
             "CREATE INDEX IF NOT EXISTS idx_user_subscriptions_status ON user_subscriptions(status);",
             "CREATE INDEX IF NOT EXISTS idx_user_subscriptions_plan ON user_subscriptions(plan_id);",
             "CREATE INDEX IF NOT EXISTS idx_user_subscriptions_period_end ON user_subscriptions(current_period_end);",
+
+            # Subscription Checkouts (PAYMENT)
+            "CREATE INDEX IF NOT EXISTS idx_subscription_checkouts_user ON subscription_checkouts(user_id);",
+            "CREATE INDEX IF NOT EXISTS idx_subscription_checkouts_conversation ON subscription_checkouts(conversation_id);",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_subscription_checkouts_token ON subscription_checkouts(iyzico_token) WHERE iyzico_token IS NOT NULL;",
+            "CREATE INDEX IF NOT EXISTS idx_subscription_checkouts_status ON subscription_checkouts(status);",
+            "CREATE INDEX IF NOT EXISTS idx_subscription_checkouts_created ON subscription_checkouts(created_at DESC);",
+
+            # Payment Audit Log (PAYMENT)
+            "CREATE INDEX IF NOT EXISTS idx_payment_audit_event ON payment_audit_log(event_type);",
+            "CREATE INDEX IF NOT EXISTS idx_payment_audit_user ON payment_audit_log(user_id);",
+            "CREATE INDEX IF NOT EXISTS idx_payment_audit_created ON payment_audit_log(created_at DESC);",
 
             # Payment History
             "CREATE INDEX IF NOT EXISTS idx_payment_history_user ON payment_history(user_id);",
@@ -934,8 +995,6 @@ def init_database_schema() -> bool:
             ON user_learning(user_id, topic, pattern_type);
             """
         )
-        
-        # GIN indexes for MEMORY SYSTEM (NEW)
         cur.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_user_memory_technical
@@ -952,11 +1011,10 @@ def init_database_schema() -> bool:
         log_success("Indexes OK")
 
         # =================================================
-        # HELPER FUNCTIONS (MEMORY SYSTEM)
+        # HELPER FUNCTIONS
         # =================================================
-        log_info("Creating helper functions for memory system...")
+        log_info("Creating helper functions...")
         
-        # Function: get_user_memory_for_prompt
         cur.execute(
             """
             CREATE OR REPLACE FUNCTION get_user_memory_for_prompt(p_user_id INTEGER)
@@ -995,7 +1053,6 @@ def init_database_schema() -> bool:
             """
         )
         
-        # Function: get_conversation_summary
         cur.execute(
             """
             CREATE OR REPLACE FUNCTION get_conversation_summary(p_conversation_id UUID)
@@ -1026,7 +1083,6 @@ def init_database_schema() -> bool:
             """
         )
         
-        # Function: update_technical_preference
         cur.execute(
             """
             CREATE OR REPLACE FUNCTION update_technical_preference(
@@ -1047,7 +1103,6 @@ def init_database_schema() -> bool:
             """
         )
         
-        # Function: create_conversation_summary
         cur.execute(
             """
             CREATE OR REPLACE FUNCTION create_conversation_summary(
@@ -1095,11 +1150,10 @@ def init_database_schema() -> bool:
         log_success("Helper functions created")
 
         # =================================================
-        # TRIGGERS (MEMORY SYSTEM)
+        # TRIGGERS
         # =================================================
         log_info("Creating triggers...")
 
-        # Standard update_updated_at trigger function
         cur.execute(
             """
             CREATE OR REPLACE FUNCTION update_updated_at_column()
@@ -1112,13 +1166,11 @@ def init_database_schema() -> bool:
             """
         )
 
-        # Increment message count trigger
         cur.execute(
             """
             CREATE OR REPLACE FUNCTION increment_message_count()
             RETURNS TRIGGER AS $$
             BEGIN
-                -- Only count user messages
                 IF NEW.role = 'user' THEN
                     INSERT INTO user_memory (user_id, message_count)
                     SELECT 
@@ -1133,7 +1185,6 @@ def init_database_schema() -> bool:
             """
         )
         
-        # Update familiarity level trigger
         cur.execute(
             """
             CREATE OR REPLACE FUNCTION update_familiarity_level()
@@ -1152,7 +1203,6 @@ def init_database_schema() -> bool:
             """
         )
 
-        # Apply triggers
         trigger_tables = [
             "conversations",
             "user_profiles",
@@ -1161,7 +1211,7 @@ def init_database_schema() -> bool:
             "usage_tracking",
             "user_preferences",
             "subscription_plans",
-            "user_memory",  # NEW
+            "user_memory",
         ]
 
         for tbl in trigger_tables:
@@ -1175,7 +1225,6 @@ def init_database_schema() -> bool:
                 """
             )
 
-        # Message count trigger (NEW)
         cur.execute("DROP TRIGGER IF EXISTS trigger_increment_message_count ON messages;")
         cur.execute(
             """
@@ -1186,7 +1235,6 @@ def init_database_schema() -> bool:
             """
         )
         
-        # Familiarity level trigger (NEW)
         cur.execute("DROP TRIGGER IF EXISTS trigger_update_familiarity ON user_memory;")
         cur.execute(
             """
@@ -1244,13 +1292,16 @@ def health_check() -> Dict[str, Any]:
             "conversations",
             "messages",
             "conversation_summaries",
-            "user_memory",  # NEW
-            "context_snapshots",  # NEW
+            "user_memory",
+            "context_snapshots",
             "user_intents",
             "user_profiles",
             "query_logs",
             "subscription_plans",
             "user_subscriptions",
+            "subscription_checkouts",  # PAYMENT
+            "payment_audit_log",       # PAYMENT
+            "payment_history",
             "usage_tracking",
             "generated_images",
         ]
@@ -1287,7 +1338,7 @@ def health_check() -> Dict[str, Any]:
 
 def main():
     log_info("🚀 ONE-BUNE DATABASE CONTROLLER SERVICE STARTING...")
-    log_info("📦 Version: 2.2.0 - With Memory System & Context Management")
+    log_info("📦 Version: 2.3.0 - With Payment System + Memory System")
     log_info(f"🐘 PostgreSQL Host: {os.getenv('DB_HOST', 'postgres')}")
     log_info(f"🗄️ Database Name: {os.getenv('DB_NAME', 'N/A')}")
     log_info("=" * 70)
