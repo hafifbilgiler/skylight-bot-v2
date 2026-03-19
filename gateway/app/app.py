@@ -1798,70 +1798,83 @@ def detect_image_generation_request(prompt: str) -> bool:
     return False
 
 
+# ═══════════════════════════════════════════════════════════════
+# SMART ROUTING - IMAGE MODIFICATION DETECTION (DÜZELTİLDİ)
+# ═══════════════════════════════════════════════════════════════
+
 def detect_image_modification_request(prompt: str) -> bool:
     """
-    Detect if user is requesting modification of previously generated image.
-    
-    Examples:
-    - "bunu daha yeşil yap" ✅
-    - "ağaçları kaldır" ✅
-    - "make it more colorful" ✅
-    
-    FALSE POSITIVES to avoid:
-    - "hayır be nsana görsel yükledim ve bunun ne olduğunu sordum" ❌
-    - "bu nedir" ❌
-    - "bunun hakkında bilgi ver" ❌
-    
-    Returns True if modification keywords detected AND context suggests modification.
+    Detect if user is requesting modification of previously generated IMAGE.
+
+    TRUE  → "bunu daha yeşil yap", "ağaçları kaldır", "make it more colorful"
+    FALSE → "bunu nereye ekleyeyim", "bunu kod tarafına ekleyeceğim", "bu nedir"
+
+    DÜZELTME: 'ekle' substring eşleşmesi kaldırıldı.
+    'ekle-yeyim', 'ekle-yeceğim' gibi kelimeler artık tetiklemiyor.
     """
+    import re
+
     prompt_lower = prompt.lower()
-    
-    # First, exclude clear non-modification contexts
+
+    # ─── 1. KESİN DIŞLAMALAR ───────────────────────────────────────────────
     exclusion_phrases = [
+        # Yerleştirme / konum soruları
+        'nereye ekle', 'nereye ekley', 'nereye koy', 'nereye yaz',
+        'nereye yapıştır', 'nereye yerleştir',
+        'where do i', 'where should', 'how do i add', 'how to add',
+        # Kod bağlamı
+        'kod taraf', 'kod kısm', 'dosya', 'fonksiyon', 'metod', 'class',
+        'import', 'modül', 'paket', 'satır', 'dizin', 'klasör',
+        # Görsel yükleme bildirimleri
         'görsel yükledim', 'resim yükledim', 'dosya yükledim',
         'uploaded', 'i uploaded', 'sent you',
+        # Soru / açıklama istekleri
         'nedir', 'ne demek', 'what is', 'explain',
         'bilgi ver', 'anlat', 'tell me about',
-        'sordum', 'soruyu', 'question about'
+        'sordum', 'soruyu', 'question about',
+        # Nereye soruları
+        'nereye',
     ]
-    
+
     if any(excl in prompt_lower for excl in exclusion_phrases):
-        # This is NOT a modification request
         return False
-    
-    # Core modification keywords (high confidence)
-    core_modification_keywords = [
-        # Turkish - strong modification indicators
-        'daha yeşil', 'daha mavi', 'daha büyük', 'daha küçük',
-        'ekle', 'çıkar', 'kaldır', 'sil',
-        'değiştir', 'güncelle', 'düzenle',
-        # English - strong modification indicators  
+
+    # ─── 2. GÜÇLÜ GÖRSEL DEĞİŞTİRME İFADELERİ ─────────────────────────────
+    strong_visual_phrases = [
+        # Renk / boyut / stil değiştirme
+        'daha yeşil', 'daha mavi', 'daha kırmızı', 'daha sarı',
+        'daha büyük', 'daha küçük', 'daha parlak', 'daha koyu', 'daha açık',
+        'rengini değiştir', 'rengi değiştir',
+        # İngilizce görsel komutlar
         'make it more', 'make it less', 'make it bigger', 'make it smaller',
-        'add a', 'remove the', 'delete the', 'change the'
+        'make it brighter', 'make it darker',
+        'change the color', 'change the background',
+        'remove the', 'add a person', 'add a tree', 'add a sky',
+        'delete the background', 'blur the background',
     ]
-    
-    # Check for strong modification phrases first
-    if any(kw in prompt_lower for kw in core_modification_keywords):
+
+    if any(phrase in prompt_lower for phrase in strong_visual_phrases):
         return True
-    
-    # Weak modification keywords (need more context)
-    weak_keywords = ['bunu', 'şunu', 'bunun', 'this', 'it']
-    
-    # Only consider weak keywords with modification verbs
-    modification_verbs = [
-        'yap', 'et', 'değiştir', 'ayarla',
-        'make', 'change', 'adjust', 'modify'
+
+    # ─── 3. ZAYIF ANAHTAR KELİMELER — Tam kelime eşleşmesi zorunlu ─────────
+    # 'ekle', 'kaldır' vb. sadece tam kelime olarak kabul edilir
+    # "ekleyeyim", "ekleyeceğim" → tetiklemez
+    weak_modification_verbs = [
+        r'\bkaldır\b', r'\bsil\b', r'\bdeğiştir\b', r'\bayarla\b',
+        r'\bremove\b', r'\bdelete\b', r'\bchange\b', r'\badjust\b', r'\bmodify\b',
     ]
-    
-    has_weak_keyword = any(kw in prompt_lower for kw in weak_keywords)
-    has_modification_verb = any(verb in prompt_lower for verb in modification_verbs)
-    
-    # Both must be present for weak keywords to trigger
-    if has_weak_keyword and has_modification_verb:
-        # Additional check: prompt should be short (modification requests are usually brief)
-        if len(prompt.split()) <= 10:
+
+    reference_words = [r'\bbunu\b', r'\bşunu\b', r'\bonu\b', r'\bit\b', r'\bthis\b']
+
+    has_reference = any(re.search(w, prompt_lower) for w in reference_words)
+    has_weak_verb = any(re.search(w, prompt_lower) for w in weak_modification_verbs)
+
+    if has_reference and has_weak_verb:
+        # Kısa prompt + referans + fiil → büyük ihtimalle görsel düzenleme
+        word_count = len(prompt.split())
+        if word_count <= 8:
             return True
-    
+
     return False
 
 
