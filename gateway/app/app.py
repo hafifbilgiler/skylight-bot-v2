@@ -2715,6 +2715,59 @@ class AdminOTPVerifyRequest(BaseModel):
     otp:      str
 
 
+@app.post("/admin/verify_password")
+async def admin_verify_password(
+    body: dict,
+    authorization: str = Header(None),
+):
+    """
+    admin.php buraya kullanıcı adı + şifre gönderir.
+    Gateway DB'yi kontrol eder, sonuç döner.
+    Sadece API bearer token ile çağrılabilir.
+    """
+    if not authorization or authorization.replace("Bearer ", "") != API_TOKEN:
+        raise HTTPException(status_code=401, detail="Yetkisiz")
+
+    username = str(body.get("username", "")).strip()
+    password = str(body.get("password", ""))
+
+    if not username or not password:
+        return {"status": "error", "message": "Kullanıcı adı ve şifre gerekli."}
+
+    try:
+        pool = _get_pool(); conn = pool.getconn(); cur = conn.cursor()
+        try:
+            # is_admin=TRUE olan kullanıcıyı bul (name veya email ile)
+            cur.execute("""
+                SELECT id, email, name, password
+                FROM users
+                WHERE is_admin = TRUE
+                  AND (name = %s OR email = %s)
+                LIMIT 1
+            """, (username, username))
+            admin = cur.fetchone()
+
+            if not admin or not admin[3]:
+                return {"status": "error", "message": "Kullanıcı bulunamadı."}
+
+            # pgcrypto crypt ile doğrula
+            cur.execute(
+                "SELECT (password = crypt(%s, password)) AS ok FROM users WHERE id = %s",
+                (password, admin[0])
+            )
+            row = cur.fetchone()
+            if not row or not row[0]:
+                return {"status": "error", "message": "Şifre yanlış."}
+
+            return {"status": "success", "username": admin[2] or admin[1]}
+
+        finally:
+            pool.putconn(conn)
+    except Exception as e:
+        print(f"[ADMIN VERIFY_PASSWORD] {e}")
+        raise HTTPException(status_code=500, detail="Sunucu hatası.")
+
+
 @app.post("/admin/send_otp")
 async def admin_send_otp(req: AdminOTPRequest, request: Request,
                           authorization: str = Header(None)):
