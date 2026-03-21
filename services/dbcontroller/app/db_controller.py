@@ -1014,6 +1014,42 @@ def init_database_schema() -> bool:
             EXECUTE FUNCTION update_familiarity_level();
         """)
 
+        # ── Premium senkronizasyon trigger'ı ──────────────────────
+        # user_subscriptions değişince users.is_premium otomatik güncellenir
+        cur.execute("""
+            CREATE OR REPLACE FUNCTION sync_user_premium()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                UPDATE users SET
+                    is_premium = (
+                        EXISTS (
+                            SELECT 1 FROM user_subscriptions
+                            WHERE user_id = NEW.user_id
+                              AND status IN ('active','trialing')
+                              AND plan_id != 'free'
+                        )
+                    ),
+                    subscription_active = (
+                        EXISTS (
+                            SELECT 1 FROM user_subscriptions
+                            WHERE user_id = NEW.user_id
+                              AND status IN ('active','trialing')
+                              AND plan_id != 'free'
+                        )
+                    )
+                WHERE id = NEW.user_id;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+        """)
+        cur.execute("DROP TRIGGER IF EXISTS trigger_sync_premium ON user_subscriptions;")
+        cur.execute("""
+            CREATE TRIGGER trigger_sync_premium
+            AFTER INSERT OR UPDATE ON user_subscriptions
+            FOR EACH ROW EXECUTE FUNCTION sync_user_premium();
+        """)
+        # ──────────────────────────────────────────────────────────
+
         log_success("Triggers OK")
 
         conn.commit()
