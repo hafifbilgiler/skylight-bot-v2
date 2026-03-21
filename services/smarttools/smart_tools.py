@@ -1,33 +1,29 @@
 """
 ═══════════════════════════════════════════════════════════════
-SKYLIGHT SMART TOOLS SERVICE — v7.0 (LiveDataRouter)
+SKYLIGHT SMART TOOLS SERVICE — v7.1
 ═══════════════════════════════════════════════════════════════
-v6.1 → v7.0: Sistematik canlı veri yönlendirme
+Görev:
+  - Canlı veri API'leri (kur, hava, kripto, saat, haberler)
+  - Deep Search pipeline (SearXNG → Jina.ai → LLM sentezi)
+  - Web arama (SearXNG → Brave → DuckDuckGo waterfall)
 
-TEK KAYNAK İLKESİ:
-  Tüm "bu sorgu nereye gider?" kararları SADECE buradadır.
-  Chat servisi ve gateway bu servisi sorgular — kendi keyword
-  listelerini tutmazlar.
+Detection (canlı veri lazım mı?) → chat_service ve gateway'de LOCAL yapılır.
+Bu servis sadece veriyi getirir, karar vermez.
 
-LiveDataRouter — Sorgu Kategorileri:
-  ┌─────────────────────────────────────────────────────────┐
-  │ LIVE_UTILITY  → Anlık API (kur, hava, kripto, saat)    │
-  │ LIVE_NEWS     → Haber RSS (gerçek başlıklar)           │
-  │ LIVE_SEARCH   → Deep Search (araştırma + Jina + LLM)   │
-  │ STATIC        → LLM kendi bilgisi yeterli              │
-  │ TECHNICAL     → Kod/IT modu, LLM direkt               │
-  └─────────────────────────────────────────────────────────┘
+Endpoints:
+  POST /unified      → Canlı veri + web arama (chat servisi çağırır)
+  POST /deep_search  → Araştırma pipeline (gateway çağırır)
+  POST /search       → Direkt web arama
+  GET  /fetch        → Tek URL içeriği (test)
+  GET  /health
+  GET  /
 
-/classify endpoint:
-  Her servis buraya sorar, karar burada verilir.
-  Yeni konu eklemek = tek yerde bir satır.
+Sayfa çekme:
+  1. Jina.ai   → r.jina.ai/URL (ücretsiz, sınırsız, JS render)
+  2. Crawl4AI  → CRAWL4AI_URL set edilince devreye girer
+  3. Direkt    → Son çare
 
-SAYFA ÇEKME (Deep Search için):
-  Katman 1: Jina.ai Reader (ücretsiz, sınırsız, JS render)
-  Katman 2: Crawl4AI (CRAWL4AI_URL set edilince devreye girer)
-  Katman 3: Direkt scrape (son çare)
-
-ARAMA (waterfall):
+Arama:
   SearXNG → Brave → DuckDuckGo
 ═══════════════════════════════════════════════════════════════
 """
@@ -35,7 +31,7 @@ ARAMA (waterfall):
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict
 from datetime import datetime
 from urllib.parse import quote_plus
 import pytz
@@ -50,14 +46,10 @@ import json
 from enum import Enum
 
 # ═══════════════════════════════════════════════════════════════
-# CONFIGURATION
+# CONFIG
 # ═══════════════════════════════════════════════════════════════
 
-app = FastAPI(
-    title="Skylight Smart Tools",
-    description="LiveDataRouter + Deep Search (Jina.ai + LLM)",
-    version="7.0.0",
-)
+app = FastAPI(title="Skylight Smart Tools", version="7.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_credentials=True,
@@ -70,16 +62,12 @@ CRAWL4AI_URL       = os.getenv("CRAWL4AI_URL",       None)
 JINA_BASE_URL      = "https://r.jina.ai"
 DEEPINFRA_API_KEY  = os.getenv("DEEPINFRA_API_KEY",  "")
 DEEPINFRA_BASE_URL = os.getenv("DEEPINFRA_BASE_URL", "https://api.deepinfra.com/v1/openai")
-SYNTHESIS_MODEL    = os.getenv(
-    "SYNTHESIS_MODEL",
-    "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"
-)
+SYNTHESIS_MODEL    = os.getenv("SYNTHESIS_MODEL",    "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8")
 
-MAX_PAGE_CHARS    = 3000
-MAX_PAGES         = 3
-JINA_TIMEOUT      = 12
-CRAWL4AI_TIMEOUT  = 15
-DIRECT_TIMEOUT    = 8
+MAX_PAGE_CHARS   = 3000
+JINA_TIMEOUT     = 12
+CRAWL4AI_TIMEOUT = 15
+DIRECT_TIMEOUT   = 8
 
 # ═══════════════════════════════════════════════════════════════
 # CACHE
@@ -130,49 +118,24 @@ class AsyncCache:
             self._s[k] = (v, time.time() + self._ttl)
 
 
-weather_cache  = SimpleCache(ttl=300)
-currency_cache = SimpleCache(ttl=120)
-search_cache   = SimpleCache(ttl=180)
-deep_cache     = AsyncCache(ttl=300)
+weather_cache  = SimpleCache(ttl=300)   # 5 dk
+currency_cache = SimpleCache(ttl=120)   # 2 dk
+search_cache   = SimpleCache(ttl=180)   # 3 dk
+deep_cache     = AsyncCache(ttl=300)    # 5 dk
 
 # ═══════════════════════════════════════════════════════════════
-# DATA MODELS
+# MODELS
 # ═══════════════════════════════════════════════════════════════
-
-class DataCategory(str, Enum):
-    """
-    Sorgu kategorileri — LiveDataRouter tarafından belirlenir.
-    Tüm servisler bu enum'u kullanır.
-    """
-    LIVE_UTILITY  = "live_utility"   # Anlık API: kur, hava, kripto, saat, fiyat
-    LIVE_NEWS     = "live_news"      # Haber RSS: son haberler, gündem
-    LIVE_SEARCH   = "live_search"    # Deep Search: araştırma, analiz, güncel olaylar
-    STATIC        = "static"         # LLM yeterli: genel bilgi, sabit konular
-    TECHNICAL     = "technical"      # Kod/IT: programlama, DevOps
-
 
 class ToolType(str, Enum):
-    TIME              = "time"
-    WEATHER           = "weather"
-    NEWS              = "news"
-    CURRENCY          = "currency"
-    CRYPTO            = "crypto"
-    PRICE_SEARCH      = "price_search"
-    WEB_SEARCH        = "web_search"
-    DEEP_SEARCH       = "deep_search"
-
-
-class ClassifyRequest(BaseModel):
-    query:   str
-    mode:    str  = "assistant"  # chat mode: assistant, code, it_expert, student, social
-
-
-class ClassifyResponse(BaseModel):
-    category:      DataCategory
-    tool:          Optional[ToolType] = None   # LIVE_UTILITY için hangi tool
-    confidence:    float = 1.0
-    reason:        str   = ""
-    action:        str   = ""   # chat servisine ne yapması gerektiği
+    TIME         = "time"
+    WEATHER      = "weather"
+    NEWS         = "news"
+    CURRENCY     = "currency"
+    CRYPTO       = "crypto"
+    PRICE_SEARCH = "price_search"
+    WEB_SEARCH   = "web_search"
+    DEEP_SEARCH  = "deep_search"
 
 
 class UnifiedRequest(BaseModel):
@@ -195,315 +158,48 @@ class DeepSearchRequest(BaseModel):
 
 
 # ═══════════════════════════════════════════════════════════════
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# LIVE DATA ROUTER — TEK KAYNAK, TÜM SERVİSLER BUNA SORAR
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# AUTO DETECT — /unified için hangi tool?
 # ═══════════════════════════════════════════════════════════════
 
-class LiveDataRouter:
+def auto_detect_tool(query: str) -> ToolType:
     """
-    Sorgu → Kategori + Tool eşleştirmesi.
-
-    KURAL: Her keyword sadece BİR kategoride olur.
-    KURAL: Chat servisi ve gateway bu sınıfı kullanır, kendi listeleri olmaz.
-    KURAL: Yeni konu eklemek = ilgili listeye bir kelime eklemek.
-
-    Öncelik sırası (üstteki önce kontrol edilir):
-      1. TECHNICAL  — kod/IT modu ise direkt
-      2. LIVE_UTILITY — kur, hava, kripto, saat (API'den anlık)
-      3. LIVE_NEWS    — haberler (RSS'den gerçek)
-      4. LIVE_SEARCH  — araştırma (Deep Search pipeline)
-      5. STATIC       — LLM kendi bilgisi yeterli
+    Chat servisi zaten ne istediğini biliyor (local detection).
+    Ama /unified'a tool_type gönderilmezse burada belirlenir.
+    Sıralama kritik — spesifik önce, genel sonra.
     """
-
-    # ── TECHNICAL — kod/IT mod veya teknik sorular ──────────────
-    TECHNICAL_MODES = {"code", "it_expert"}
-
-    TECHNICAL_KEYWORDS = (
-        "nasıl kullanılır", "syntax nedir", "kod yaz", "örnek ver",
-        "açıkla", "ne demek", "tanımı nedir",
-        "python", "javascript", "typescript", "golang", "rust",
-        "docker", "kubernetes", "terraform", "ansible",
-        "nasıl yapılır", "tutorial", "döküman",
-        "fonksiyon yaz", "class yaz", "script yaz",
-    )
-
-    # ── LIVE_UTILITY — Anlık API sorguları ──────────────────────
-    # Bu sorgular smart tools'un CURRENCY/WEATHER/CRYPTO/TIME tool'larına gider
-    # Asla deep search'e gitmez — API'den direkt, 0.1 saniye
-
-    CURRENCY_SIGNALS = (
-        "dolar", "euro", "eur", "usd", "gbp", "sterlin", "pound",
-        "jpy", "yen", "chf", "frank", "cad",
-        "kur", "döviz", "doviz", "exchange rate",
-        "kaç tl", "kac tl", "tl kaç", "kaç dolar", "kaç euro",
-        "dolar kaç", "euro kaç", "kur nedir", "döviz kuru",
-    )
-
-    WEATHER_SIGNALS = (
-        "hava durumu", "havadurumu", "hava nasıl", "havalar nasıl",
-        "hava kaç derece", "sıcaklık kaç", "sicaklik",
-        "yağmur yağıyor mu", "kar yağıyor mu",
-        "weather", "temperature", "forecast",
-        "bugün hava", "yarın hava",
-        "derece", "nem oranı", "rüzgar hızı",
-    )
-
-    CRYPTO_SIGNALS = (
-        "bitcoin", "btc", "ethereum", "eth",
-        "dogecoin", "doge", "solana", "sol",
-        "kripto", "crypto", "coin fiyat", "altcoin",
-        "bitcoin kaç", "ethereum kaç", "btc usd",
-    )
-
-    TIME_SIGNALS = (
-        "saat kaç", "saat kac", "saati kaç", "şimdi saat",
-        "şu an saat", "günün saati", "what time is it",
-        "tarih ne", "bugün ne günü", "bugün hangi gün",
-    )
-
-    PRICE_SIGNALS = (
-        "kaç lira", "fiyatı ne kadar", "fiyatı kaç", "ne kadar",
-        "altın fiyatı", "petrol fiyatı", "gram altın",
-        "borsa", "bist", "hisse fiyatı", "stock price",
-    )
-
-    # ── LIVE_NEWS — Haber RSS sorguları ─────────────────────────
-    # Smart tools'un NEWS tool'una gider — Google News RSS, gerçek başlıklar
-
-    NEWS_SIGNALS = (
-        "son haberler", "güncel haberler", "bugünün haberleri",
-        "son dakika", "breaking news", "haberleri göster",
-        "haberleri getir", "haber var mı", "haber oku",
-        "gündem ne", "gündeme ne geldi",
-        "today's news", "latest news", "news today",
-        "türkiye haberleri", "dünya haberleri",
-        "ekonomi haberleri", "spor haberleri",
-    )
-
-    # ── LIVE_SEARCH — Deep Search pipeline ──────────────────────
-    # SearXNG → Jina.ai → LLM sentezi — araştırma gerektiren sorgular
-
-    RESEARCH_SIGNALS = (
-        # Açık araştırma isteği
-        "araştır", "araştırma yap", "analiz et", "incele",
-        "hakkında bilgi ver", "bul bana", "find me",
-        "webde ara", "internette ara", "google'la",
-        "araştırır mısın", "bakabilir misin",
-        # Güncel olaylar — haber değil araştırma
-        "son gelişmeler", "son açıklamalar", "son rapor",
-        "ne oldu", "neler oluyor", "dünyada neler var",
-        "gündemde ne var", "dünya gündemi", "küresel gelişmeler",
-        "güncel durum", "son durum",
-        # Kişi/şirket araştırması
-        "kimdir", "ne yaptı", "açıkladı mı", "duyurdu mu",
-        # Spesifik konu araştırması
-        "son çalışma", "yeni keşif", "yeni buluş",
-        "latest developments", "what happened",
-        "recent news about",
-    )
-
-    RESEARCH_TOPIC_PATTERNS = (
-        # "X'in son haberleri" ama genel "son haberler" değil
-        r'.{2,20} haberleri$',
-        r'.{2,20} son (haber|gelişme|durum)',
-        r'(2024|2025).{0,30}(nedir|ne oldu|nasıl)',
-        r'.{2,20} (açıkladı|duyurdu|karar verdi)',
-    )
-
-    # ── HARMFUL — engellenenler ──────────────────────────────────
-    HARMFUL = (
-        "bomba yap", "patlayıcı yap", "silah yap", "uyuşturucu yap",
-        "bomb make", "drug make", "weapon make",
-        "hack into", "ddos saldır", "malware yaz",
-        "çocuk istismar", "child abuse",
-        "nasıl öldürülür", "how to kill",
-    )
-
-    @classmethod
-    def classify(cls, query: str, mode: str = "assistant") -> ClassifyResponse:
-        """
-        Sorguyu kategorize et.
-
-        Bu metod tüm sistemin beynidir. Chat servisi ve gateway
-        başka hiçbir keyword listesi tutmaz — sadece bunu çağırır.
-        """
-        q = query.lower().strip()
-
-        # ── 0. Zararlı içerik ────────────────────────────────────
-        if any(h in q for h in cls.HARMFUL):
-            return ClassifyResponse(
-                category=DataCategory.STATIC,
-                reason="harmful_blocked",
-                action="block",
-            )
-
-        # ── 1. TECHNICAL — kod/IT mod ────────────────────────────
-        if mode in cls.TECHNICAL_MODES:
-            return ClassifyResponse(
-                category=DataCategory.TECHNICAL,
-                reason=f"technical_mode:{mode}",
-                action="llm_direct",
-            )
-        if any(kw in q for kw in cls.TECHNICAL_KEYWORDS) and len(q.split()) <= 7:
-            return ClassifyResponse(
-                category=DataCategory.TECHNICAL,
-                reason="technical_keyword",
-                action="llm_direct",
-            )
-
-        # ── 2. LIVE_UTILITY — anlık API ──────────────────────────
-        # Döviz
-        if any(s in q for s in cls.CURRENCY_SIGNALS):
-            return ClassifyResponse(
-                category=DataCategory.LIVE_UTILITY,
-                tool=ToolType.CURRENCY,
-                reason="currency_signal",
-                action="smart_tools_api",
-            )
-        # Hava
-        if any(s in q for s in cls.WEATHER_SIGNALS):
-            return ClassifyResponse(
-                category=DataCategory.LIVE_UTILITY,
-                tool=ToolType.WEATHER,
-                reason="weather_signal",
-                action="smart_tools_api",
-            )
-        # Kripto
-        if any(s in q for s in cls.CRYPTO_SIGNALS):
-            return ClassifyResponse(
-                category=DataCategory.LIVE_UTILITY,
-                tool=ToolType.CRYPTO,
-                reason="crypto_signal",
-                action="smart_tools_api",
-            )
-        # Saat
-        if any(s in q for s in cls.TIME_SIGNALS):
-            return ClassifyResponse(
-                category=DataCategory.LIVE_UTILITY,
-                tool=ToolType.TIME,
-                reason="time_signal",
-                action="smart_tools_api",
-            )
-        # Fiyat
-        if any(s in q for s in cls.PRICE_SIGNALS):
-            return ClassifyResponse(
-                category=DataCategory.LIVE_UTILITY,
-                tool=ToolType.PRICE_SEARCH,
-                reason="price_signal",
-                action="smart_tools_api",
-            )
-
-        # ── 3. LIVE_NEWS — haber RSS ─────────────────────────────
-        if any(s in q for s in cls.NEWS_SIGNALS):
-            return ClassifyResponse(
-                category=DataCategory.LIVE_NEWS,
-                tool=ToolType.NEWS,
-                reason="news_signal",
-                action="smart_tools_news",
-            )
-
-        # ── 4. LIVE_SEARCH — deep search ─────────────────────────
-        # Açık araştırma isteği
-        if any(s in q for s in cls.RESEARCH_SIGNALS):
-            return ClassifyResponse(
-                category=DataCategory.LIVE_SEARCH,
-                tool=ToolType.DEEP_SEARCH,
-                reason="research_signal",
-                action="deep_search",
-            )
-        # Pattern tabanlı araştırma (regex)
-        for pattern in cls.RESEARCH_TOPIC_PATTERNS:
-            if re.search(pattern, q):
-                return ClassifyResponse(
-                    category=DataCategory.LIVE_SEARCH,
-                    tool=ToolType.DEEP_SEARCH,
-                    confidence=0.8,
-                    reason=f"research_pattern:{pattern}",
-                    action="deep_search",
-                )
-
-        # ── 5. STATIC — LLM yeterli ──────────────────────────────
-        return ClassifyResponse(
-            category=DataCategory.STATIC,
-            reason="no_live_data_needed",
-            action="llm_direct",
-        )
-
-    @classmethod
-    def get_smart_tools_query(cls, query: str, tool: ToolType) -> str:
-        """
-        Smart tools'a gönderilecek sorguyu optimize et.
-        Örneğin: "güncel euro kaç tl" → "EUR TRY"
-        """
-        q = query.lower()
-
-        if tool == ToolType.WEATHER:
-            # Şehir adını çıkar
-            city = _extract_city(query)
-            return f"{city} hava durumu" if city else query
-
-        if tool == ToolType.CURRENCY:
-            # Para birimlerini normalize et
-            pairs = _extract_currency_pair(query)
-            return f"{pairs[0]} {pairs[1]} kuru"
-
-        if tool == ToolType.CRYPTO:
-            # Coin adını normalize et
-            coin = _extract_coin(query)
-            return f"{coin} fiyatı"
-
-        return query
-
-
-# ═══════════════════════════════════════════════════════════════
-# QUERY EXTRACTION HELPERS
-# ═══════════════════════════════════════════════════════════════
-
-def _extract_city(query: str) -> Optional[str]:
-    """Sorgudaki şehir adını çıkar."""
-    noise = {
-        'hava', 'durumu', 'havadurumu', 'weather', 'sıcaklık',
-        'bugün', 'nasıl', 'nedir', 'kaç', 'derece', 'için',
-        'de', 'da', 'şuan', 'şimdi', 'ne', 'nerede', 'olan',
-    }
-    words = re.findall(r'\b[a-zA-ZçğıöşüÇĞİÖŞÜ]+\b', query)
-    clean = [w for w in words if w.lower() not in noise and len(w) > 2]
-    if not clean:
-        return None
-    first = clean[0]
-    for suf in ['daki','deki','dan','den','da','de','ta','te',
-                'nın','nin','nun','nün','ın','in','un','ün']:
-        if first.lower().endswith(suf) and len(first) > len(suf) + 2:
-            first = first[:-len(suf)]
-            break
-    if len(clean) > 1:
-        two = f"{clean[0]} {clean[1]}".lower()
-        multi = {"new york","los angeles","san francisco","hong kong",
-                 "kuala lumpur","buenos aires","cape town","tel aviv"}
-        if two in multi:
-            return two.title()
-    return first.title()
-
-
-def _extract_currency_pair(query: str) -> tuple:
     q = query.lower()
-    cmap = {
-        "dolar":"USD", "usd":"USD", "euro":"EUR", "eur":"EUR",
-        "pound":"GBP", "sterlin":"GBP", "gbp":"GBP",
-        "tl":"TRY", "try":"TRY", "lira":"TRY",
-        "yen":"JPY", "frank":"CHF",
-    }
-    found = [v for k, v in cmap.items() if k in q]
-    return (found[0] if found else "USD", found[1] if len(found) > 1 else "TRY")
 
+    # Döviz
+    if any(k in q for k in ("dolar","euro","eur","usd","gbp","sterlin","pound",
+                              "kur","döviz","doviz","kaç tl","tl kaç")):
+        return ToolType.CURRENCY
 
-def _extract_coin(query: str) -> str:
-    q = query.lower()
-    if "ethereum" in q or " eth" in q: return "ethereum"
-    if "dogecoin" in q or "doge" in q: return "dogecoin"
-    if "solana" in q or " sol " in q:  return "solana"
-    return "bitcoin"
+    # Kripto
+    if any(k in q for k in ("bitcoin","btc","ethereum","eth","dogecoin",
+                              "doge","solana","kripto","crypto","coin")):
+        return ToolType.CRYPTO
+
+    # Hava
+    if any(k in q for k in ("hava","havadurumu","weather","sıcaklık",
+                              "sicaklik","derece","yağmur","kar","rüzgar","forecast")):
+        return ToolType.WEATHER
+
+    # Fiyat
+    if any(k in q for k in ("fiyat","price","kaç lira","ne kadar",
+                              "altın","petrol","gram altın")):
+        return ToolType.PRICE_SEARCH
+
+    # Saat
+    if any(k in q for k in ("saat kaç","saati kaç","şimdi saat",
+                              "what time","bugün ne günü")):
+        return ToolType.TIME
+
+    # Haberler
+    if any(k in q for k in ("haber","news","gündem","son dakika","breaking")):
+        return ToolType.NEWS
+
+    # Varsayılan
+    return ToolType.WEB_SEARCH
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -521,23 +217,75 @@ WEATHER_CODES = {
 }
 
 # ═══════════════════════════════════════════════════════════════
-# LIVE UTILITY TOOL FUNCTIONS
+# HELPERS
 # ═══════════════════════════════════════════════════════════════
 
-def get_current_time(tz_str: str = "Europe/Istanbul") -> Dict:
+def _extract_city(query: str) -> Optional[str]:
+    noise = {
+        'hava','durumu','weather','sıcaklık','bugün','nasıl','nedir','kaç',
+        'derece','için','de','da','şuan','şimdi','ne','nerede','olan',
+    }
+    words = re.findall(r'\b[a-zA-ZçğıöşüÇĞİÖŞÜ]+\b', query)
+    clean = [w for w in words if w.lower() not in noise and len(w) > 2]
+    if not clean:
+        return None
+    first = clean[0]
+    for suf in ['daki','deki','dan','den','da','de','ta','te',
+                'nın','nin','nun','nün','ın','in','un','ün']:
+        if first.lower().endswith(suf) and len(first) > len(suf) + 2:
+            first = first[:-len(suf)]
+            break
+    if len(clean) > 1:
+        two = f"{clean[0]} {clean[1]}".lower()
+        if two in {"new york","los angeles","san francisco","hong kong",
+                   "kuala lumpur","buenos aires","cape town","tel aviv","abu dhabi"}:
+            return two.title()
+    return first.title()
+
+
+def _extract_currency_pair(query: str) -> tuple:
+    q = query.lower()
+    cmap = {
+        "dolar":"USD","usd":"USD","euro":"EUR","eur":"EUR",
+        "pound":"GBP","sterlin":"GBP","gbp":"GBP",
+        "tl":"TRY","try":"TRY","lira":"TRY",
+        "yen":"JPY","frank":"CHF",
+    }
+    found = [v for k, v in cmap.items() if k in q]
+    return (found[0] if found else "USD", found[1] if len(found) > 1 else "TRY")
+
+
+def _extract_coin(query: str) -> str:
+    q = query.lower()
+    if "ethereum" in q or " eth" in q: return "ethereum"
+    if "dogecoin" in q or "doge" in q: return "dogecoin"
+    if "solana"   in q or " sol" in q: return "solana"
+    return "bitcoin"
+
+
+# ═══════════════════════════════════════════════════════════════
+# LIVE UTILITY TOOLS
+# ═══════════════════════════════════════════════════════════════
+
+def get_time(tz_str: str = "Europe/Istanbul") -> Dict:
     try:
         tz  = pytz.timezone(tz_str)
         now = datetime.now(tz)
-        days = {"Monday":"Pazartesi","Tuesday":"Salı","Wednesday":"Çarşamba",
-                "Thursday":"Perşembe","Friday":"Cuma",
-                "Saturday":"Cumartesi","Sunday":"Pazar"}
-        months = {"January":"Ocak","February":"Şubat","March":"Mart","April":"Nisan",
-                  "May":"Mayıs","June":"Haziran","July":"Temmuz","August":"Ağustos",
-                  "September":"Eylül","October":"Ekim","November":"Kasım","December":"Aralık"}
+        days = {
+            "Monday":"Pazartesi","Tuesday":"Salı","Wednesday":"Çarşamba",
+            "Thursday":"Perşembe","Friday":"Cuma",
+            "Saturday":"Cumartesi","Sunday":"Pazar",
+        }
+        months = {
+            "January":"Ocak","February":"Şubat","March":"Mart","April":"Nisan",
+            "May":"Mayıs","June":"Haziran","July":"Temmuz","August":"Ağustos",
+            "September":"Eylül","October":"Ekim","November":"Kasım","December":"Aralık",
+        }
         day_tr   = days.get(now.strftime("%A"),   now.strftime("%A"))
         month_tr = months.get(now.strftime("%B"), now.strftime("%B"))
         return {"success": True, "data": {
-            "time": now.strftime("%H:%M:%S"), "date": now.strftime("%Y-%m-%d"),
+            "time": now.strftime("%H:%M:%S"),
+            "date": now.strftime("%Y-%m-%d"),
             "day_tr": day_tr, "month_tr": month_tr,
             "formatted_tr": f"{now.day} {month_tr} {now.year}, {day_tr}, saat {now.strftime('%H:%M')}",
             "short": f"Saat {now.strftime('%H:%M')}, {day_tr}",
@@ -572,13 +320,14 @@ def get_weather(query: str) -> Dict:
         c    = w["current"]
         desc = WEATHER_CODES.get(c.get("weather_code", 0), "Bilinmiyor")
         result = {"success": True, "tool_used": "weather", "data": {
-            "city": city_name, "country": country,
-            "temperature":  round(c["temperature_2m"],     1),
-            "feels_like":   round(c["apparent_temperature"],1),
-            "humidity":     c["relative_humidity_2m"],
-            "description":  desc,
-            "wind_speed":   round(c.get("wind_speed_10m", 0), 1),
-            "formatted":    f"{city_name}, {country}: {round(c['temperature_2m'])}°C, {desc}",
+            "city":        city_name,
+            "country":     country,
+            "temperature": round(c["temperature_2m"],      1),
+            "feels_like":  round(c["apparent_temperature"], 1),
+            "humidity":    c["relative_humidity_2m"],
+            "description": desc,
+            "wind_speed":  round(c.get("wind_speed_10m", 0), 1),
+            "formatted":   f"{city_name}, {country}: {round(c['temperature_2m'])}°C, {desc}",
         }}
         weather_cache.set(key, result)
         print(f"[WEATHER] {city_name}: {c['temperature_2m']}°C, {desc}")
@@ -606,7 +355,7 @@ def get_currency(from_c: str = "USD", to_c: str = "TRY") -> Dict:
             return result
     except Exception:
         pass
-    # Method 2: Google Finance
+    # Method 2: Google Finance fallback
     try:
         r    = requests.get(
             f"https://www.google.com/finance/quote/{from_c}-{to_c}",
@@ -652,8 +401,8 @@ def get_news(query: Optional[str] = None) -> Dict:
                else "https://news.google.com/rss?hl=tr&gl=TR")
         soup     = BeautifulSoup(requests.get(url, timeout=5).text, 'xml')
         articles = [
-            {"title":     i.title.text  if i.title  else "",
-             "link":      i.link.text   if i.link   else "",
+            {"title":     i.title.text   if i.title   else "",
+             "link":      i.link.text    if i.link    else "",
              "published": i.pubDate.text if i.pubDate else ""}
             for i in soup.find_all('item', limit=5)
         ]
@@ -664,35 +413,12 @@ def get_news(query: Optional[str] = None) -> Dict:
         return {"success": False, "error": str(e)}
 
 
-def run_live_utility(tool: ToolType, query: str) -> Dict:
-    """
-    LIVE_UTILITY sorgularını çalıştırır.
-    Tüm tool dispatch buradan yapılır.
-    """
-    if tool == ToolType.WEATHER:
-        return get_weather(query)
-    if tool == ToolType.CURRENCY:
-        fc, tc = _extract_currency_pair(query)
-        return get_currency(fc, tc)
-    if tool == ToolType.CRYPTO:
-        return get_crypto(_extract_coin(query))
-    if tool == ToolType.TIME:
-        return get_current_time()
-    if tool == ToolType.PRICE_SEARCH:
-        # Fiyat sorguları web search ile
-        return sync_web_search(query, 3)
-    if tool == ToolType.NEWS:
-        topic = re.sub(r'\b(haber|haberleri|news)\b', '', query).strip()
-        return get_news(topic if len(topic) > 2 else None)
-    return {"success": False, "error": f"Bilinmeyen tool: {tool}"}
-
-
 # ═══════════════════════════════════════════════════════════════
-# SYNC WEB SEARCH
+# SYNC WEB SEARCH (waterfall)
 # ═══════════════════════════════════════════════════════════════
 
 def sync_web_search(query: str, num: int = 5) -> Dict:
-    """Sync waterfall: SearXNG → Brave → DuckDuckGo"""
+    """SearXNG → Brave → DuckDuckGo + 3dk cache."""
     key    = f"s_{query.lower().strip()}"
     cached = search_cache.get(key)
     if cached:
@@ -760,17 +486,18 @@ def sync_web_search(query: str, num: int = 5) -> Dict:
 
 
 # ═══════════════════════════════════════════════════════════════
-# ASYNC DEEP SEARCH ENGINE
+# ASYNC WEB SEARCH (deep search için)
 # ═══════════════════════════════════════════════════════════════
 
 async def async_web_search(query: str, num: int = 5) -> Dict:
-    """Async waterfall: SearXNG → Brave → DuckDuckGo"""
+    """Async waterfall — non-blocking."""
     key    = f"as_{query.lower().strip()}"
     cached = await deep_cache.get(key)
     if cached:
         return cached
 
     async with httpx.AsyncClient(timeout=12.0) as client:
+
         # SearXNG
         if SEARXNG_URL:
             try:
@@ -835,13 +562,18 @@ async def async_web_search(query: str, num: int = 5) -> Dict:
     return {"success": False, "error": "Tüm arama sağlayıcıları başarısız"}
 
 
+# ═══════════════════════════════════════════════════════════════
+# SAYFA ÇEKME — Jina → Crawl4AI → Direkt
+# ═══════════════════════════════════════════════════════════════
+
 async def fetch_via_jina(url: str) -> Optional[str]:
     """Jina.ai Reader — ücretsiz, sınırsız, JS render, temiz markdown."""
     try:
         async with httpx.AsyncClient(timeout=JINA_TIMEOUT) as client:
             resp = await client.get(
                 f"{JINA_BASE_URL}/{url}",
-                headers={"Accept": "text/plain", "X-Return-Format": "markdown", "X-Timeout": "8"},
+                headers={"Accept": "text/plain", "X-Return-Format": "markdown",
+                         "X-Timeout": "8"},
             )
             if resp.status_code != 200:
                 return None
@@ -856,7 +588,7 @@ async def fetch_via_jina(url: str) -> Optional[str]:
 
 
 async def fetch_via_crawl4ai(url: str) -> Optional[str]:
-    """Crawl4AI — local pod. CRAWL4AI_URL set edilince aktif."""
+    """Crawl4AI — CRAWL4AI_URL set edilince aktif olur."""
     if not CRAWL4AI_URL:
         return None
     try:
@@ -868,7 +600,7 @@ async def fetch_via_crawl4ai(url: str) -> Optional[str]:
                 return None
             results = resp.json().get("results", [])
             if results and results[0].get("success"):
-                md = results[0].get("markdown", "") or results[0].get("extracted_content", "")
+                md = results[0].get("markdown","") or results[0].get("extracted_content","")
                 if md and len(md) > 100:
                     print(f"[CRAWL4AI] ✅ {url[:60]} → {len(md)} chars")
                     return md[:MAX_PAGE_CHARS]
@@ -878,7 +610,7 @@ async def fetch_via_crawl4ai(url: str) -> Optional[str]:
 
 
 async def fetch_via_direct(url: str) -> Optional[str]:
-    """Direkt httpx scrape — son çare."""
+    """Direkt httpx scrape — son çare, JS render yok."""
     skip = ("youtube.com","youtu.be","twitter.com","x.com",
             "instagram.com","facebook.com","tiktok.com","reddit.com")
     if any(d in url for d in skip):
@@ -906,10 +638,9 @@ async def fetch_via_direct(url: str) -> Optional[str]:
 
 async def fetch_page_content(url: str) -> Optional[str]:
     """
-    Üç katmanlı sayfa çekme:
-    1. Jina.ai   (aktif — ücretsiz, sınırsız)
-    2. Crawl4AI  (CRAWL4AI_URL gelince devreye girer)
-    3. Direkt    (son çare)
+    Katman 1: Jina.ai   (aktif — ücretsiz, sınırsız)
+    Katman 2: Crawl4AI  (CRAWL4AI_URL set edilince)
+    Katman 3: Direkt    (son çare)
     """
     if not url or not url.startswith(("http://","https://")):
         return None
@@ -923,6 +654,10 @@ async def fetch_page_content(url: str) -> Optional[str]:
     return await fetch_via_direct(url)
 
 
+# ═══════════════════════════════════════════════════════════════
+# LLM SENTEZİ
+# ═══════════════════════════════════════════════════════════════
+
 async def synthesize_with_llm(
     query:          str,
     search_results: List[dict],
@@ -930,7 +665,7 @@ async def synthesize_with_llm(
     language:       str = "tr",
     context_hint:   Optional[str] = None,
 ) -> str:
-    """Ham sonuçları LLM ile sentezler."""
+    """Ham sonuçları LLM ile sentezler. API key yoksa ham döner."""
     if not DEEPINFRA_API_KEY:
         return "\n\n".join([
             f"**{r.get('title','')}**\n{r.get('content','')[:300]}"
@@ -971,13 +706,15 @@ Kurallar:
                 f"{DEEPINFRA_BASE_URL}/chat/completions",
                 headers={"Content-Type": "application/json",
                          "Authorization": f"Bearer {DEEPINFRA_API_KEY}"},
-                json={"model": SYNTHESIS_MODEL,
-                      "messages": [
-                          {"role": "system", "content":
-                           "Web arama sonuçlarını analiz eden, net ve kaynaklı yanıtlar sunan asistansın."},
-                          {"role": "user", "content": prompt}
-                      ],
-                      "max_tokens": 800, "temperature": 0.2, "stream": False})
+                json={
+                    "model": SYNTHESIS_MODEL,
+                    "messages": [
+                        {"role": "system",
+                         "content": "Web arama sonuçlarını analiz eden, net ve kaynaklı yanıtlar sunan asistansın."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "max_tokens": 800, "temperature": 0.2, "stream": False,
+                })
             content = resp.json().get("choices",[{}])[0].get("message",{}).get("content","")
             if content:
                 print(f"[LLM] ✅ Sentez: {len(content)} chars")
@@ -991,12 +728,15 @@ Kurallar:
     ])
 
 
+# ═══════════════════════════════════════════════════════════════
+# DEEP SEARCH PIPELINE
+# ═══════════════════════════════════════════════════════════════
+
 async def deep_search_pipeline(req: DeepSearchRequest) -> Dict:
     """
-    LIVE_SEARCH pipeline:
-    1. Arama (SearXNG/Brave/DDG)
-    2. Paralel sayfa çekme (Jina.ai)
-    3. LLM sentezi
+    Adım 1: Arama (SearXNG/Brave/DDG)
+    Adım 2: Paralel sayfa çekme (Jina.ai — asyncio.gather)
+    Adım 3: LLM sentezi
     """
     t0        = time.time()
     cache_key = f"ds_{req.query.lower().strip()}_{req.num_results}_{req.fetch_pages}"
@@ -1008,7 +748,7 @@ async def deep_search_pipeline(req: DeepSearchRequest) -> Dict:
     print(f"[DEEP SEARCH] '{req.query}'")
     print(f"{'━'*60}")
 
-    # Adım 1: Arama
+    # Adım 1
     sr = await async_web_search(req.query, req.num_results)
     if not sr.get("success"):
         return {"success": False, "error": "Arama başarısız",
@@ -1018,7 +758,7 @@ async def deep_search_pipeline(req: DeepSearchRequest) -> Dict:
     provider = sr.get("data", {}).get("provider", "?")
     print(f"[DEEP SEARCH] Adım 1 ✅ {len(results)} sonuç ({provider})")
 
-    # Adım 2: Paralel sayfa çekme
+    # Adım 2
     page_contents = []
     if results and req.fetch_pages > 0:
         urls    = [r.get("url","") for r in results[:req.fetch_pages] if r.get("url")]
@@ -1031,7 +771,7 @@ async def deep_search_pipeline(req: DeepSearchRequest) -> Dict:
                 print(f"[DEEP SEARCH]   ✅ {item.get('title','')[:50]} → {len(text)} chars")
     print(f"[DEEP SEARCH] Adım 2 ✅ {len(page_contents)}/{req.fetch_pages} sayfa")
 
-    # Adım 3: LLM sentezi
+    # Adım 3
     synthesis = None
     if req.synthesize:
         synthesis = await synthesize_with_llm(
@@ -1049,66 +789,12 @@ async def deep_search_pipeline(req: DeepSearchRequest) -> Dict:
             "search_results": [{"title": r.get("title",""), "url": r.get("url",""),
                                  "snippet": r.get("content","")[:200]}
                                 for r in results[:req.num_results]],
-            "pages_fetched":  len(page_contents),
+            "pages_fetched":   len(page_contents),
             "elapsed_seconds": elapsed,
         },
     }
     await deep_cache.set(cache_key, result)
     return result
-
-
-# ═══════════════════════════════════════════════════════════════
-# FORMAT HELPERS — Çıktıyı LLM'e hazırla
-# ═══════════════════════════════════════════════════════════════
-
-def format_for_llm(tool_used: str, data: dict) -> str:
-    """
-    Smart tools çıktısını LLM'e beslenecek formata dönüştürür.
-    Chat servisi bu metodu kullanır — kendi format kodu yazmaz.
-    """
-    parts = [f"[Canlı Veri — {tool_used.upper()}]"]
-
-    if tool_used == "weather":
-        parts.append(
-            f"📍 {data.get('city')}, {data.get('country')}\n"
-            f"🌡️ {data.get('temperature')}°C (hissedilen {data.get('feels_like')}°C)\n"
-            f"☁️ {data.get('description')}\n"
-            f"💧 Nem: %{data.get('humidity')} | 💨 Rüzgar: {data.get('wind_speed')} km/h"
-        )
-
-    elif tool_used == "currency":
-        parts.append(f"💱 {data.get('formatted')}")
-
-    elif tool_used == "crypto":
-        parts.append(
-            f"₿ {data.get('formatted')}\n"
-            f"📈 24 saatlik değişim: {data.get('change_24h'):+.2f}%"
-        )
-
-    elif tool_used == "time":
-        parts.append(f"🕐 {data.get('formatted_tr')}")
-
-    elif tool_used == "news":
-        articles = data.get("articles", [])[:5]
-        if articles:
-            parts.append("📰 Son Haberler:")
-            for i, a in enumerate(articles, 1):
-                parts.append(f"  {i}. {a.get('title','')}")
-
-    elif tool_used == "deep_search":
-        synthesis = data.get("synthesis", "")
-        if synthesis:
-            parts.append(synthesis)
-        else:
-            for r in data.get("search_results", [])[:3]:
-                parts.append(f"• {r.get('title','')}: {r.get('snippet','')[:200]}")
-
-    elif tool_used in ("web_search", "price_search"):
-        results = data.get("results", [])[:3]
-        for r in results:
-            parts.append(f"• {r.get('title','')}: {r.get('content','')[:200]}")
-
-    return "\n".join(parts)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1119,136 +805,94 @@ def format_for_llm(tool_used: str, data: dict) -> str:
 async def root():
     return {
         "service": "Skylight Smart Tools",
-        "version": "7.0.0",
-        "architecture": "LiveDataRouter — tek kaynak, tüm servisler buna sorar",
-        "categories": {
-            "LIVE_UTILITY":  "Anlık API: kur, hava, kripto, saat, fiyat",
-            "LIVE_NEWS":     "Haber RSS: son haberler, gündem",
-            "LIVE_SEARCH":   "Deep Search: araştırma + Jina.ai + LLM",
-            "STATIC":        "LLM kendi bilgisi yeterli",
-            "TECHNICAL":     "Kod/IT modu",
+        "version": "7.1.0",
+        "endpoints": {
+            "POST /unified":     "Canlı veri — kur, hava, kripto, saat, haberler, web arama",
+            "POST /deep_search": "Araştırma — web arama + Jina.ai + LLM sentezi",
+            "POST /search":      "Direkt web arama",
+            "GET  /fetch":       "Tek URL içeriği çek",
         },
         "page_fetching": {
             "layer_1": "Jina.ai Reader (aktif — ücretsiz, sınırsız)",
             "layer_2": f"Crawl4AI ({'aktif: '+CRAWL4AI_URL if CRAWL4AI_URL else 'hazır — CRAWL4AI_URL set edilince'})",
             "layer_3": "Direkt scrape (son çare)",
         },
-        "providers": {
-            "searxng": bool(SEARXNG_URL),
-            "brave":   bool(BRAVE_API_KEY),
-            "ddg":     True,
+        "search_providers": {
+            "searxng":    bool(SEARXNG_URL),
+            "brave":      bool(BRAVE_API_KEY),
+            "duckduckgo": True,
         },
+        "llm_synthesis": bool(DEEPINFRA_API_KEY),
     }
 
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "version": "7.0.0",
-            "jina": "active",
-            "crawl4ai": CRAWL4AI_URL or "not_configured",
-            "searxng":  SEARXNG_URL  or "not_configured"}
-
-
-@app.post("/classify")
-async def classify_endpoint(request: ClassifyRequest):
-    """
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    ANA KARAR ENDPOINT — Chat servisi ve gateway bunu çağırır
-
-    Chat servisi ve gateway bu endpointe sorguyu gönderir,
-    ne yapacağını öğrenir. Kendi keyword listesi tutmaz.
-
-    Request:
-    { "query": "güncel euro kaç tl", "mode": "assistant" }
-
-    Response:
-    {
-        "category":   "live_utility",
-        "tool":       "currency",
-        "action":     "smart_tools_api",
-        "reason":     "currency_signal",
-        "confidence": 1.0
+    return {
+        "status":   "healthy",
+        "version":  "7.1.0",
+        "jina":     "active",
+        "crawl4ai": CRAWL4AI_URL or "not_configured",
+        "searxng":  SEARXNG_URL  or "not_configured",
     }
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    """
-    result = LiveDataRouter.classify(request.query, request.mode)
-    print(f"[CLASSIFY] '{request.query}' → {result.category} / {result.tool} / {result.action}")
-    return result
-
-
-@app.post("/live")
-async def live_endpoint(request: UnifiedRequest):
-    """
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    LIVE DATA ENDPOINT — Canlı veri + format
-
-    Chat servisi bu endpointi çağırır.
-    Sınıflandırma + çalıştırma + LLM'e hazır format döner.
-
-    Request:  { "query": "istanbul hava durumu" }
-
-    Response:
-    {
-        "success": true,
-        "category": "live_utility",
-        "tool_used": "weather",
-        "data": { ... },
-        "formatted": "[Canlı Veri — WEATHER]\n📍 İstanbul..."
-    }
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    """
-    query      = request.query
-    classified = LiveDataRouter.classify(query)
-    category   = classified.category
-    tool       = classified.tool
-
-    print(f"[LIVE] '{query}' → {category} / {tool}")
-
-    # STATIC veya TECHNICAL → canlı veri yok
-    if category in (DataCategory.STATIC, DataCategory.TECHNICAL):
-        return {"success": False, "category": category,
-                "reason": "no_live_data_needed", "query": query}
-
-    # LIVE_NEWS
-    if category == DataCategory.LIVE_NEWS:
-        topic  = re.sub(r'\b(son|güncel|bugünün|haberleri|haberler|news)\b', '', query).strip()
-        result = get_news(topic if len(topic) > 2 else None)
-        if result.get("success"):
-            result["formatted"] = format_for_llm("news", result.get("data", {}))
-        result["category"] = category
-        return result
-
-    # LIVE_SEARCH → Deep Search pipeline
-    if category == DataCategory.LIVE_SEARCH:
-        result = await deep_search_pipeline(DeepSearchRequest(
-            query=query, num_results=5, fetch_pages=3, synthesize=True, language="tr"))
-        if result.get("success"):
-            result["formatted"] = format_for_llm("deep_search", result.get("data", {}))
-        result["category"] = category
-        return result
-
-    # LIVE_UTILITY → Anlık API
-    if category == DataCategory.LIVE_UTILITY and tool:
-        opt_query = LiveDataRouter.get_smart_tools_query(query, tool)
-        result    = run_live_utility(tool, opt_query)
-        if result.get("success"):
-            result["formatted"] = format_for_llm(tool.value, result.get("data", {}))
-        result["category"] = category
-        return result
-
-    return {"success": False, "category": category,
-            "reason": "unhandled", "query": query}
 
 
 @app.post("/unified")
 async def unified_endpoint(request: UnifiedRequest):
-    """Eski uyumluluk — /live ile aynı."""
-    return await live_endpoint(request)
+    """
+    Ana endpoint — chat servisi bu endpointi çağırır.
+    tool_type gönderilmezse auto_detect_tool() ile belirlenir.
+    """
+    query     = request.query
+    tool_type = request.tool_type or auto_detect_tool(query)
+
+    print(f"\n{'─'*50}")
+    print(f"[UNIFIED] '{query}' → {tool_type}")
+    print(f"{'─'*50}")
+
+    try:
+        if tool_type == ToolType.TIME:
+            result = get_time()
+
+        elif tool_type == ToolType.WEATHER:
+            result = get_weather(query)
+
+        elif tool_type == ToolType.CURRENCY:
+            fc, tc = _extract_currency_pair(query)
+            result = get_currency(fc, tc)
+
+        elif tool_type == ToolType.NEWS:
+            topic  = re.sub(r'\b(haber|haberleri|news|son|güncel)\b', '', query).strip()
+            result = get_news(topic if len(topic) > 2 else None)
+
+        elif tool_type == ToolType.CRYPTO:
+            result = get_crypto(_extract_coin(query))
+
+        elif tool_type == ToolType.PRICE_SEARCH:
+            result = sync_web_search(query, 5)
+
+        else:  # WEB_SEARCH
+            result = sync_web_search(query, 5)
+
+        result["tool_used"] = tool_type.value
+        result["query"]     = query
+
+        # Log
+        data    = result.get("data", {})
+        preview = (data.get("formatted") or data.get("short") or
+                   f"{len(data.get('results', data.get('articles', [])))} items")
+        print(f"[UNIFIED] ✅ success={result.get('success')} | {preview}")
+        return result
+
+    except Exception as e:
+        print(f"[UNIFIED ERROR] {e}")
+        return {"success": False, "error": str(e),
+                "tool_used": tool_type.value, "query": query}
 
 
 @app.post("/deep_search")
 async def deep_search_endpoint(request: DeepSearchRequest):
-    """Gateway ve /live tarafından çağrılır."""
+    """Gateway bu endpointi çağırır — araştırma sorgular için."""
     return await deep_search_pipeline(request)
 
 
@@ -1262,7 +906,7 @@ async def search_endpoint(request: WebSearchRequest):
 
 @app.get("/fetch")
 async def fetch_endpoint(url: str):
-    """Tek URL içeriği çek — test için."""
+    """Tek URL içeriği çek — test için. Örnek: GET /fetch?url=https://example.com"""
     if not url.startswith(("http://","https://")):
         return {"success": False, "error": "Geçersiz URL"}
     content = await fetch_page_content(url)
@@ -1279,12 +923,11 @@ async def fetch_endpoint(url: str):
 if __name__ == "__main__":
     import uvicorn
     print("\n" + "="*70)
-    print("SKYLIGHT SMART TOOLS — v7.0 (LiveDataRouter)")
+    print("SKYLIGHT SMART TOOLS — v7.1")
     print("="*70)
     print(f"Search:  SearXNG({'ON' if SEARXNG_URL else 'OFF'}) | "
           f"Brave({'ON' if BRAVE_API_KEY else 'OFF'}) | DDG(ON)")
-    print(f"Pages:   Jina.ai(ON) | "
-          f"Crawl4AI({'ON' if CRAWL4AI_URL else 'HAZIR'})")
+    print(f"Pages:   Jina.ai(ON) | Crawl4AI({'ON' if CRAWL4AI_URL else 'HAZIR'})")
     print(f"LLM:     {'ON — '+SYNTHESIS_MODEL if DEEPINFRA_API_KEY else 'OFF'}")
     print("="*70 + "\n")
     uvicorn.run(app, host="0.0.0.0", port=8081, workers=4)
