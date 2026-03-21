@@ -2267,7 +2267,7 @@ async def admin_stats(authorization: str = Header(None)):
                 SELECT COUNT(DISTINCT u.id) FROM users u
                 LEFT JOIN user_subscriptions us ON us.user_id = u.id
                 WHERE u.is_premium = TRUE
-                   OR us.status IN ('active','trialing')
+                   OR (us.status IN ('active','trialing') AND us.plan_id != 'free')
             """)
             premium_users = cur.fetchone()[0]
 
