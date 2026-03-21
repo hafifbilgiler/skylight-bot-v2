@@ -742,6 +742,18 @@ async def build_messages(
     messages       = []
     system_content = config["system_prompt"]
 
+    # ── GÜNCEL TARİH/SAAT — Her mesajda enjekte et ──────────────
+    import pytz
+    tz  = pytz.timezone("Europe/Istanbul")
+    now = datetime.now(tz)
+    days_tr   = ["Pazartesi","Salı","Çarşamba","Perşembe","Cuma","Cumartesi","Pazar"]
+    months_tr = ["Ocak","Şubat","Mart","Nisan","Mayıs","Haziran",
+                 "Temmuz","Ağustos","Eylül","Ekim","Kasım","Aralık"]
+    date_str  = (f"{now.day} {months_tr[now.month-1]} {now.year}, "
+                 f"{days_tr[now.weekday()]}, saat {now.strftime('%H:%M')} (Türkiye saati)")
+    system_content = f"[Güncel Tarih ve Saat]\n{date_str}\n[/Güncel Tarih ve Saat]\n\n" + system_content
+    # ─────────────────────────────────────────────────────────────
+
     # 1. USER MEMORY
     user_memory = await load_user_memory(user_id)
     system_content = system_content.replace(
