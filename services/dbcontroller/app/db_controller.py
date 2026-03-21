@@ -1083,6 +1083,80 @@ def health_check() -> Dict[str, Any]:
 # MAIN
 # =====================================================
 
+# =====================================================
+# ADMIN SEED — v2.5.0
+# =====================================================
+
+def seed_admin_user() -> bool:
+    """
+    Admin kullanıcısını seed eder.
+    Sabit kullanıcı adı ve şifre — deploy sonrası DB'de oluşur.
+
+    Giriş bilgileri:
+      Kullanıcı adı : admin
+      Şifre         : Admin1234!   ← bunu değiştir
+
+    OTP kodu şu adrese gider:
+      ADMIN_NOTIFICATION_EMAIL env değişkeni (K8s YAML'da tanımlı)
+    """
+
+    # ── SABİT GİRİŞ BİLGİLERİ ─────────────────────────────────
+    ADMIN_USERNAME = "admin"
+    ADMIN_PASSWORD = "123456"   # ← BUNU DEĞİŞTİR
+    ADMIN_EMAIL    = "admin@one-bune.com"
+    ADMIN_NAME     = "Admin"
+    # ──────────────────────────────────────────────────────────
+
+    try:
+        conn = get_db_connection()
+        cur  = conn.cursor()
+        try:
+            # Zaten admin var mı?
+            cur.execute("SELECT id, email FROM users WHERE is_admin = TRUE LIMIT 1")
+            existing = cur.fetchone()
+            if existing:
+                log_info(f"Admin zaten mevcut: {existing[1]} (id={existing[0]}), seed atlandı.")
+                cur.close()
+                conn.close()
+                return True
+
+            # pgcrypto ile bcrypt hash (cost 12)
+            cur.execute("SELECT crypt(%s, gen_salt('bf', 12))", (ADMIN_PASSWORD,))
+            password_hash = cur.fetchone()[0]
+
+            # Admin kullanıcı oluştur
+            cur.execute("""
+                INSERT INTO users
+                    (email, name, password, is_admin, is_premium,
+                     subscription_active, created_at, last_login, last_active)
+                VALUES (%s, %s, %s, TRUE, TRUE, TRUE, NOW(), NOW(), NOW())
+                ON CONFLICT (email) DO UPDATE
+                    SET is_admin   = TRUE,
+                        is_premium = TRUE,
+                        password   = EXCLUDED.password,
+                        last_login = NOW()
+                RETURNING id, email
+            """, (ADMIN_EMAIL, ADMIN_NAME, password_hash))
+
+            result = cur.fetchone()
+            conn.commit()
+
+            log_success(f"Admin oluşturuldu: {result[1]} (id={result[0]})")
+            log_info(f"Kullanıcı adı : {ADMIN_USERNAME}")
+            log_info(f"Şifre         : {ADMIN_PASSWORD}")
+            log_info("⚠️  Lütfen şifreyi güvenli bir değerle değiştirin!")
+            return True
+
+        finally:
+            cur.close()
+            conn.close()
+
+    except Exception as e:
+        log_error(f"Admin seed hatası: {e}")
+        traceback.print_exc()
+        return False
+
+
 def main():
     log_info("🚀 ONE-BUNE DATABASE CONTROLLER SERVICE STARTING...")
     log_info("📦 Version: 2.5.0 - Admin Panel + Payment System + Memory + Code Context")
@@ -1106,6 +1180,11 @@ def main():
     if not success:
         log_error("Schema initialization failed!")
         sys.exit(1)
+
+    # ── Admin kullanıcı seed ──────────────────────────
+    log_info("Admin kullanıcı kontrol ediliyor...")
+    seed_admin_user()
+    # ─────────────────────────────────────────────────
 
     health = health_check()
     if health["status"] != "healthy":
