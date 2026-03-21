@@ -2610,6 +2610,7 @@ async def admin_toggle_admin(
 
 
 
+@app.post("/admin/users/{user_id}/premium")
 async def admin_toggle_premium(
     user_id: int,
     body:    dict,
