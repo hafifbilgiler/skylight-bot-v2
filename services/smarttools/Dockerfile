@@ -11,7 +11,7 @@ RUN pip install --no-cache-dir \
     fastapi==0.109.0 \
     uvicorn[standard]==0.27.0 \
     requests==2.31.0 \
-    httpx==0.27.0 \
+    httpx==0.27.0 \    
     beautifulsoup4==4.12.3 \
     lxml==5.1.0 \
     pytz==2024.1
