@@ -2503,7 +2503,7 @@ async def admin_toggle_admin(
     body:    dict,
     authorization: str = Header(None),
 ):
-    admin_id  = require_admin(authorization)
+    admin_id   = require_admin(authorization)
     make_admin = bool(body.get("is_admin", False))
     if user_id == admin_id:
         raise HTTPException(status_code=400, detail="Kendinizin admin yetkisini değiştiremezsiniz.")
@@ -2517,6 +2517,80 @@ async def admin_toggle_admin(
             row = cur.fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı")
+
+            user_id_ret, user_name, user_email = row
+
+            if make_admin:
+                # Rastgele 6 haneli şifre üret
+                import random as _rnd, string as _str
+                new_password = ''.join(_rnd.choices(_str.digits + _str.ascii_letters, k=8))
+
+                # Şifreyi pgcrypto ile hash'le ve kaydet
+                cur.execute(
+                    "SELECT crypt(%s, gen_salt('bf', 12))", (new_password,)
+                )
+                pwd_hash = cur.fetchone()[0]
+                cur.execute(
+                    "UPDATE users SET password = %s WHERE id = %s",
+                    (pwd_hash, user_id)
+                )
+
+                conn.commit()
+
+                # Email gönder — mevcut SMTP sistemi
+                admin_panel_url = "https://one-bune.com/admin/login.html"
+                try:
+                    msg = MIMEMultipart("alternative")
+                    msg["From"]    = SMTP_FROM
+                    msg["To"]      = user_email
+                    msg["Subject"] = "ONE-BUNE Admin Panel Erişim Bilgileri"
+                    html = f"""
+                    <div style="font-family:Inter,sans-serif;max-width:500px;margin:0 auto;
+                                background:#0a0a0c;padding:32px;border-radius:16px;
+                                border:1px solid rgba(255,255,255,0.07)">
+                        <div style="font-size:20px;font-weight:700;color:#00f2fe;margin-bottom:20px">
+                            🛡️ ONE-BUNE Admin Panel
+                        </div>
+                        <p style="color:#eeeef0;margin-bottom:20px">
+                            Merhaba <strong>{user_name}</strong>,<br>
+                            Admin paneline erişim yetkiniz tanımlandı.
+                        </p>
+                        <div style="background:#111114;border-radius:12px;padding:20px;
+                                    border:1px solid rgba(0,242,254,0.2);margin-bottom:20px">
+                            <div style="margin-bottom:12px">
+                                <span style="color:#55556a;font-size:12px">PANEL ADRESİ</span><br>
+                                <a href="{admin_panel_url}" style="color:#00f2fe;font-size:14px">
+                                    {admin_panel_url}
+                                </a>
+                            </div>
+                            <div style="margin-bottom:12px">
+                                <span style="color:#55556a;font-size:12px">KULLANICI ADI</span><br>
+                                <span style="color:#eeeef0;font-size:16px;font-weight:600">{user_email}</span>
+                            </div>
+                            <div>
+                                <span style="color:#55556a;font-size:12px">ŞİFRE</span><br>
+                                <span style="color:#00f2fe;font-size:24px;font-weight:800;
+                                            letter-spacing:4px">{new_password}</span>
+                            </div>
+                        </div>
+                        <p style="color:#55556a;font-size:12px">
+                            🔒 Giriş yaptıktan sonra bu adrese OTP kodu gönderilecektir.<br>
+                            ⚠️ Bu bilgileri kimseyle paylaşmayın.
+                        </p>
+                    </div>"""
+                    msg.attach(MIMEText(html, "html", "utf-8"))
+                    with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as s:
+                        s.ehlo(); s.starttls(); s.ehlo()
+                        s.login(SMTP_USER, SMTP_PASS)
+                        s.send_message(msg)
+                    print(f"[ADMIN] Admin bilgileri gönderildi: {user_email}")
+                except Exception as e:
+                    print(f"[ADMIN] Email gönderilemedi: {e}")
+            else:
+                # Admin yetkisi kaldır — şifreyi sıfırla
+                cur.execute("UPDATE users SET password = NULL WHERE id = %s", (user_id,))
+                conn.commit()
+
             cur.execute("""
                 INSERT INTO payment_audit_log (event_type, user_id, data)
                 VALUES (%s, %s, %s)
@@ -2802,11 +2876,6 @@ async def admin_verify_password(
     body: dict,
     authorization: str = Header(None),
 ):
-    """
-    admin.php buraya kullanıcı adı + şifre gönderir.
-    Gateway DB'yi kontrol eder, sonuç döner.
-    Sadece API bearer token ile çağrılabilir.
-    """
     if not authorization or authorization.replace("Bearer ", "") != API_TOKEN:
         raise HTTPException(status_code=401, detail="Yetkisiz")
 
@@ -2819,7 +2888,8 @@ async def admin_verify_password(
     try:
         pool = _get_pool(); conn = pool.getconn(); cur = conn.cursor()
         try:
-            # is_admin=TRUE olan kullanıcıyı bul (name veya email ile)
+            # username = "admin" → sabit admin kullanıcısı (name veya email)
+            # username = email → UI'dan admin yapılan kullanıcı
             cur.execute("""
                 SELECT id, email, name, password
                 FROM users
@@ -2832,7 +2902,7 @@ async def admin_verify_password(
             if not admin or not admin[3]:
                 return {"status": "error", "message": "Kullanıcı bulunamadı."}
 
-            # pgcrypto crypt ile doğrula
+            # pgcrypto crypt doğrulama
             cur.execute(
                 "SELECT (password = crypt(%s, password)) AS ok FROM users WHERE id = %s",
                 (password, admin[0])
@@ -2841,8 +2911,7 @@ async def admin_verify_password(
             if not row or not row[0]:
                 return {"status": "error", "message": "Şifre yanlış."}
 
-            return {"status": "success", "username": admin[2] or admin[1]}
-
+            return {"status": "success", "username": admin[2] or admin[1], "email": admin[1]}
         finally:
             pool.putconn(conn)
     except Exception as e:
@@ -2853,22 +2922,33 @@ async def admin_verify_password(
 @app.post("/admin/send_otp")
 async def admin_send_otp(req: AdminOTPRequest, request: Request,
                           authorization: str = Header(None)):
-    """OTP üret ve ADMIN_NOTIFICATION_EMAIL'e gönder."""
-    # Sadece bearer token kontrolü (admin session yokken çağrılır)
+    """
+    OTP üret ve doğru adrese gönder:
+    - Sabit admin (admin@one-bune.com) → ADMIN_NOTIFICATION_EMAIL
+    - Diğer adminler → kendi kayıtlı email adresleri
+    """
     if not authorization or authorization.replace("Bearer ","") != API_TOKEN:
         raise HTTPException(status_code=401, detail="Yetkisiz")
-
-    if not ADMIN_NOTIFICATION_EMAIL:
-        raise HTTPException(status_code=500, detail="ADMIN_NOTIFICATION_EMAIL tanımlı değil.")
 
     import random as _rnd
     otp_code = str(_rnd.randint(100000, 999999))
     ip       = get_client_ip(request)
 
-    # OTP'yi otp_codes tablosuna kaydet
+    # Kime gönderilecek belirle
+    otp_target = ADMIN_NOTIFICATION_EMAIL  # varsayılan
     try:
         pool = _get_pool(); conn = pool.getconn(); cur = conn.cursor()
         try:
+            cur.execute("""
+                SELECT email FROM users
+                WHERE is_admin = TRUE AND (name = %s OR email = %s)
+                LIMIT 1
+            """, (req.username, req.username))
+            row = cur.fetchone()
+            if row and row[0] != "admin@one-bune.com":
+                otp_target = row[0]  # diğer adminler kendi mailine
+
+            # OTP'yi kaydet
             cur.execute("""
                 INSERT INTO otp_codes (email, code, expire_at, created_at)
                 VALUES (%s, %s, NOW() + INTERVAL '5 minutes', NOW())
@@ -2881,11 +2961,11 @@ async def admin_send_otp(req: AdminOTPRequest, request: Request,
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"DB hatası: {e}")
 
-    # Email gönder — gateway'in mevcut SMTP sistemi
+    # Email gönder
     try:
         msg = MIMEMultipart("alternative")
         msg["From"]    = SMTP_FROM
-        msg["To"]      = ADMIN_NOTIFICATION_EMAIL
+        msg["To"]      = otp_target
         msg["Subject"] = "ONE-BUNE Admin Giriş Kodu"
         html = f"""
         <div style="font-family:Inter,sans-serif;max-width:480px;margin:0 auto;
@@ -2911,7 +2991,7 @@ async def admin_send_otp(req: AdminOTPRequest, request: Request,
             s.ehlo(); s.starttls(); s.ehlo()
             s.login(SMTP_USER, SMTP_PASS)
             s.send_message(msg)
-        print(f"[ADMIN OTP] → {ADMIN_NOTIFICATION_EMAIL}, IP={ip}")
+        print(f"[ADMIN OTP] → {otp_target}, IP={ip}")
         return {"status": "success"}
     except Exception as e:
         print(f"[ADMIN OTP] Email hatası: {e}")
