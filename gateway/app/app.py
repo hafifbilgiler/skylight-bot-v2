@@ -1,17 +1,21 @@
 """
 ═══════════════════════════════════════════════════════════════
-SKYLIGHT API GATEWAY - VERSION 2.2 (ADVANCED SMART ROUTING)
+SKYLIGHT API GATEWAY - VERSION 2.3 (DEEP SEARCH + SMART ROUTING)
 ═══════════════════════════════════════════════════════════════
-Orijinal v2.1 baz alınarak geliştirildi.
-Aynı yapı, çok daha akıllı routing ve bağlam anlama.
+v2.2 üzerine eklenenler:
 
-ROUTING İYİLEŞTİRMELERİ:
+DEEP SEARCH ENTEGRASYONu (YENİ):
+  ✅ detect_needs_web_search() — güncel bilgi gerekiyor mu?
+  ✅ call_deep_search() — smart tools /deep_search çağrısı
+  ✅ Proaktif öneri — "Bu konuyu webden araştırayım mı? 🔍"
+  ✅ Otomatik mod — güncel konu tespitinde context otomatik eklenir
+  ✅ /web_search endpoint — frontend için doğrudan deep search
+
+ROUTING İYİLEŞTİRMELERİ (v2.2'den):
   ✅ detect_image_generation_request — false positive tamamen çözüldü
-     "bir fonksiyon yap", "bir API oluştur" → artık tetiklemez
-     "bir resim yap", "logo oluştur" → doğru çalışır
-  ✅ detect_image_modification_request — "ekleyeyim/ekleyeceğim" düzeltildi
+  ✅ detect_image_modification_request — ekleyeyim/ekleyeceğim düzeltildi
   ✅ Konuşma bağlamı okuma — son mod, kod snippet, görsel geçmişi
-  ✅ Kod modu: CODE_MONSTER_INJECTION — "devam et" + tam kod garantisi
+  ✅ Kod modu: CODE_MONSTER_INJECTION — devam et + tam kod garantisi
   ✅ Görsel takip soruları — önceki görsel otomatik restore
   ✅ increment_usage stream SONRASI çağrılıyor
 ═══════════════════════════════════════════════════════════════
@@ -924,6 +928,181 @@ def get_conversation_context(conversation_id: str) -> dict:
 
 def combine_prompts_for_modification(original_prompt: str, modification_request: str) -> str:
     return f"{original_prompt}\n\nMODIFICATION REQUEST: {modification_request}"
+
+
+# ═══════════════════════════════════════════════════════════════
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# DEEP SEARCH ENTEGRASYONU — v2.3 YENİ
+# Smart Tools /deep_search → LLM sentezi → Chat context
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ═══════════════════════════════════════════════════════════════
+
+# Güncel bilgi gerektiren sinyaller — smart tools detect_current_events ile paralel
+_RECENCY_SIGNALS = (
+    "son", "güncel", "yeni", "bugün", "bu hafta", "bu ay",
+    "şimdiki", "en son", "son dakika", "breaking",
+    "latest", "recent", "current", "new", "today", "this week",
+    "haberleri", "gündem", "gelişme", "haber", "duyuru",
+    "news", "update", "announcement",
+    "2024", "2025",
+)
+
+_BROAD_CURRENT_TOPICS = (
+    "yapay zeka", "ai model", "chatgpt", "gemini", "claude",
+    "teknoloji haberleri", "kripto haberleri",
+    "ekonomi", "borsa haberleri", "hisse fiyatı",
+    "siyaset", "seçim", "election",
+    "uzay", "nasa", "spacex",
+    "sağlık haberleri",
+)
+
+# Kullanıcının açıkça web araması istediği ifadeler
+_EXPLICIT_SEARCH_PHRASES = (
+    "webde ara", "internette ara", "google", "search for",
+    "araştır", "bul bana", "find me", "lookup",
+    "webden bak", "internetten bak", "online ara",
+    "güncel bilgi", "son bilgi", "en son",
+)
+
+# Web araması GEREKMEZ — sabit/teknik bilgiler
+_NO_SEARCH_NEEDED = (
+    "nasıl kullanılır", "syntax", "kod yaz", "örnek ver",
+    "açıkla", "anlat", "nedir bu", "ne demek",
+    "python", "javascript", "docker", "kubernetes",
+    "nasıl yapılır", "tutorial",
+)
+
+
+def detect_needs_web_search(prompt: str, mode: str = "assistant") -> dict:
+    """
+    Bu sorgu için web araması gerekiyor mu?
+
+    Döner:
+    {
+        "needs_search":    True/False,
+        "mode":            "auto" | "suggest" | "none",
+        "reason":          açıklama string,
+        "search_query":    optimize edilmiş arama sorgusu,
+        "suggestion_msg":  kullanıcıya gösterilecek mesaj,
+    }
+
+    mode="auto"    → anında ara, sonucu context'e ekle
+    mode="suggest" → kullanıcıya sor
+    mode="none"    → arama yapma
+    """
+    q = prompt.lower().strip()
+
+    # ── Kod/teknik mod → web araması gerekmez ───────────────────
+    if mode in ("code", "it_expert"):
+        return {"needs_search": False, "mode": "none",
+                "reason": "technical_mode", "search_query": prompt, "suggestion_msg": ""}
+
+    # ── Kesinlikle arama gerekmez ────────────────────────────────
+    if any(e in q for e in _NO_SEARCH_NEEDED) and len(q.split()) <= 6:
+        return {"needs_search": False, "mode": "none",
+                "reason": "static_knowledge", "search_query": prompt, "suggestion_msg": ""}
+
+    # ── Kullanıcı açıkça web araması istedi → auto ───────────────
+    if any(p in q for p in _EXPLICIT_SEARCH_PHRASES):
+        clean_query = q
+        for p in _EXPLICIT_SEARCH_PHRASES:
+            clean_query = clean_query.replace(p, "").strip()
+        clean_query = clean_query.strip(" ,.-") or prompt
+        return {
+            "needs_search":   True,
+            "mode":           "auto",
+            "reason":         "explicit_search_request",
+            "search_query":   clean_query,
+            "suggestion_msg": "🔍 Webde arıyorum...",
+        }
+
+    # ── Güncel konu sinyali → auto ara ──────────────────────────
+    has_recency = any(s in q for s in _RECENCY_SIGNALS)
+    has_topic   = any(t in q for t in _BROAD_CURRENT_TOPICS)
+
+    if has_recency:
+        return {
+            "needs_search":   True,
+            "mode":           "auto",
+            "reason":         "recency_signal",
+            "search_query":   prompt,
+            "suggestion_msg": "🔍 Güncel bilgiye bakıyorum...",
+        }
+
+    if has_topic and len(q.split()) >= 3:
+        return {
+            "needs_search":   True,
+            "mode":           "suggest",
+            "reason":         "broad_current_topic",
+            "search_query":   prompt,
+            "suggestion_msg": f"Bu konu hakkında güncel web bilgisine bakayım mı? 🔍",
+        }
+
+    # ── Haber/gündem kelimeleri → suggest ───────────────────────
+    if any(kw in q for kw in ("haber", "news", "gündem", "duyuru", "açıklama")):
+        return {
+            "needs_search":   True,
+            "mode":           "suggest",
+            "reason":         "news_keyword",
+            "search_query":   prompt,
+            "suggestion_msg": "Bu konuda son haberlere bakayım mı? 🔍",
+        }
+
+    return {"needs_search": False, "mode": "none",
+            "reason": "not_needed", "search_query": prompt, "suggestion_msg": ""}
+
+
+async def call_deep_search(
+    query:        str,
+    fetch_pages:  int = 3,
+    language:     str = "tr",
+    context_hint: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Smart Tools /deep_search endpoint'ini çağırır.
+    Başarılı olursa sentezlenmiş metni döndürür.
+    Başarısız olursa None döndürür — chat servis kendi bilgisiyle devam eder.
+
+    Non-blocking: async httpx ile çalışır, hiçbir kullanıcıyı bloklamaz.
+    """
+    if not SMART_TOOLS_URL:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=DEEP_SEARCH_TIMEOUT) as client:
+            resp = await client.post(
+                f"{SMART_TOOLS_URL}/deep_search",
+                json={
+                    "query":        query,
+                    "num_results":  5,
+                    "fetch_pages":  fetch_pages,
+                    "synthesize":   True,
+                    "language":     language,
+                    "context_hint": context_hint,
+                },
+            )
+            if resp.status_code != 200:
+                print(f"[DEEP SEARCH] HTTP {resp.status_code}")
+                return None
+            data = resp.json()
+            if not data.get("success"):
+                print(f"[DEEP SEARCH] Failed: {data.get('error')}")
+                return None
+            synthesis = data.get("data", {}).get("synthesis")
+            elapsed   = data.get("data", {}).get("elapsed_seconds", "?")
+            provider  = data.get("provider", "?")
+            print(f"[DEEP SEARCH] Success: {len(synthesis or '')} chars | "
+                  f"{elapsed}s | provider={provider}")
+            return synthesis
+    except httpx.TimeoutException:
+        print(f"[DEEP SEARCH] Timeout (>{DEEP_SEARCH_TIMEOUT}s)")
+        return None
+    except Exception as e:
+        print(f"[DEEP SEARCH] Error: {e}")
+        return None
+
+
+# Deep search timeout (gateway tarafında)
+DEEP_SEARCH_TIMEOUT = int(os.getenv("DEEP_SEARCH_TIMEOUT", "35"))
 
 # ═══════════════════════════════════════════════════════════════
 # AUTH ENDPOINTS
@@ -1912,13 +2091,54 @@ async def chat_endpoint(
         # Her iki durumda da kod canavarı injection
         prompt = prompt + CODE_MONSTER_INJECTION
 
+    # ── DEEP SEARCH ENTEGRASYONU ─────────────────────────────
+    # 1. Web araması gerekiyor mu tespit et
+    # 2. Auto mod → anında ara + context'e ekle
+    # 3. Suggest mod → kullanıcıya streaming içinde öner
+    web_search_result = detect_needs_web_search(prompt, mode)
+    web_context       = None
+    web_suggest_msg   = ""
+
+    if web_search_result["needs_search"]:
+        search_mode = web_search_result["mode"]
+        print(f"[GATEWAY] Web search: mode={search_mode}, reason={web_search_result['reason']}")
+
+        if search_mode == "auto":
+            # Önceki konuşmadan context ipucu
+            context_hint = None
+            for msg in reversed(conversation_history[-6:]):
+                if msg.get("role") == "assistant" and len(msg.get("content", "")) > 20:
+                    context_hint = msg["content"][:200]
+                    break
+            web_context = await call_deep_search(
+                query        = web_search_result["search_query"],
+                fetch_pages  = 3,
+                language     = "tr",
+                context_hint = context_hint,
+            )
+            if web_context:
+                print(f"[GATEWAY] Deep search context: {len(web_context)} chars")
+
+        elif search_mode == "suggest":
+            web_suggest_msg = web_search_result["suggestion_msg"]
+
+    # request_body.context (RAG vs) ve web_context birleştir
+    final_context = ""
+    if web_context:
+        final_context = (
+            f"[WEB ARAŞTIRMA SONUCU — GÜNCEL BİLGİ]\n{web_context}\n"
+            f"[/WEB ARAŞTIRMA SONUCU]"
+        )
+    if request_body.context:
+        final_context = (final_context + "\n\n" + request_body.context).strip()
+
     chat_data = {
         "prompt":          prompt,
         "mode":            mode,
         "user_id":         user_id or 0,
         "conversation_id": conversation_id,
         "history":         final_history,
-        "context":         request_body.context,
+        "context":         final_context if final_context else None,
         "session_summary": request_body.session_summary,
     }
 
@@ -1929,6 +2149,10 @@ async def chat_endpoint(
     async def stream_response():
         assistant_response = ""
         try:
+            # Web arama önerisi varsa önce gönder
+            if web_suggest_msg:
+                yield f"\n💡 *{web_suggest_msg}*\n\n---\n\n"
+
             generator = await call_service(CHAT_SERVICE_URL, "/chat", data=chat_data, stream=True, timeout=300)
             async for chunk in generator:
                 assistant_response += chunk
@@ -1960,7 +2184,89 @@ async def chat_endpoint(
         response.headers["X-Conversation-ID"] = conversation_id
         if auto_created:
             response.headers["X-Conversation-Created"] = "true"
+    if web_context:
+        response.headers["X-Web-Search"] = "true"
     return response
+
+
+# ═══════════════════════════════════════════════════════════════
+# WEB SEARCH ENDPOINT — Frontend için doğrudan deep search
+# ═══════════════════════════════════════════════════════════════
+
+class WebSearchGatewayRequest(BaseModel):
+    query:          str
+    num_results:    int  = 5
+    fetch_pages:    int  = 3
+    synthesize:     bool = True
+    conversation_id: Optional[str] = None
+
+
+@app.post("/web_search")
+async def web_search_endpoint(
+    request_body: WebSearchGatewayRequest,
+    request: Request,
+    authorization: str = Header(None),
+):
+    """
+    Frontend bu endpoint'i çağırarak doğrudan deep search yapabilir.
+    Kullanıcı "webde ara" butonuna bastığında kullanılır.
+
+    Aynı zamanda gateway'in detect_needs_web_search() ile otomatik
+    tetiklediği aramaları manuel olarak da tetikleyebilirsin.
+    """
+    user_id = None
+    try:
+        user_id = get_user_from_token(authorization)
+    except Exception:
+        pass
+
+    ip = get_client_ip(request)
+    try:
+        abuse_post("/chat/check", {"user_id": str(user_id or "guest"), "ip_address": ip})
+    except HTTPException as e:
+        if e.status_code == 429:
+            raise HTTPException(status_code=429, detail="Çok fazla istek. Lütfen bekleyin.")
+        raise
+
+    # Konuşma bağlamından context ipucu al
+    context_hint = None
+    if request_body.conversation_id:
+        try:
+            pool = _get_pool(); conn = pool.getconn(); cur = conn.cursor()
+            try:
+                cur.execute("""
+                    SELECT content FROM messages
+                    WHERE conversation_id=%s AND role='assistant'
+                    ORDER BY created_at DESC LIMIT 1
+                """, (request_body.conversation_id,))
+                row = cur.fetchone()
+                if row and row[0]:
+                    context_hint = row[0][:200]
+            finally:
+                pool.putconn(conn)
+        except Exception:
+            pass
+
+    synthesis = await call_deep_search(
+        query        = request_body.query,
+        fetch_pages  = request_body.fetch_pages,
+        context_hint = context_hint,
+    )
+
+    if synthesis:
+        return {
+            "success":   True,
+            "query":     request_body.query,
+            "synthesis": synthesis,
+            "tool_used": "deep_search",
+        }
+    else:
+        return {
+            "success": False,
+            "query":   request_body.query,
+            "error":   "Deep search servisi ulaşılamaz — lütfen tekrar deneyin.",
+            "tool_used": "deep_search",
+        }
 
 # ═══════════════════════════════════════════════════════════════
 # HEALTH CHECK
