@@ -2263,7 +2263,12 @@ async def admin_stats(authorization: str = Header(None)):
             total_users = cur.fetchone()[0]
 
             # Premium kullanıcı
-            cur.execute("SELECT COUNT(*) FROM users WHERE is_premium = TRUE")
+            cur.execute("""
+                SELECT COUNT(DISTINCT u.id) FROM users u
+                LEFT JOIN user_subscriptions us ON us.user_id = u.id
+                WHERE u.is_premium = TRUE
+                   OR us.status IN ('active','trialing')
+            """)
             premium_users = cur.fetchone()[0]
 
             # Banlı kullanıcı
@@ -2364,9 +2369,9 @@ async def admin_users(
                 params += [f"%{search}%", f"%{search}%"]
 
             if filter == "premium":
-                conditions.append("u.is_premium = TRUE")
+                conditions.append("(u.is_premium = TRUE OR us.status IN ('active','trialing'))")
             elif filter == "free":
-                conditions.append("u.is_premium = FALSE AND u.is_banned = FALSE")
+                conditions.append("u.is_premium = FALSE AND u.is_banned = FALSE AND (us.status IS NULL OR us.status NOT IN ('active','trialing'))")
             elif filter == "banned":
                 conditions.append("u.is_banned = TRUE")
 
