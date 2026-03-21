@@ -2199,8 +2199,507 @@ async def web_search_endpoint(
         }
 
 # ═══════════════════════════════════════════════════════════════
-# HEALTH CHECK
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ADMIN ENDPOINTS — /admin/*
+#
+# Nginx /admin → gateway /admin/* yönlendirir.
+# admin.php bu endpoint'leri Bearer token ile çağırır.
+# Her endpoint is_admin = TRUE kontrolü yapar.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # ═══════════════════════════════════════════════════════════════
+
+def require_admin(authorization: Optional[str] = None) -> int:
+    """
+    Admin yetkisi kontrolü.
+    Bearer token ile gelen kullanıcının is_admin = TRUE olması lazım.
+    Değilse 403 döner.
+    """
+    user_id = get_user_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Token gerekli")
+    try:
+        pool = _get_pool()
+        conn = pool.getconn()
+        cur  = conn.cursor()
+        try:
+            cur.execute("SELECT is_admin FROM users WHERE id = %s", (user_id,))
+            row = cur.fetchone()
+            if not row or not row[0]:
+                raise HTTPException(status_code=403, detail="Admin yetkisi gerekli")
+            return user_id
+        finally:
+            pool.putconn(conn)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── /admin/stats ─────────────────────────────────────────────
+@app.get("/admin/stats")
+async def admin_stats(authorization: str = Header(None)):
+    require_admin(authorization)
+    try:
+        pool = _get_pool()
+        conn = pool.getconn()
+        cur  = conn.cursor()
+        try:
+            # Toplam kullanıcı
+            cur.execute("SELECT COUNT(*) FROM users")
+            total_users = cur.fetchone()[0]
+
+            # Premium kullanıcı
+            cur.execute("SELECT COUNT(*) FROM users WHERE is_premium = TRUE")
+            premium_users = cur.fetchone()[0]
+
+            # Banlı kullanıcı
+            cur.execute("SELECT COUNT(*) FROM users WHERE is_banned = TRUE")
+            banned_users = cur.fetchone()[0]
+
+            # Bugün mesaj sayısı
+            cur.execute("""
+                SELECT COALESCE(SUM(messages_sent), 0)
+                FROM usage_tracking
+                WHERE usage_date = CURRENT_DATE
+            """)
+            messages_today = cur.fetchone()[0]
+
+            # Bu ay gelir (payment_history)
+            cur.execute("""
+                SELECT COALESCE(SUM(amount), 0)
+                FROM payment_history
+                WHERE status = 'completed'
+                  AND created_at >= date_trunc('month', NOW())
+            """)
+            revenue_this_month = float(cur.fetchone()[0])
+
+            # Bu ay yeni kayıt
+            cur.execute("""
+                SELECT COUNT(*) FROM users
+                WHERE created_at >= date_trunc('month', NOW())
+            """)
+            new_users_month = cur.fetchone()[0]
+
+            # Son kaydolan 10 kullanıcı
+            cur.execute("""
+                SELECT u.id, u.name, u.email, u.is_premium, u.is_banned,
+                       u.created_at, u.last_active,
+                       COALESCE(ut.messages_sent, 0) AS messages_today,
+                       COALESCE(
+                           (SELECT SUM(messages_sent) FROM usage_tracking
+                            WHERE user_id = u.id), 0
+                       ) AS total_messages
+                FROM users u
+                LEFT JOIN usage_tracking ut
+                    ON ut.user_id = u.id AND ut.usage_date = CURRENT_DATE
+                ORDER BY u.created_at DESC
+                LIMIT 10
+            """)
+            cols = ["id","name","email","is_premium","is_banned",
+                    "created_at","last_active","messages_today","total_messages"]
+            recent_users = [dict(zip(cols, row)) for row in cur.fetchall()]
+
+            # created_at'ı string'e çevir
+            for u in recent_users:
+                if u.get("created_at"):
+                    u["created_at"] = u["created_at"].isoformat()
+                if u.get("last_active"):
+                    u["last_active"] = u["last_active"].isoformat()
+
+            return {
+                "total_users":       total_users,
+                "premium_users":     premium_users,
+                "banned_users":      banned_users,
+                "messages_today":    int(messages_today),
+                "revenue_this_month": revenue_this_month,
+                "new_users_month":   new_users_month,
+                "recent_users":      recent_users,
+            }
+        finally:
+            pool.putconn(conn)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── /admin/users ─────────────────────────────────────────────
+@app.get("/admin/users")
+async def admin_users(
+    page:   int  = 1,
+    limit:  int  = 20,
+    search: str  = "",
+    filter: str  = "",   # all | premium | free | banned
+    authorization: str = Header(None),
+):
+    require_admin(authorization)
+    limit  = min(limit, 100)
+    offset = (page - 1) * limit
+
+    try:
+        pool = _get_pool()
+        conn = pool.getconn()
+        cur  = conn.cursor()
+        try:
+            # WHERE koşulları
+            conditions = ["1=1"]
+            params: list = []
+
+            if search:
+                conditions.append("(u.name ILIKE %s OR u.email ILIKE %s)")
+                params += [f"%{search}%", f"%{search}%"]
+
+            if filter == "premium":
+                conditions.append("u.is_premium = TRUE")
+            elif filter == "free":
+                conditions.append("u.is_premium = FALSE AND u.is_banned = FALSE")
+            elif filter == "banned":
+                conditions.append("u.is_banned = TRUE")
+
+            where = " AND ".join(conditions)
+
+            # Toplam sayı
+            cur.execute(f"SELECT COUNT(*) FROM users u WHERE {where}", params)
+            total = cur.fetchone()[0]
+
+            # Kullanıcılar
+            cur.execute(f"""
+                SELECT u.id, u.name, u.email,
+                       u.is_premium, u.is_banned, u.is_admin,
+                       u.ban_reason, u.created_at, u.last_active,
+                       COALESCE(ut.messages_sent, 0) AS messages_today,
+                       COALESCE(
+                           (SELECT SUM(messages_sent) FROM usage_tracking
+                            WHERE user_id = u.id), 0
+                       ) AS total_messages,
+                       us.plan_id, us.status AS sub_status,
+                       us.current_period_end
+                FROM users u
+                LEFT JOIN usage_tracking ut
+                    ON ut.user_id = u.id AND ut.usage_date = CURRENT_DATE
+                LEFT JOIN user_subscriptions us
+                    ON us.user_id = u.id AND us.status IN ('active','trialing')
+                WHERE {where}
+                ORDER BY u.created_at DESC
+                LIMIT %s OFFSET %s
+            """, params + [limit, offset])
+
+            cols = ["id","name","email","is_premium","is_banned","is_admin",
+                    "ban_reason","created_at","last_active",
+                    "messages_today","total_messages",
+                    "plan_id","sub_status","premium_expires_at"]
+            users = []
+            for row in cur.fetchall():
+                u = dict(zip(cols, row))
+                if u.get("created_at"):
+                    u["created_at"] = u["created_at"].isoformat()
+                if u.get("last_active"):
+                    u["last_active"] = u["last_active"].isoformat()
+                if u.get("premium_expires_at"):
+                    u["premium_expires_at"] = u["premium_expires_at"].isoformat()
+                users.append(u)
+
+            return {
+                "users":       users,
+                "total":       total,
+                "page":        page,
+                "total_pages": max(1, -(-total // limit)),  # ceiling div
+            }
+        finally:
+            pool.putconn(conn)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── /admin/users/{id} ────────────────────────────────────────
+@app.get("/admin/users/{user_id}")
+async def admin_get_user(
+    user_id: int,
+    authorization: str = Header(None),
+):
+    require_admin(authorization)
+    try:
+        pool = _get_pool()
+        conn = pool.getconn()
+        cur  = conn.cursor()
+        try:
+            cur.execute("""
+                SELECT u.id, u.name, u.email,
+                       u.is_premium, u.is_banned, u.is_admin,
+                       u.ban_reason, u.banned_at,
+                       u.created_at, u.last_active,
+                       COALESCE(ut.messages_sent, 0) AS messages_today,
+                       COALESCE(
+                           (SELECT SUM(messages_sent) FROM usage_tracking
+                            WHERE user_id = u.id), 0
+                       ) AS total_messages,
+                       us.plan_id, us.status AS sub_status,
+                       us.current_period_end
+                FROM users u
+                LEFT JOIN usage_tracking ut
+                    ON ut.user_id = u.id AND ut.usage_date = CURRENT_DATE
+                LEFT JOIN user_subscriptions us
+                    ON us.user_id = u.id AND us.status IN ('active','trialing')
+                WHERE u.id = %s
+            """, (user_id,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı")
+
+            cols = ["id","name","email","is_premium","is_banned","is_admin",
+                    "ban_reason","banned_at","created_at","last_active",
+                    "messages_today","total_messages",
+                    "plan_id","sub_status","premium_expires_at"]
+            u = dict(zip(cols, row))
+            for k in ["banned_at","created_at","last_active","premium_expires_at"]:
+                if u.get(k):
+                    u[k] = u[k].isoformat()
+            return u
+        finally:
+            pool.putconn(conn)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── /admin/users/{id}/premium ────────────────────────────────
+@app.post("/admin/users/{user_id}/premium")
+async def admin_toggle_premium(
+    user_id: int,
+    body:    dict,
+    authorization: str = Header(None),
+):
+    admin_id = require_admin(authorization)
+    enable   = bool(body.get("premium", False))
+    try:
+        pool = _get_pool()
+        conn = pool.getconn()
+        cur  = conn.cursor()
+        try:
+            cur.execute("""
+                UPDATE users
+                SET is_premium = %s,
+                    subscription_active = %s
+                WHERE id = %s
+                RETURNING id, name, email
+            """, (enable, enable, user_id))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı")
+
+            # Eğer premium yapılıyorsa free plan yerine premium plan ata
+            if enable:
+                cur.execute("""
+                    INSERT INTO user_subscriptions
+                        (user_id, plan_id, status, billing_period,
+                         current_period_start, current_period_end)
+                    VALUES (%s, 'premium', 'active', 'monthly',
+                            NOW(), NOW() + INTERVAL '30 days')
+                    ON CONFLICT DO NOTHING
+                """, (user_id,))
+
+            # Audit log
+            cur.execute("""
+                INSERT INTO payment_audit_log (event_type, user_id, data)
+                VALUES (%s, %s, %s)
+            """, (
+                "admin_premium_grant" if enable else "admin_premium_revoke",
+                user_id,
+                json.dumps({"by_admin": admin_id, "enabled": enable}),
+            ))
+            conn.commit()
+            return {"success": True, "user_id": user_id, "is_premium": enable}
+        finally:
+            pool.putconn(conn)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── /admin/users/{id}/ban ────────────────────────────────────
+@app.post("/admin/users/{user_id}/ban")
+async def admin_ban_user(
+    user_id: int,
+    body:    dict,
+    authorization: str = Header(None),
+):
+    admin_id = require_admin(authorization)
+    ban      = bool(body.get("banned", True))
+    reason   = str(body.get("reason", ""))[:500]
+    try:
+        pool = _get_pool()
+        conn = pool.getconn()
+        cur  = conn.cursor()
+        try:
+            cur.execute("""
+                UPDATE users
+                SET is_banned  = %s,
+                    ban_reason = %s,
+                    banned_at  = %s
+                WHERE id = %s AND is_admin = FALSE
+                RETURNING id
+            """, (ban, reason if ban else None,
+                  datetime.datetime.utcnow() if ban else None,
+                  user_id))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Kullanıcı bulunamadı veya admin banlanamaz"
+                )
+            cur.execute("""
+                INSERT INTO payment_audit_log (event_type, user_id, data)
+                VALUES (%s, %s, %s)
+            """, (
+                "admin_ban" if ban else "admin_unban",
+                user_id,
+                json.dumps({"by_admin": admin_id, "reason": reason}),
+            ))
+            conn.commit()
+            return {"success": True, "user_id": user_id, "is_banned": ban}
+        finally:
+            pool.putconn(conn)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── /admin/users/{id}/reset_usage ───────────────────────────
+@app.post("/admin/users/{user_id}/reset_usage")
+async def admin_reset_usage(
+    user_id: int,
+    authorization: str = Header(None),
+):
+    require_admin(authorization)
+    try:
+        pool = _get_pool()
+        conn = pool.getconn()
+        cur  = conn.cursor()
+        try:
+            cur.execute("""
+                UPDATE usage_tracking
+                SET messages_sent = 0,
+                    updated_at    = NOW()
+                WHERE user_id   = %s
+                  AND usage_date = CURRENT_DATE
+            """, (user_id,))
+            conn.commit()
+            return {"success": True, "user_id": user_id}
+        finally:
+            pool.putconn(conn)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── /admin/payments ──────────────────────────────────────────
+@app.get("/admin/payments")
+async def admin_payments(
+    page:  int = 1,
+    limit: int = 20,
+    authorization: str = Header(None),
+):
+    require_admin(authorization)
+    limit  = min(limit, 100)
+    offset = (page - 1) * limit
+    try:
+        pool = _get_pool()
+        conn = pool.getconn()
+        cur  = conn.cursor()
+        try:
+            cur.execute("SELECT COUNT(*) FROM payment_history")
+            total = cur.fetchone()[0]
+
+            cur.execute("""
+                SELECT ph.id, ph.user_id, u.name AS user_name, u.email AS user_email,
+                       ph.plan_id AS plan_name, ph.amount, ph.currency,
+                       ph.status, ph.iyzico_payment_id AS iyzico_id,
+                       ph.created_at
+                FROM payment_history ph
+                JOIN users u ON u.id = ph.user_id
+                ORDER BY ph.created_at DESC
+                LIMIT %s OFFSET %s
+            """, (limit, offset))
+
+            cols = ["id","user_id","user_name","user_email","plan_name",
+                    "amount","currency","status","iyzico_id","created_at"]
+            payments = []
+            for row in cur.fetchall():
+                p = dict(zip(cols, row))
+                if p.get("created_at"):
+                    p["created_at"] = p["created_at"].isoformat()
+                if p.get("amount"):
+                    p["amount"] = float(p["amount"])
+                payments.append(p)
+
+            return {
+                "payments":    payments,
+                "total":       total,
+                "page":        page,
+                "total_pages": max(1, -(-total // limit)),
+            }
+        finally:
+            pool.putconn(conn)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── /admin/logs ──────────────────────────────────────────────
+@app.get("/admin/logs")
+async def admin_logs(
+    page:  int = 1,
+    limit: int = 50,
+    type:  str = "",
+    authorization: str = Header(None),
+):
+    require_admin(authorization)
+    limit  = min(limit, 200)
+    offset = (page - 1) * limit
+    try:
+        pool = _get_pool()
+        conn = pool.getconn()
+        cur  = conn.cursor()
+        try:
+            where  = "WHERE event_type ILIKE %s" if type else ""
+            params = [f"%{type}%"] if type else []
+
+            cur.execute(f"""
+                SELECT pal.id, pal.event_type AS type,
+                       u.email AS user_email,
+                       pal.data::text AS description,
+                       pal.ip_address AS ip,
+                       pal.created_at
+                FROM payment_audit_log pal
+                LEFT JOIN users u ON u.id = pal.user_id
+                {where}
+                ORDER BY pal.created_at DESC
+                LIMIT %s OFFSET %s
+            """, params + [limit, offset])
+
+            cols = ["id","type","user_email","description","ip","created_at"]
+            logs = []
+            for row in cur.fetchall():
+                l = dict(zip(cols, row))
+                if l.get("created_at"):
+                    l["created_at"] = l["created_at"].isoformat()
+                logs.append(l)
+
+            return {"logs": logs, "page": page}
+        finally:
+            pool.putconn(conn)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
 
 @app.get("/health")
 async def health_check():
