@@ -2371,14 +2371,19 @@ async def admin_users(
             if filter == "premium":
                 conditions.append("""(u.is_premium = TRUE OR EXISTS (
                     SELECT 1 FROM user_subscriptions s2
-                    WHERE s2.user_id = u.id AND s2.status IN ('active','trialing')
+                    WHERE s2.user_id = u.id
+                      AND s2.status IN ('active','trialing')
+                      AND s2.plan_id != 'free'
                 ))""")
             elif filter == "free":
-                conditions.append("""u.is_premium = FALSE AND u.is_banned = FALSE
+                conditions.append("""u.is_premium = FALSE
                     AND NOT EXISTS (
                         SELECT 1 FROM user_subscriptions s2
-                        WHERE s2.user_id = u.id AND s2.status IN ('active','trialing')
-                    )""")
+                        WHERE s2.user_id = u.id
+                          AND s2.status IN ('active','trialing')
+                          AND s2.plan_id != 'free'
+                    )
+                    AND u.is_banned = FALSE""")
             elif filter == "banned":
                 conditions.append("u.is_banned = TRUE")
 
