@@ -2559,7 +2559,7 @@ async def admin_toggle_premium(
             if not row:
                 raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı")
 
-            # Eğer premium yapılıyorsa free plan yerine premium plan ata
+            # Eğer premium yapılıyorsa premium plan ata
             if enable:
                 cur.execute("""
                     INSERT INTO user_subscriptions
@@ -2567,7 +2567,20 @@ async def admin_toggle_premium(
                          current_period_start, current_period_end)
                     VALUES (%s, 'premium', 'active', 'monthly',
                             NOW(), NOW() + INTERVAL '30 days')
-                    ON CONFLICT DO NOTHING
+                    ON CONFLICT (user_id) WHERE status IN ('active','trialing')
+                    DO UPDATE SET
+                        plan_id = 'premium',
+                        status  = 'active',
+                        current_period_start = NOW(),
+                        current_period_end   = NOW() + INTERVAL '30 days',
+                        updated_at = NOW()
+                """, (user_id,))
+            else:
+                # Premium kaldır — subscription'ı iptal et
+                cur.execute("""
+                    UPDATE user_subscriptions
+                    SET status = 'cancelled', cancelled_at = NOW(), updated_at = NOW()
+                    WHERE user_id = %s AND status IN ('active','trialing')
                 """, (user_id,))
 
             # Audit log
