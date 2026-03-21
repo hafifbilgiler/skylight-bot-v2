@@ -742,16 +742,33 @@ async def build_messages(
     messages       = []
     system_content = config["system_prompt"]
 
-    # ── GÜNCEL TARİH/SAAT — Her mesajda enjekte et ──────────────
-    import pytz
-    tz  = pytz.timezone("Europe/Istanbul")
-    now = datetime.now(tz)
-    days_tr   = ["Pazartesi","Salı","Çarşamba","Perşembe","Cuma","Cumartesi","Pazar"]
-    months_tr = ["Ocak","Şubat","Mart","Nisan","Mayıs","Haziran",
-                 "Temmuz","Ağustos","Eylül","Ekim","Kasım","Aralık"]
-    date_str  = (f"{now.day} {months_tr[now.month-1]} {now.year}, "
-                 f"{days_tr[now.weekday()]}, saat {now.strftime('%H:%M')} (Türkiye saati)")
-    system_content = f"[Güncel Tarih ve Saat]\n{date_str}\n[/Güncel Tarih ve Saat]\n\n" + system_content
+    # ── GÜNCEL TARİH — smart_tools NTP (worldtimeapi) ────────────
+    try:
+        async with httpx.AsyncClient(timeout=4.0) as _c:
+            _r = await _c.post(
+                f"{SMART_TOOLS_URL}/unified",
+                json={"query": "bugün tarih ne", "tool_type": "time"}
+            )
+            if _r.status_code == 200:
+                _d = _r.json().get("data", {})
+                _date_only = _d.get("date_only") or _d.get("formatted_tr", "").split(",")[0].strip()
+                if _date_only:
+                    system_content = (
+                        f"[Sistem Bilgisi]\nBugünün tarihi: {_date_only}\n[/Sistem Bilgisi]\n\n"
+                        + system_content
+                    )
+    except Exception:
+        # Fallback: UTC+3 sistem saati
+        from datetime import timezone, timedelta
+        _now = datetime.now(timezone(timedelta(hours=3)))
+        _months = ["Ocak","Şubat","Mart","Nisan","Mayıs","Haziran",
+                   "Temmuz","Ağustos","Eylül","Ekim","Kasım","Aralık"]
+        _days = ["Pazartesi","Salı","Çarşamba","Perşembe","Cuma","Cumartesi","Pazar"]
+        _date_only = f"{_now.day} {_months[_now.month-1]} {_now.year}, {_days[_now.weekday()]}"
+        system_content = (
+            f"[Sistem Bilgisi]\nBugünün tarihi: {_date_only}\n[/Sistem Bilgisi]\n\n"
+            + system_content
+        )
     # ─────────────────────────────────────────────────────────────
 
     # 1. USER MEMORY

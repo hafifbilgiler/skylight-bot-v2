@@ -268,30 +268,77 @@ def _extract_coin(query: str) -> str:
 # ═══════════════════════════════════════════════════════════════
 
 def get_time(tz_str: str = "Europe/Istanbul") -> Dict:
+    """
+    Gerçek saat: worldtimeapi.org NTP → fallback sistem saati.
+    tz_str: IANA timezone (Europe/Istanbul, America/New_York, vs.)
+    """
+    # Önce NTP
     try:
-        tz  = pytz.timezone(tz_str)
-        now = datetime.now(tz)
-        days = {
-            "Monday":"Pazartesi","Tuesday":"Salı","Wednesday":"Çarşamba",
-            "Thursday":"Perşembe","Friday":"Cuma",
-            "Saturday":"Cumartesi","Sunday":"Pazar",
-        }
-        months = {
-            "January":"Ocak","February":"Şubat","March":"Mart","April":"Nisan",
-            "May":"Mayıs","June":"Haziran","July":"Temmuz","August":"Ağustos",
-            "September":"Eylül","October":"Ekim","November":"Kasım","December":"Aralık",
-        }
-        day_tr   = days.get(now.strftime("%A"),   now.strftime("%A"))
-        month_tr = months.get(now.strftime("%B"), now.strftime("%B"))
-        return {"success": True, "data": {
-            "time": now.strftime("%H:%M:%S"),
-            "date": now.strftime("%Y-%m-%d"),
-            "day_tr": day_tr, "month_tr": month_tr,
-            "formatted_tr": f"{now.day} {month_tr} {now.year}, {day_tr}, saat {now.strftime('%H:%M')}",
-            "short": f"Saat {now.strftime('%H:%M')}, {day_tr}",
-        }}
+        r = requests.get(
+            f"https://worldtimeapi.org/api/timezone/{tz_str}",
+            timeout=4
+        )
+        if r.status_code == 200:
+            d   = r.json()
+            from datetime import datetime as _dt
+            now = _dt.fromisoformat(d["datetime"])
+            days = {
+                "Monday":"Pazartesi","Tuesday":"Salı","Wednesday":"Çarşamba",
+                "Thursday":"Perşembe","Friday":"Cuma",
+                "Saturday":"Cumartesi","Sunday":"Pazar",
+            }
+            months = {
+                "January":"Ocak","February":"Şubat","March":"Mart","April":"Nisan",
+                "May":"Mayıs","June":"Haziran","July":"Temmuz","August":"Ağustos",
+                "September":"Eylül","October":"Ekim","November":"Kasım","December":"Aralık",
+            }
+            day_tr   = days.get(now.strftime("%A"),   now.strftime("%A"))
+            month_tr = months.get(now.strftime("%B"), now.strftime("%B"))
+            print(f"[TIME] NTP ✅ {tz_str}: {now.strftime('%H:%M')} ({d.get('utc_offset','?')})")
+            return {"success": True, "source": "worldtimeapi", "data": {
+                "time":         now.strftime("%H:%M:%S"),
+                "date":         now.strftime("%Y-%m-%d"),
+                "day_tr":       day_tr,
+                "month_tr":     month_tr,
+                "formatted_tr": f"{now.day} {month_tr} {now.year}, {day_tr}, saat {now.strftime('%H:%M')}",
+                "short":        f"Saat {now.strftime('%H:%M')}, {day_tr}",
+                "date_only":    f"{now.day} {month_tr} {now.year}, {day_tr}",
+                "utc_offset":   d.get("utc_offset", ""),
+                "week_number":  d.get("week_number"),
+                "day_of_year":  d.get("day_of_year"),
+                "timezone":     tz_str,
+            }}
+        print(f"[TIME] worldtimeapi {r.status_code} — fallback")
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        print(f"[TIME] worldtimeapi hata: {e} — fallback")
+
+    # Fallback: sistem saati + UTC+3
+    from datetime import timezone, timedelta
+    tz  = timezone(timedelta(hours=3))
+    now = datetime.now(tz)
+    days = {
+        "Monday":"Pazartesi","Tuesday":"Salı","Wednesday":"Çarşamba",
+        "Thursday":"Perşembe","Friday":"Cuma",
+        "Saturday":"Cumartesi","Sunday":"Pazar",
+    }
+    months = {
+        "January":"Ocak","February":"Şubat","March":"Mart","April":"Nisan",
+        "May":"Mayıs","June":"Haziran","July":"Temmuz","August":"Ağustos",
+        "September":"Eylül","October":"Ekim","November":"Kasım","December":"Aralık",
+    }
+    day_tr   = days.get(now.strftime("%A"),   now.strftime("%A"))
+    month_tr = months.get(now.strftime("%B"), now.strftime("%B"))
+    return {"success": True, "source": "system_fallback", "data": {
+        "time":         now.strftime("%H:%M:%S"),
+        "date":         now.strftime("%Y-%m-%d"),
+        "day_tr":       day_tr,
+        "month_tr":     month_tr,
+        "formatted_tr": f"{now.day} {month_tr} {now.year}, {day_tr}, saat {now.strftime('%H:%M')}",
+        "short":        f"Saat {now.strftime('%H:%M')}, {day_tr}",
+        "date_only":    f"{now.day} {month_tr} {now.year}, {day_tr}",
+        "utc_offset":   "+03:00",
+        "timezone":     tz_str,
+    }}
 
 
 def get_weather(query: str) -> Dict:
