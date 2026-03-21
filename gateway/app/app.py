@@ -932,49 +932,83 @@ def combine_prompts_for_modification(original_prompt: str, modification_request:
 
 # ═══════════════════════════════════════════════════════════════
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# GATEWAY DEEP SEARCH — LiveDataRouter entegrasyonu
+# GATEWAY — DEEP SEARCH (Sadece araştırma sorgular için)
 #
-# Gateway artık kendi keyword listesi TUTMAZ.
-# "Bu sorgu için web araması lazım mı?" → smart_tools /classify
-# "Web araması yap" → smart_tools /live (LIVE_SEARCH kategorisi)
+# MİMARİ:
+#   Chat servisi → canlı veri (kur, hava, kripto, haberler, maç)
+#                  Local keyword detection → smart_tools /unified
 #
-# Chat servisi zaten /live ile canlı veriler alıyor.
-# Gateway sadece LIVE_SEARCH kategorisindeki sorgular için
-# ek context ekler — bunlar araştırma gerektiren uzun sorgular.
+#   Gateway → deep search (araştırma, analiz, güncel olaylar)
+#             Local keyword detection → smart_tools /deep_search
+#
+# KURAL: Her iki servis de detection'ı LOCAL yapar (0ms, network yok).
+#        Network çağrısı sadece veri almak için yapılır.
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # ═══════════════════════════════════════════════════════════════
 
 DEEP_SEARCH_TIMEOUT = int(os.getenv("DEEP_SEARCH_TIMEOUT", "35"))
 
+# ── Chat servisi zaten hallediyor → gateway dokunmaz ────────────
+# Bu sorgular için deep search tetiklenMEZ
+_CHAT_HANDLES_THESE = (
+    # Anlık kur/fiyat
+    "dolar","euro","eur","usd","gbp","sterlin","kur","döviz","doviz",
+    "bitcoin","btc","ethereum","eth","kripto","crypto","coin",
+    "altın fiyatı","gram altın","petrol fiyatı",
+    # Hava
+    "hava durumu","havadurumu","hava nasıl","sıcaklık","derece","weather",
+    # Haberler
+    "son haberler","güncel haberler","son dakika","haber oku",
+    # Saat
+    "saat kaç","saati kaç","şimdi saat",
+    # Maç/spor skorları
+    "maç sonucu","maç skoru","skor kaç","gol attı","kazandı mı",
+    "galatasaray maç","fenerbahçe maç","beşiktaş maç",
+    "premier league","süper lig sonuç",
+)
 
-async def classify_query(prompt: str, mode: str = "assistant") -> dict:
-    """
-    Smart Tools /classify endpoint'ini çağırır.
-    Sorgunun hangi kategoriye girdiğini öğrenir.
+# ── Deep search tetikleyen sinyaller ────────────────────────────
+_DEEP_SEARCH_SIGNALS = (
+    # Açık araştırma isteği
+    "araştır","araştırma yap","analiz et","incele",
+    "webde ara","internette ara","bul bana","find me",
+    # Güncel olaylar — haber değil araştırma
+    "son gelişmeler","son açıklama","ne oldu","neler oluyor",
+    "dünyada neler","dünya gündemi","gündemde ne var",
+    "küresel gelişmeler","güncel durum","son durum",
+    # Konu araştırması
+    "hakkında bilgi ver","kimdir","ne yaptı","karar verdi mi",
+    "latest developments","what happened","recent news about",
+)
 
-    Döner:
-    {
-        "category":   "live_utility" | "live_news" | "live_search" | "static" | "technical",
-        "tool":       "currency" | "weather" | ... | null,
-        "action":     "smart_tools_api" | "smart_tools_news" | "deep_search" | "llm_direct",
-        "confidence": 1.0,
-    }
+
+def _gateway_needs_deep_search(prompt: str, mode: str) -> bool:
     """
-    if not SMART_TOOLS_URL:
-        return {"category": "static", "action": "llm_direct"}
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.post(
-                f"{SMART_TOOLS_URL}/classify",
-                json={"query": prompt, "mode": mode},
-            )
-            if resp.status_code == 200:
-                result = resp.json()
-                print(f"[CLASSIFY] '{prompt[:40]}' → {result.get('category')} / {result.get('action')}")
-                return result
-    except Exception as e:
-        print(f"[CLASSIFY] Error: {e}")
-    return {"category": "static", "action": "llm_direct"}
+    LOCAL detection (0ms) — gateway deep search gerekiyor mu?
+
+    False döndüren durumlar:
+    - Kod/IT modu
+    - Chat servisinin zaten hallettiği canlı veri sorguları
+    - Kısa statik bilgi soruları
+
+    True döndüren durumlar:
+    - Açık araştırma isteği ("araştır", "analiz et")
+    - Güncel olaylar ("dünya gündemi", "ne oldu")
+    - Uzun ve spesifik sorgular (4+ kelime + yıl)
+    """
+    if mode in ("code", "it_expert"):
+        return False
+    q = prompt.lower().strip()
+    # Chat servisi hallediyor → gateway dokunma
+    if any(k in q for k in _CHAT_HANDLES_THESE):
+        return False
+    # Açık deep search sinyali
+    if any(s in q for s in _DEEP_SEARCH_SIGNALS):
+        return True
+    # Yıl + uzun sorgu → araştırma
+    if re.search(r'\b(202[3-9]|203\d)\b', q) and len(q.split()) >= 4:
+        return True
+    return False
 
 
 async def call_deep_search(
@@ -982,16 +1016,10 @@ async def call_deep_search(
     context_hint: Optional[str] = None,
     language:     str = "tr",
 ) -> Optional[str]:
-    """
-    Gateway'den deep search pipeline çağrısı.
-    Smart Tools /live endpoint'ine LIVE_SEARCH olarak gönderir.
-    Başarılı olursa formatted context döner → chat_data["context"]'e eklenir.
-    """
+    """Smart Tools /deep_search → sentezlenmiş araştırma metni."""
     if not SMART_TOOLS_URL:
         return None
     try:
-        payload = {"query": query}
-        # context_hint varsa deep_search endpoint'ini doğrudan çağır
         async with httpx.AsyncClient(timeout=DEEP_SEARCH_TIMEOUT) as client:
             resp = await client.post(
                 f"{SMART_TOOLS_URL}/deep_search",
@@ -1014,64 +1042,11 @@ async def call_deep_search(
             print(f"[DEEP SEARCH] ✅ {len(synthesis)} chars | {elapsed}s")
             return synthesis
     except httpx.TimeoutException:
-        print(f"[DEEP SEARCH] Timeout")
+        print("[DEEP SEARCH] Timeout")
         return None
     except Exception as e:
         print(f"[DEEP SEARCH] Error: {e}")
         return None
-
-
-async def should_gateway_deep_search(prompt: str, mode: str) -> dict:
-    """
-    Gateway seviyesinde deep search gerekiyor mu?
-
-    NOT: Kur, hava, kripto, haberler chat servisi tarafından
-    smart_tools /live ile zaten hallediliyor. Gateway bunlara
-    DOKUNMAZ — sadece LIVE_SEARCH kategorisini işler.
-
-    LIVE_SEARCH = araştırma gerektiren, Jina+LLM sentezi lazım olan sorgular.
-    Bunlar chat servisinin timeout'unu aşabilir, bu yüzden gateway'den
-    önceden çekilip context olarak gönderilir.
-
-    Döner:
-    {
-        "needs_search": True/False,
-        "mode":         "auto" | "suggest" | "none",
-        "query":        optimize edilmiş sorgu,
-        "msg":          kullanıcıya gösterilecek mesaj,
-    }
-    """
-    # Kod/IT modu → deep search yok
-    if mode in ("code", "it_expert"):
-        return {"needs_search": False, "mode": "none", "query": prompt, "msg": ""}
-
-    # Smart tools'a sor
-    classified = await classify_query(prompt, mode)
-    category   = classified.get("category", "static")
-    action     = classified.get("action", "llm_direct")
-
-    # Sadece LIVE_SEARCH kategorisi gateway'den deep search tetikler
-    if category == "live_search" and action == "deep_search":
-        return {
-            "needs_search": True,
-            "mode":         "auto",
-            "query":        prompt,
-            "msg":          "🔍 Araştırıyorum...",
-        }
-
-    # Diğer tüm kategoriler (live_utility, live_news, static, technical)
-    # chat servisi zaten halleder — gateway dokunmaz
-    return {"needs_search": False, "mode": "none", "query": prompt, "msg": ""}
-# KURAL: Smart tools'un direkt API ile hallettiği şeyler
-#        ASLA deep search'e gitmez.
-#
-#  Chat servisi zaten şunları smart tools ile hallediyor:
-#    - Döviz kuru     → exchangerate-api (0.1 saniye, gerçek fiyat)
-#    - Hava durumu    → open-meteo.com   (0.1 saniye, gerçek veri)
-#    - Kripto fiyatı  → coingecko.com    (0.1 saniye, gerçek fiyat)
-#    - Saat           → local system     (anında)
-#    - Haberler       → Google News RSS  (0.5 saniye, gerçek başlıklar)
-#
 # ═══════════════════════════════════════════════════════════════
 # AUTH ENDPOINTS
 # ═══════════════════════════════════════════════════════════════
@@ -2059,35 +2034,26 @@ async def chat_endpoint(
         # Her iki durumda da kod canavarı injection
         prompt = prompt + CODE_MONSTER_INJECTION
 
-    # ── GATEWAY DEEP SEARCH — sadece LIVE_SEARCH kategorisi ─────
-    # NOT: Kur, hava, kripto, haberler → chat servisi smart_tools /live ile halleder.
-    # Gateway sadece araştırma gerektiren sorgular için önceden
-    # deep search çalıştırır ve sonucu context olarak gönderir.
-    # Karar smart_tools /classify'dan gelir — keyword listesi yok.
-    web_search_info = await should_gateway_deep_search(prompt, mode)
+    # ── GATEWAY DEEP SEARCH ──────────────────────────────────
+    # Local detection (0ms) — sadece araştırma sorgular için
+    # Kur/hava/kripto/haberler chat servisi halleder, gateway dokunmaz
     web_context     = None
     web_suggest_msg = ""
 
-    if web_search_info["needs_search"]:
-        search_mode = web_search_info["mode"]
-        print(f"[GATEWAY] Deep search: mode={search_mode}")
-
-        if search_mode == "auto":
-            context_hint = None
-            for msg in reversed(conversation_history[-6:]):
-                if msg.get("role") == "assistant" and len(msg.get("content","")) > 20:
-                    context_hint = msg["content"][:200]
-                    break
-            web_context = await call_deep_search(
-                query        = web_search_info["query"],
-                context_hint = context_hint,
-                language     = "tr",
-            )
-            if web_context:
-                print(f"[GATEWAY] Deep search context: {len(web_context)} chars")
-
-        elif search_mode == "suggest":
-            web_suggest_msg = web_search_info["msg"]
+    if _gateway_needs_deep_search(prompt, mode):
+        print(f"[GATEWAY] Deep search tetiklendi: '{prompt[:40]}'")
+        context_hint = None
+        for msg in reversed(conversation_history[-6:]):
+            if msg.get("role") == "assistant" and len(msg.get("content","")) > 20:
+                context_hint = msg["content"][:200]
+                break
+        web_context = await call_deep_search(
+            query        = prompt,
+            context_hint = context_hint,
+            language     = "tr",
+        )
+        if web_context:
+            print(f"[GATEWAY] Deep search context: {len(web_context)} chars")
 
     # context birleştir (gateway deep search + gateway'den gelen RAG vs)
     final_context = ""

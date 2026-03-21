@@ -153,80 +153,127 @@ class ThinkingStep(BaseModel):
 
 # ═══════════════════════════════════════════════════════════════
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# LIVE DATA — TEK FONKSİYON, TEK ENDPOINT
-# Chat servisi artık keyword listesi tutmaz.
-# Tüm kararlar smart_tools /classify + /live'a taşındı.
+# LIVE DATA — Hızlı local detection + Smart Tools veri çekme
+#
+# KURAL: Detection LOCAL (0ms, network yok)
+#        Veri çekme → smart_tools /unified (sadece lazımsa)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # ═══════════════════════════════════════════════════════════════
 
+# ── Anlık API sinyalleri — smart tools /unified'a gider ────────
+_CURRENCY_KW  = ("dolar","euro","eur","usd","gbp","sterlin","pound","jpy","yen","chf",
+                 "kur","döviz","doviz","exchange rate","kaç tl","kac tl","tl kaç",
+                 "dolar kaç","euro kaç","kur nedir")
+_WEATHER_KW   = ("hava durumu","havadurumu","hava nasıl","havalar nasıl",
+                 "hava kaç derece","sıcaklık","sicaklik","yağmur yağıyor",
+                 "kar yağıyor","weather","forecast","bugün hava","yarın hava","derece")
+_CRYPTO_KW    = ("bitcoin","btc","ethereum","eth","dogecoin","doge","solana",
+                 "kripto","crypto","coin fiyat","bitcoin kaç","ethereum kaç")
+_TIME_KW      = ("saat kaç","saat kac","saati kaç","şimdi saat","şu an saat",
+                 "bugün ne günü","what time","günün saati")
+_NEWS_KW      = ("son haberler","güncel haberler","bugünün haberleri","son dakika",
+                 "breaking news","haberleri göster","haberleri getir","haber oku",
+                 "gündem ne","today's news","latest news")
+_PRICE_KW     = ("kaç lira","fiyatı ne kadar","fiyatı kaç","altın fiyatı",
+                 "gram altın","petrol fiyatı","borsa","bist","hisse fiyatı")
+
+# ── Canlı veri gerekmez ─────────────────────────────────────────
+_STATIC_KW    = ("nasıl kullanılır","syntax","örnek ver","açıkla","anlat",
+                 "ne demek","tanımı nedir","nasıl yapılır","tutorial")
+_TECH_MODES   = {"code","it_expert"}
+
+
+def _detect_live_type(query: str, mode: str) -> Optional[str]:
+    """
+    LOCAL detection — 0ms, network yok.
+    Döner: "currency" | "weather" | "crypto" | "time" | "news" | "price" | None
+    """
+    if mode in _TECH_MODES:
+        return None
+    q = query.lower()
+    if any(k in q for k in _STATIC_KW) and len(q.split()) <= 6:
+        return None
+    if any(k in q for k in _CURRENCY_KW): return "currency"
+    if any(k in q for k in _WEATHER_KW):  return "weather"
+    if any(k in q for k in _CRYPTO_KW):   return "crypto"
+    if any(k in q for k in _TIME_KW):     return "time"
+    if any(k in q for k in _NEWS_KW):     return "news"
+    if any(k in q for k in _PRICE_KW):    return "price_search"
+    return None
+
+
 async def get_live_data(query: str, mode: str = "assistant") -> Optional[str]:
     """
-    Sorgu için canlı veri gerekiyor mu? Gerekiyorsa getir.
+    1. Local detection (0ms) — canlı veri lazım mı?
+    2. Lazımsa smart_tools /unified'a git — gerçek veriyi getir
+    3. format_for_llm() ile LLM'e hazır formata dönüştür
 
-    Smart tools /classify → karar
-    Smart tools /live → veri + LLM'e hazır format
-
-    Döner:
-    - str  → LLM system prompt'una eklenecek canlı veri
-    - None → canlı veri gerekmez, LLM direkt cevaplar
-
-    Örnekler:
-    "güncel euro kaç tl" → "[Canlı Veri — CURRENCY]\n💱 1 EUR = 43.52 TRY"
-    "hava nasıl"         → "[Canlı Veri — WEATHER]\n📍 İstanbul: 22°C, Açık"
-    "son haberler"       → "[Canlı Veri — NEWS]\n📰 1. başlık..."
-    "dünya gündemi"      → "[Canlı Veri — DEEP_SEARCH]\n araştırma sonucu..."
-    "python nedir"       → None  (canlı veri gerekmez)
+    Ağ çağrısı sadece canlı veri gerektiğinde yapılır.
     """
+    live_type = _detect_live_type(query, mode)
+    if not live_type:
+        return None
+
     if not SMART_TOOLS_URL:
         return None
 
+    print(f"[LIVE DATA] '{query[:40]}' → {live_type}")
+
     try:
-        async with httpx.AsyncClient(timeout=35.0) as client:
-
-            # Adım 1: Sınıflandır
-            classify_resp = await client.post(
-                f"{SMART_TOOLS_URL}/classify",
-                json={"query": query, "mode": mode},
-            )
-            if classify_resp.status_code != 200:
-                print(f"[LIVE DATA] /classify HTTP {classify_resp.status_code}")
-                return None
-
-            classified = classify_resp.json()
-            category   = classified.get("category", "static")
-            action     = classified.get("action", "llm_direct")
-
-            print(f"[LIVE DATA] '{query[:40]}' → {category} / {action}")
-
-            # Canlı veri gerekmez
-            if action in ("llm_direct", "block") or category in ("static", "technical"):
-                return None
-
-            # Adım 2: Canlı veriyi getir
-            live_resp = await client.post(
-                f"{SMART_TOOLS_URL}/live",
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.post(
+                f"{SMART_TOOLS_URL}/unified",
                 json={"query": query},
             )
-            if live_resp.status_code != 200:
-                print(f"[LIVE DATA] /live HTTP {live_resp.status_code}")
+            if resp.status_code != 200:
+                print(f"[LIVE DATA] HTTP {resp.status_code}")
                 return None
 
-            live_data = live_resp.json()
-            if not live_data.get("success"):
-                print(f"[LIVE DATA] /live failed: {live_data.get('error','?')}")
+            data      = resp.json()
+            if not data.get("success"):
                 return None
 
-            # formatted — smart tools tarafından hazırlandı
-            formatted = live_data.get("formatted", "")
-            if formatted:
-                print(f"[LIVE DATA] ✅ {len(formatted)} chars ({category})")
-                return formatted
+            tool_used = data.get("tool_used", live_type)
+            tool_data = data.get("data", {})
+
+            # Format — LLM'e beslenecek temiz metin
+            parts = [f"[Canlı Veri — {tool_used.upper()}]"]
+
+            if tool_used == "weather":
+                parts.append(
+                    f"📍 {tool_data.get('city')}, {tool_data.get('country')}\n"
+                    f"🌡️ {tool_data.get('temperature')}°C (hissedilen {tool_data.get('feels_like')}°C)\n"
+                    f"☁️ {tool_data.get('description')}\n"
+                    f"💧 Nem: %{tool_data.get('humidity')} | "
+                    f"💨 Rüzgar: {tool_data.get('wind_speed')} km/h"
+                )
+            elif tool_used == "currency":
+                parts.append(f"💱 {tool_data.get('formatted')}")
+            elif tool_used == "crypto":
+                parts.append(
+                    f"₿ {tool_data.get('formatted')}\n"
+                    f"📈 24s değişim: {tool_data.get('change_24h'):+.2f}%"
+                )
+            elif tool_used == "time":
+                parts.append(f"🕐 {tool_data.get('formatted_tr')}")
+            elif tool_used == "news":
+                articles = tool_data.get("articles", [])[:5]
+                if articles:
+                    parts.append("📰 Son Haberler:")
+                    for i, a in enumerate(articles, 1):
+                        parts.append(f"  {i}. {a.get('title','')}")
+            elif tool_used in ("web_search","price_search"):
+                for r in tool_data.get("results", [])[:3]:
+                    parts.append(f"• {r.get('title','')}: {r.get('content','')[:200]}")
+
+            formatted = "\n".join(parts)
+            print(f"[LIVE DATA] ✅ {tool_used} — {len(formatted)} chars")
+            return formatted
 
     except httpx.TimeoutException:
         print(f"[LIVE DATA] Timeout")
     except Exception as e:
         print(f"[LIVE DATA] Error: {e}")
-
     return None
 
 
@@ -293,7 +340,7 @@ async def create_conversation_summary(user_id: int, conversation_id: str, config
                 SELECT content, role, created_at, id FROM messages
                 WHERE conversation_id = $1::uuid
                 AND id > COALESCE(
-                    (SELECT max(end_message_id) FROM conversation_summaries
+                    (SELECT max(end_message_id::text)::uuid FROM conversation_summaries
                      WHERE conversation_id = $1::uuid),
                     '00000000-0000-0000-0000-000000000000'::uuid)
                 ORDER BY created_at ASC
