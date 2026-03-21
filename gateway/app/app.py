@@ -2211,24 +2211,38 @@ async def web_search_endpoint(
 def require_admin(authorization: Optional[str] = None) -> int:
     """
     Admin yetkisi kontrolü.
-    Bearer token ile gelen kullanıcının is_admin = TRUE olması lazım.
-    Değilse 403 döner.
+    İki yol:
+    1. API_TOKEN (server-side bearer) → admin.php'den gelir, direkt kabul et
+    2. JWT token → kullanıcı token'ı, is_admin=TRUE kontrolü yap
     """
-    user_id = get_user_from_token(authorization)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Token gerekli")
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Authorization header eksik")
+
+    token = authorization.replace("Bearer ", "").strip()
+
+    # Yol 1: Server-side API token (admin.php kullanır)
+    if token == API_TOKEN:
+        return 0  # admin.php'den geldi, güvenli
+
+    # Yol 2: JWT token → is_admin kontrolü
     try:
-        pool = _get_pool()
-        conn = pool.getconn()
-        cur  = conn.cursor()
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        email   = payload.get("sub")
+        if not email:
+            raise HTTPException(status_code=401, detail="Geçersiz token")
+        pool = _get_pool(); conn = pool.getconn(); cur = conn.cursor()
         try:
-            cur.execute("SELECT is_admin FROM users WHERE id = %s", (user_id,))
+            cur.execute("SELECT id, is_admin FROM users WHERE email = %s", (email,))
             row = cur.fetchone()
-            if not row or not row[0]:
+            if not row or not row[1]:
                 raise HTTPException(status_code=403, detail="Admin yetkisi gerekli")
-            return user_id
+            return row[0]
         finally:
             pool.putconn(conn)
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token süresi doldu")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Geçersiz token")
     except HTTPException:
         raise
     except Exception as e:
