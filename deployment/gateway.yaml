@@ -99,6 +99,10 @@ spec:
           value: "http://skylight-smart-tools:8081"
         - name: DEEPINFRA_CODE_MAX_TOKENS
           value: "16000"   # 4096 → 16000
+        # ── Admin Panel ──────────────────────────────────
+        # OTP doğrulama kodu bu adrese gönderilir
+        - name: ADMIN_NOTIFICATION_EMAIL
+          value: "serkan.ozmn.so@gmail.com"   # ← buraya yaz
         resources:
           requests:
             memory: "256Mi"

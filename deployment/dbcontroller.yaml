@@ -33,8 +33,3 @@ spec:
             secretKeyRef:
               name: pg-secret
               key: dbname
-
-        # ── Admin Panel ──────────────────────────────────
-        # OTP doğrulama kodu bu adrese gönderilir
-        - name: ADMIN_NOTIFICATION_EMAIL
-          value: "serkan.ozmn.so@gmail.com"   # ← buraya yaz
