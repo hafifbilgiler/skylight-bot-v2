@@ -1101,39 +1101,33 @@ def seed_admin_user() -> bool:
     """
 
     # ── SABİT GİRİŞ BİLGİLERİ ─────────────────────────────────
-    ADMIN_USERNAME = "admin"
-    ADMIN_PASSWORD = "123456"   # ← BUNU DEĞİŞTİR
+    # Bu kullanıcı HER ZAMAN garanti edilir.
+    # Başka admin kullanıcılar olsa bile bu oluşturulur/güncellenir.
     ADMIN_EMAIL    = "admin@one-bune.com"
-    ADMIN_NAME     = "Admin"
+    ADMIN_NAME     = "admin"
+    ADMIN_PASSWORD = "123456"   # ← deploy sonrası değiştir
     # ──────────────────────────────────────────────────────────
 
     try:
         conn = get_db_connection()
         cur  = conn.cursor()
         try:
-            # Zaten admin var mı?
-            cur.execute("SELECT id, email FROM users WHERE is_admin = TRUE LIMIT 1")
-            existing = cur.fetchone()
-            if existing:
-                log_info(f"Admin zaten mevcut: {existing[1]} (id={existing[0]}), seed atlandı.")
-                cur.close()
-                conn.close()
-                return True
-
-            # pgcrypto ile bcrypt hash (cost 12)
+            # Şifreyi pgcrypto ile hash'le
             cur.execute("SELECT crypt(%s, gen_salt('bf', 12))", (ADMIN_PASSWORD,))
             password_hash = cur.fetchone()[0]
 
-            # Admin kullanıcı oluştur
+            # admin@one-bune.com'u HER ZAMAN upsert et
+            # Diğer admin kullanıcılar olsa bile bu garanti edilir
             cur.execute("""
                 INSERT INTO users
                     (email, name, password, is_admin, is_premium,
                      subscription_active, created_at, last_login, last_active)
                 VALUES (%s, %s, %s, TRUE, TRUE, TRUE, NOW(), NOW(), NOW())
                 ON CONFLICT (email) DO UPDATE
-                    SET is_admin   = TRUE,
-                        is_premium = TRUE,
+                    SET name       = EXCLUDED.name,
                         password   = EXCLUDED.password,
+                        is_admin   = TRUE,
+                        is_premium = TRUE,
                         last_login = NOW()
                 RETURNING id, email
             """, (ADMIN_EMAIL, ADMIN_NAME, password_hash))
@@ -1141,10 +1135,10 @@ def seed_admin_user() -> bool:
             result = cur.fetchone()
             conn.commit()
 
-            log_success(f"Admin oluşturuldu: {result[1]} (id={result[0]})")
-            log_info(f"Kullanıcı adı : {ADMIN_USERNAME}")
-            log_info(f"Şifre         : {ADMIN_PASSWORD}")
-            log_info("⚠️  Lütfen şifreyi güvenli bir değerle değiştirin!")
+            log_success(f"Admin garanti edildi: {result[1]} (id={result[0]})")
+            log_info(f"  Email : {ADMIN_EMAIL}")
+            log_info(f"  Şifre : {ADMIN_PASSWORD}")
+            log_info("  ⚠️  Şifreyi değiştirmeyi unutma!")
             return True
 
         finally:
