@@ -2701,6 +2701,121 @@ async def admin_logs(
 
 
 
+# ── /admin/send_otp + /admin/verify_otp ──────────────────────
+# admin.php şifre doğruladıktan sonra buraya istek atar.
+# OTP üretir, ADMIN_NOTIFICATION_EMAIL'e gönderir.
+
+ADMIN_NOTIFICATION_EMAIL = os.getenv("ADMIN_NOTIFICATION_EMAIL", "")
+
+class AdminOTPRequest(BaseModel):
+    username: str
+
+class AdminOTPVerifyRequest(BaseModel):
+    username: str
+    otp:      str
+
+
+@app.post("/admin/send_otp")
+async def admin_send_otp(req: AdminOTPRequest, request: Request,
+                          authorization: str = Header(None)):
+    """OTP üret ve ADMIN_NOTIFICATION_EMAIL'e gönder."""
+    # Sadece bearer token kontrolü (admin session yokken çağrılır)
+    if not authorization or authorization.replace("Bearer ","") != API_TOKEN:
+        raise HTTPException(status_code=401, detail="Yetkisiz")
+
+    if not ADMIN_NOTIFICATION_EMAIL:
+        raise HTTPException(status_code=500, detail="ADMIN_NOTIFICATION_EMAIL tanımlı değil.")
+
+    import random as _rnd
+    otp_code = str(_rnd.randint(100000, 999999))
+    ip       = get_client_ip(request)
+
+    # OTP'yi otp_codes tablosuna kaydet
+    try:
+        pool = _get_pool(); conn = pool.getconn(); cur = conn.cursor()
+        try:
+            cur.execute("""
+                INSERT INTO otp_codes (email, code, expire_at, created_at)
+                VALUES (%s, %s, NOW() + INTERVAL '5 minutes', NOW())
+                ON CONFLICT (email) DO UPDATE
+                SET code=EXCLUDED.code, expire_at=EXCLUDED.expire_at, created_at=NOW()
+            """, (f"admin_{req.username}", otp_code))
+            conn.commit()
+        finally:
+            pool.putconn(conn)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DB hatası: {e}")
+
+    # Email gönder — gateway'in mevcut SMTP sistemi
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["From"]    = SMTP_FROM
+        msg["To"]      = ADMIN_NOTIFICATION_EMAIL
+        msg["Subject"] = "ONE-BUNE Admin Giriş Kodu"
+        html = f"""
+        <div style="font-family:Inter,sans-serif;max-width:480px;margin:0 auto;
+                    background:#0a0a0c;padding:32px;border-radius:16px;
+                    border:1px solid rgba(255,255,255,0.07)">
+            <div style="font-size:20px;font-weight:700;color:#00f2fe;margin-bottom:20px">
+                🛡️ ONE-BUNE Admin Panel
+            </div>
+            <p style="color:#eeeef0">Giriş doğrulama kodunuz:</p>
+            <div style="font-size:40px;font-weight:800;letter-spacing:10px;
+                        color:#00f2fe;background:#111114;padding:24px;
+                        border-radius:12px;text-align:center;
+                        border:1px solid rgba(0,242,254,0.2);margin:20px 0">
+                {otp_code}
+            </div>
+            <p style="color:#55556a;font-size:12px;margin-top:16px">
+                ⏱ 5 dakika geçerlidir. &nbsp;|&nbsp; 🌐 IP: {ip}<br>
+                🔒 Bu kodu kimseyle paylaşmayın.
+            </p>
+        </div>"""
+        msg.attach(MIMEText(html, "html", "utf-8"))
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as s:
+            s.ehlo(); s.starttls(); s.ehlo()
+            s.login(SMTP_USER, SMTP_PASS)
+            s.send_message(msg)
+        print(f"[ADMIN OTP] → {ADMIN_NOTIFICATION_EMAIL}, IP={ip}")
+        return {"status": "success"}
+    except Exception as e:
+        print(f"[ADMIN OTP] Email hatası: {e}")
+        raise HTTPException(status_code=500, detail=f"Email gönderilemedi: {e}")
+
+
+@app.post("/admin/verify_otp")
+async def admin_verify_otp(req: AdminOTPVerifyRequest,
+                            authorization: str = Header(None)):
+    """OTP doğrula — admin.php doğru kodu buraya gönderir."""
+    if not authorization or authorization.replace("Bearer ","") != API_TOKEN:
+        raise HTTPException(status_code=401, detail="Yetkisiz")
+    try:
+        pool = _get_pool(); conn = pool.getconn(); cur = conn.cursor()
+        try:
+            cur.execute("""
+                SELECT code, expire_at FROM otp_codes WHERE email=%s
+            """, (f"admin_{req.username}",))
+            row = cur.fetchone()
+            if not row:
+                return {"status":"error","message":"OTP bulunamadı. Tekrar giriş yapın."}
+            code, expire_at = row
+            import datetime as _dt
+            if _dt.datetime.now(_dt.timezone.utc) > expire_at:
+                cur.execute("DELETE FROM otp_codes WHERE email=%s", (f"admin_{req.username}",))
+                conn.commit()
+                return {"status":"error","expired":True,"message":"Kod süresi doldu."}
+            if req.otp.strip() != code:
+                return {"status":"error","message":"Kod yanlış."}
+            cur.execute("DELETE FROM otp_codes WHERE email=%s", (f"admin_{req.username}",))
+            conn.commit()
+            print(f"[ADMIN OTP] ✅ {req.username}")
+            return {"status":"success"}
+        finally:
+            pool.putconn(conn)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/health")
 async def health_check():
     return {
