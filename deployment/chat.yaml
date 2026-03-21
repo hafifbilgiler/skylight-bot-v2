@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
       - name: chat
-        image: docker.io/hafifbilgiler/skylight-chat:2.4  # ✅ YENİ IMAGE
+        image: docker.io/hafifbilgiler/skylight-chat:2.5  # ✅ YENİ IMAGE
         imagePullPolicy: Always
         ports:
         - containerPort: 8082
