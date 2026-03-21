@@ -2360,7 +2360,7 @@ async def admin_users(
         conn = pool.getconn()
         cur  = conn.cursor()
         try:
-            # WHERE koşulları
+            # WHERE koşulları — sadece users tablosuna göre
             conditions = ["1=1"]
             params: list = []
 
@@ -2369,19 +2369,26 @@ async def admin_users(
                 params += [f"%{search}%", f"%{search}%"]
 
             if filter == "premium":
-                conditions.append("(u.is_premium = TRUE OR us.status IN ('active','trialing'))")
+                conditions.append("""(u.is_premium = TRUE OR EXISTS (
+                    SELECT 1 FROM user_subscriptions s2
+                    WHERE s2.user_id = u.id AND s2.status IN ('active','trialing')
+                ))""")
             elif filter == "free":
-                conditions.append("u.is_premium = FALSE AND u.is_banned = FALSE AND (us.status IS NULL OR us.status NOT IN ('active','trialing'))")
+                conditions.append("""u.is_premium = FALSE AND u.is_banned = FALSE
+                    AND NOT EXISTS (
+                        SELECT 1 FROM user_subscriptions s2
+                        WHERE s2.user_id = u.id AND s2.status IN ('active','trialing')
+                    )""")
             elif filter == "banned":
                 conditions.append("u.is_banned = TRUE")
 
             where = " AND ".join(conditions)
 
-            # Toplam sayı
+            # Toplam sayı — sadece users u
             cur.execute(f"SELECT COUNT(*) FROM users u WHERE {where}", params)
             total = cur.fetchone()[0]
 
-            # Kullanıcılar
+            # Kullanıcılar — LEFT JOIN ile detay
             cur.execute(f"""
                 SELECT u.id, u.name, u.email,
                        u.is_premium, u.is_banned, u.is_admin,
@@ -2485,7 +2492,45 @@ async def admin_get_user(
 
 
 # ── /admin/users/{id}/premium ────────────────────────────────
-@app.post("/admin/users/{user_id}/premium")
+@app.post("/admin/users/{user_id}/admin")
+async def admin_toggle_admin(
+    user_id: int,
+    body:    dict,
+    authorization: str = Header(None),
+):
+    admin_id  = require_admin(authorization)
+    make_admin = bool(body.get("is_admin", False))
+    if user_id == admin_id:
+        raise HTTPException(status_code=400, detail="Kendinizin admin yetkisini değiştiremezsiniz.")
+    try:
+        pool = _get_pool(); conn = pool.getconn(); cur = conn.cursor()
+        try:
+            cur.execute("""
+                UPDATE users SET is_admin = %s WHERE id = %s
+                RETURNING id, name, email
+            """, (make_admin, user_id))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı")
+            cur.execute("""
+                INSERT INTO payment_audit_log (event_type, user_id, data)
+                VALUES (%s, %s, %s)
+            """, (
+                "admin_grant" if make_admin else "admin_revoke",
+                user_id,
+                json.dumps({"by_admin": admin_id, "is_admin": make_admin}),
+            ))
+            conn.commit()
+            return {"success": True, "user_id": user_id, "is_admin": make_admin}
+        finally:
+            pool.putconn(conn)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
 async def admin_toggle_premium(
     user_id: int,
     body:    dict,
