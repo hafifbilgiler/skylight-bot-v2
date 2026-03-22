@@ -41,7 +41,7 @@ import httpx
 import clamd
 import psycopg2
 import psycopg2.pool
-from fastapi import FastAPI, HTTPException, Header, Request, BackgroundTasks, File, UploadFile
+from fastapi import FastAPI, HTTPException, Header, Request, BackgroundTasks, File, UploadFile, Body
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, EmailStr
