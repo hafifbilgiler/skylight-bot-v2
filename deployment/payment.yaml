@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: payment-service
-          image: docker.io/hafifbilgiler/skylight-payment-service:1.4
+          image: docker.io/hafifbilgiler/skylight-payment-service:1.5
           imagePullPolicy: Always
           ports:
             - containerPort: 8005
@@ -53,6 +53,9 @@ spec:
             - name: PAYMENT_HTTP_TIMEOUT
               value: "45"
 
+            # JWT — gateway ile aynı secret
+            - name: JWT_SECRET
+              value: "31aad766798d891f4c587d7f3bc925cd7e1e14989c421ae3c38eb80c1d4ede05"
             # Database
             - name: DB_HOST
               value: "postgres"
