@@ -209,7 +209,7 @@ async def activate_subscription(user_id: int, subscription_ref: str, plan_code: 
 # ENDPOINTS
 # ═══════════════════════════════════════════════════════════════
 
-@app.get("/health")
+@app.get("/payment/health")
 async def health():
     return {
         "status":           "healthy",
@@ -382,7 +382,7 @@ async def payment_callback(request: Request):
         return HTMLResponse("<h1>Ödeme işleme hatası</h1>", status_code=500)
 
 
-@app.get("/subscription/status")
+@app.get("/payment/subscription/status")
 async def subscription_status(authorization: Optional[str] = Header(None)):
     if not authorization:
         raise HTTPException(401, "Yetkisiz")
