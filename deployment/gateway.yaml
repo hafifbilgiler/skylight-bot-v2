@@ -45,11 +45,17 @@ spec:
               name: pg-secret
               key: password
         
-        # JWT & API Token
+        # JWT & API Token — artık secret'tan
         - name: JWT_SECRET
-          value: "31aad766798d891f4c587d7f3bc925cd7e1e14989c421ae3c38eb80c1d4ede05"
+          valueFrom:
+            secretKeyRef:
+              name: gateway-secret
+              key: jwt-secret
         - name: API_TOKEN
-          value: "31aad766798d891f4c587d7f3bc925cd7e1e14989c421ae3c38eb80c1d4ede05"
+          valueFrom:
+            secretKeyRef:
+              name: gateway-secret
+              key: api-token
         
         # SMTP (OTP için)
         - name: SMTP_SERVER
