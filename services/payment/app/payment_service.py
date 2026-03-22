@@ -139,16 +139,25 @@ async def iyzico_get(uri: str) -> Dict:
     return data
 
 
+JWT_SECRET    = os.getenv("JWT_SECRET", "").strip()
+JWT_ALGORITHM = "HS256"
+
+
 async def get_user(token: str) -> Optional[dict]:
-    """auth_token ile kullanıcıyı bul"""
+    """JWT token ile kullanıcıyı bul"""
     if not db_pool:
         return None
     try:
+        import jwt as _jwt
+        payload = _jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        email   = payload.get("sub")
+        if not email:
+            return None
         async with db_pool.acquire() as conn:
             row = await conn.fetchrow("""
-                SELECT id, email, name, is_premium, subscription_active, auth_token
-                FROM users WHERE auth_token = $1
-            """, token)
+                SELECT id, email, name, is_premium, subscription_active
+                FROM users WHERE email = $1
+            """, email)
             return dict(row) if row else None
     except Exception as e:
         logger.error(f"[USER] {e}")
