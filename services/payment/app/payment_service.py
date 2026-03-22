@@ -84,31 +84,29 @@ def ensure_config():
         raise HTTPException(500, f"Config eksik: {', '.join(missing)}")
 
 
-def build_auth(body_str: str) -> tuple[str, str]:
+def build_auth(uri: str, body_str: str) -> tuple[str, str]:
     """
-    iyzico resmi SDK auth formatı:
-    1. hash = HMAC-SHA256(secretKey, apiKey + rnd + secretKey + body)
-    2. sig  = base64(hash)
-    3. params = "apiKey:X&randomKey:X&signature:X"
-    4. Authorization = "IYZWS " + base64(params)
+    iyzico IYZWSv2 resmi format (docs.iyzico.com):
+    1. payload  = randomKey + uri_path + body
+    2. sig      = hex(HMAC-SHA256(secretKey, payload))
+    3. authStr  = "apiKey:X&randomKey:X&signature:X"
+    4. header   = "IYZWSv2 " + base64(authStr)
     """
     rnd     = secrets.token_hex(8)
-    raw     = IYZICO_API_KEY + rnd + IYZICO_SECRET_KEY + body_str
-    sig     = base64.b64encode(
-        hmac.new(
-            IYZICO_SECRET_KEY.encode("utf-8"),
-            raw.encode("utf-8"),
-            hashlib.sha256,
-        ).digest()
-    ).decode("utf-8")
-    params  = f"apiKey:{IYZICO_API_KEY}&randomKey:{rnd}&signature:{sig}"
-    encoded = base64.b64encode(params.encode("utf-8")).decode("utf-8")
-    return f"IYZWS {encoded}", rnd
+    payload = rnd + uri + body_str
+    sig     = hmac.new(
+        IYZICO_SECRET_KEY.encode("utf-8"),
+        payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    auth_str = f"apiKey:{IYZICO_API_KEY}&randomKey:{rnd}&signature:{sig}"
+    encoded  = base64.b64encode(auth_str.encode("utf-8")).decode("utf-8")
+    return f"IYZWSv2 {encoded}", rnd
 
 
 async def iyzico_post(uri: str, payload: Dict) -> Dict:
     body      = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
-    auth, rnd = build_auth(body)
+    auth, rnd = build_auth(uri, body)
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
         r = await client.post(
             IYZICO_BASE_URL + uri,
@@ -134,7 +132,7 @@ async def iyzico_post(uri: str, payload: Dict) -> Dict:
 
 
 async def iyzico_get(uri: str) -> Dict:
-    auth, rnd = build_auth("")
+    auth, rnd = build_auth(uri, "")
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
         r = await client.get(
             IYZICO_BASE_URL + uri,
