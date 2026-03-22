@@ -1616,7 +1616,7 @@ async def get_usage(authorization: str = Header(None)):
             try:
                 cur.execute("""
                     SELECT COUNT(*) FROM conversations
-                    WHERE user_id = %s AND is_deleted = FALSE
+                    WHERE user_id = %s
                 """, (user_id,))
                 total_conversations = cur.fetchone()[0]
             except Exception:
