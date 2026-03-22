@@ -383,7 +383,7 @@ class ChatMessage(BaseModel):
     content: str
 
 class ChatRequest(BaseModel):
-    prompt: str = Field(..., max_length=10000)
+    prompt: str = Field(..., max_length=50000)
     mode: str = Field("assistant", max_length=50)
     conversation_id: Optional[str] = Field(None, max_length=36)
     history: Optional[List[ChatMessage]] = None
