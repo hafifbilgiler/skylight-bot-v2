@@ -99,7 +99,6 @@ spec:
               port: 8005
             initialDelaySeconds: 5
             periodSeconds: 10
-
 ---
 apiVersion: v1
 kind: Service
@@ -110,6 +109,9 @@ spec:
   selector:
     app: skylight-payment-service
   ports:
-    - port: 8005
+    - name: http
+      protocol: TCP
+      port: 8005
       targetPort: 8005
-  type: ClusterIP
+      nodePort: 31241
+  type: NodePort
