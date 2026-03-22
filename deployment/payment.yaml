@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: payment-service
-          image: docker.io/hafifbilgiler/skylight-payment-service:2.4
+          image: docker.io/hafifbilgiler/skylight-payment-service:2.5
           imagePullPolicy: Always
           ports:
             - containerPort: 8005

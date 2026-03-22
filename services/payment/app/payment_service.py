@@ -248,70 +248,145 @@ async def activate_subscription(user_id: int, subscription_ref: str, plan_code: 
 
 def _send_premium_welcome(email: str, name: str):
     msg = MIMEMultipart("alternative")
-    msg["From"]    = SMTP_FROM
+    msg["From"]    = f"ONE-BUNE <{SMTP_FROM}>"
     msg["To"]      = email
-    msg["Subject"] = "🎉 ONE-BUNE Premium Üyeliğiniz Aktif!"
-    html = f"""
-    <div style="font-family:Inter,Arial,sans-serif;max-width:560px;margin:0 auto;
-                background:#0a0a0c;padding:40px 32px;border-radius:16px;
-                border:1px solid rgba(255,255,255,0.07);">
+    msg["Subject"] = "Premium uyeliginiz aktif edildi"
+    msg["X-Priority"] = "3"
 
-        <div style="text-align:center;margin-bottom:32px;">
-            <div style="display:inline-flex;align-items:center;justify-content:center;
-                        width:64px;height:64px;border-radius:50%;
+    first_name = name.split()[0] if name else "Kullanici"
+
+    html = f"""<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ONE-BUNE Premium</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f4f5;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f5;padding:40px 20px;">
+  <tr>
+    <td align="center">
+      <table width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%;">
+
+        <!-- HEADER -->
+        <tr>
+          <td style="background:#0a0a0c;border-radius:16px 16px 0 0;padding:32px;text-align:center;">
+            <div style="display:inline-block;width:56px;height:56px;border-radius:50%;
                         background:linear-gradient(135deg,#bc4efd,#00f2fe);
-                        font-size:28px;margin-bottom:16px;">👑</div>
-            <h1 style="color:#ffffff;font-size:24px;font-weight:700;margin:0 0 8px;">
-                Premium'a Hoş Geldiniz!
+                        line-height:56px;font-size:24px;margin-bottom:16px;">&#9733;</div>
+            <h1 style="color:#ffffff;font-size:22px;font-weight:700;margin:0 0 6px;">
+              Premium Uyeliginiz Aktif
             </h1>
             <p style="color:#8e8ea0;font-size:14px;margin:0;">
-                Merhaba <strong style="color:#eeeef0;">{name}</strong>, 
-                Premium üyeliğiniz başarıyla aktif edildi.
+              ONE-BUNE AI &middot; SKYMERGE TECHNOLOGY
             </p>
-        </div>
+          </td>
+        </tr>
 
-        <div style="background:#111114;border-radius:12px;padding:24px;
-                    border:1px solid rgba(0,242,254,0.15);margin-bottom:24px;">
-            <h2 style="color:#00f2fe;font-size:14px;font-weight:600;
-                       text-transform:uppercase;letter-spacing:1px;margin:0 0 16px;">
-                Artık Erişebilecekleriniz
-            </h2>
-            <div style="display:flex;flex-direction:column;gap:10px;">
-                {"".join(f'''<div style="display:flex;align-items:center;gap:10px;color:#eeeef0;font-size:13px;">
-                    <span style="color:#00f2fe;font-size:16px;">{icon}</span> {text}
-                </div>''' for icon, text in [
-                    ("🤖", "7 AI modu — Asistan, Kod, IT Uzmanı, Öğrenci, Sosyal"),
-                    ("∞", "Sınırsız mesaj hakkı"),
-                    ("📁", "Dosya yükleme ve analiz"),
-                    ("🖼️", "AI görsel oluşturma"),
-                    ("🔍", "Web arama ve RAG"),
-                    ("✈️", "Ucuz bilet ve fiyat araştırma"),
-                    ("🎧", "Öncelikli destek"),
-                ])}
-            </div>
-        </div>
+        <!-- BODY -->
+        <tr>
+          <td style="background:#111114;padding:32px;">
+            <p style="color:#eeeef0;font-size:15px;line-height:1.6;margin:0 0 24px;">
+              Merhaba <strong>{first_name}</strong>,
+            </p>
+            <p style="color:#8e8ea0;font-size:14px;line-height:1.7;margin:0 0 28px;">
+              ONE-BUNE Premium uyeliginiz basariyla aktif edildi.
+              Artik tum ozelliklere sinırsiz erisebilirsiniz.
+            </p>
 
-        <div style="text-align:center;">
-            <a href="https://one-bune.com" 
-               style="display:inline-block;padding:14px 32px;
-                      background:linear-gradient(135deg,#bc4efd,#00f2fe);
-                      color:#0a0a0c;font-weight:700;font-size:14px;
-                      border-radius:12px;text-decoration:none;">
-                Hemen Başla →
-            </a>
-        </div>
+            <!-- FEATURES -->
+            <table width="100%" cellpadding="0" cellspacing="0"
+                   style="background:#18181d;border-radius:12px;
+                          border:1px solid rgba(255,255,255,0.06);
+                          padding:20px;margin-bottom:28px;">
+              <tr><td>
+                <p style="color:#00f2fe;font-size:11px;font-weight:700;
+                           text-transform:uppercase;letter-spacing:1.5px;
+                           margin:0 0 16px;">Erisim Kazandiklariniz</p>
+                <table width="100%" cellpadding="0" cellspacing="0">
+                  {"".join(f'''<tr>
+                    <td style="padding:6px 0;">
+                      <table cellpadding="0" cellspacing="0"><tr>
+                        <td style="color:#00f2fe;font-size:13px;width:24px;">&rsaquo;</td>
+                        <td style="color:#eeeef0;font-size:13px;line-height:1.5;">{text}</td>
+                      </tr></table>
+                    </td>
+                  </tr>''' for text in [
+                    "Sinırsiz mesaj hakki",
+                    "7 AI modu — Asistan, Kod, IT Uzmani, Ogrenci, Sosyal",
+                    "Dosya yukleme ve analiz",
+                    "AI gorsel olusturma",
+                    "Web arama ve derin arastirma",
+                    "Oncelikli destek",
+                  ])}
+                </table>
+              </td></tr>
+            </table>
 
-        <p style="color:#55556a;font-size:11px;text-align:center;margin-top:24px;">
-            ONE-BUNE AI · SKYMERGE TECHNOLOGY<br>
-            İstediğin zaman iptal edebilirsin.
-        </p>
-    </div>"""
-    msg.attach(MIMEText(html, "html", "utf-8"))
+            <!-- CTA -->
+            <table width="100%" cellpadding="0" cellspacing="0">
+              <tr>
+                <td align="center">
+                  <a href="https://one-bune.com"
+                     style="display:inline-block;padding:14px 40px;
+                            background:linear-gradient(135deg,#bc4efd,#00f2fe);
+                            color:#0a0a0c;font-size:14px;font-weight:700;
+                            border-radius:10px;text-decoration:none;
+                            letter-spacing:0.3px;">
+                    Kullanmaya Basla
+                  </a>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        <!-- FOOTER -->
+        <tr>
+          <td style="background:#0a0a0c;border-radius:0 0 16px 16px;
+                     padding:20px 32px;text-align:center;
+                     border-top:1px solid rgba(255,255,255,0.05);">
+            <p style="color:#55556a;font-size:11px;margin:0 0 6px;line-height:1.6;">
+              Bu e-posta <strong style="color:#8e8ea0;">one-bune.com</strong> uzerinden
+              gerceklestirilen Premium aboneliginiz nedeniyle gonderilmistir.
+            </p>
+            <p style="color:#55556a;font-size:11px;margin:0;">
+              Aboneliginizi istediginiz zaman hesap ayarlarinizdan iptal edebilirsiniz.
+            </p>
+          </td>
+        </tr>
+
+      </table>
+    </td>
+  </tr>
+</table>
+</body>
+</html>"""
+
+    plain = f"""Merhaba {first_name},
+
+ONE-BUNE Premium uyeliginiz basariyla aktif edildi.
+
+Artik erisebilecekleriniz:
+- Sinırsiz mesaj hakki
+- 7 AI modu
+- Dosya yukleme ve analiz
+- AI gorsel olusturma
+- Web arama ve derin arastirma
+- Oncelikli destek
+
+Kullanmaya baslamak icin: https://one-bune.com
+
+ONE-BUNE AI / SKYMERGE TECHNOLOGY
+"""
+    msg.attach(MIMEText(plain, "plain", "utf-8"))
+    msg.attach(MIMEText(html,  "html",  "utf-8"))
+
     with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as s:
         s.ehlo(); s.starttls(); s.ehlo()
         s.login(SMTP_USER, SMTP_PASS)
         s.send_message(msg)
-    logger.info(f"[WELCOME EMAIL] Gönderildi: {email}")
+    logger.info(f"[WELCOME EMAIL] Gonderildi: {email}")
 
 
 # ═══════════════════════════════════════════════════════════════
