@@ -126,6 +126,9 @@ async def iyzico_post(uri: str, payload: Dict) -> Dict:
         raise HTTPException(502, f"iyzico geçersiz JSON (HTTP {r.status_code})")
     if r.status_code == 401:
         raise HTTPException(502, f"iyzico auth hatası: {data}")
+    if r.status_code == 422:
+        logger.error(f"[IYZICO 422] {json.dumps(data, ensure_ascii=False)}")
+        raise HTTPException(502, f"iyzico format hatası: {data}")
     if r.status_code >= 400:
         raise HTTPException(502, data)
     return data
@@ -268,7 +271,37 @@ async def payment_checkout(
     parts    = fullname.split(" ", 1)
     name     = body.get("name")    or parts[0]
     surname  = body.get("surname") or (parts[1] if len(parts) > 1 else "User")
-    gsm      = body.get("gsmNumber")      or "+905000000000"
+    # Telefon — önce request'ten, sonra DB'den, sonra dummy
+    phone_input = body.get("gsmNumber", "").strip()
+    if phone_input:
+        # Formatla: +90XXXXXXXXXX
+        digits = phone_input.replace("+","").replace(" ","").replace("-","")
+        if digits.startswith("90") and len(digits) == 12:
+            gsm = "+" + digits
+        elif digits.startswith("0") and len(digits) == 11:
+            gsm = "+9" + digits
+        elif len(digits) == 10:
+            gsm = "+90" + digits
+        else:
+            gsm = "+" + digits
+
+        # DB'ye kaydet
+        if db_pool:
+            async with db_pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE users SET phone = $1 WHERE id = $2",
+                    gsm, user["id"]
+                )
+    else:
+        # DB'den çek
+        if db_pool:
+            async with db_pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT phone FROM users WHERE id = $1", user["id"]
+                )
+                gsm = (row["phone"] if row and row["phone"] else "+905300000000")
+        else:
+            gsm = "+905300000000"
     identity = body.get("identityNumber") or "11111111111"
 
     conv_id  = f"onebune-{user['id']}-{int(time.time())}"

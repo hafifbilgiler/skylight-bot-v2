@@ -181,6 +181,7 @@ def init_database_schema() -> bool:
         ensure_column(cur, "users", "ban_reason",  "TEXT")
         ensure_column(cur, "users", "banned_at",   "TIMESTAMPTZ")
         ensure_column(cur, "users", "last_active", "TIMESTAMPTZ DEFAULT NOW()")
+        ensure_column(cur, "users", "phone",       "VARCHAR(20)")
         # ────────────────────────────────────────────────────
 
         log_success("USERS table OK (with admin + payment columns)")
