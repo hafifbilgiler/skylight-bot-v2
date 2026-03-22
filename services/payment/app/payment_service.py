@@ -85,23 +85,23 @@ def ensure_config():
 
 
 def build_auth(body_str: str) -> tuple[str, str]:
-    """iyzico HMAC-SHA256 auth — resmi format"""
+    """iyzico HMAC-SHA256 auth — doğru format"""
     rnd = secrets.token_hex(8)
-    # Signature payload: apiKey + randomKey + secretKey + body
-    raw_sig = IYZICO_API_KEY + rnd + IYZICO_SECRET_KEY + body_str
+    # iyzico signature: HMAC-SHA256(secretKey, apiKey + randomKey + secretKey + body)
+    raw = IYZICO_API_KEY + rnd + IYZICO_SECRET_KEY + body_str
     sig = base64.b64encode(
         hmac.new(
             IYZICO_SECRET_KEY.encode("utf-8"),
-            raw_sig.encode("utf-8"),
+            raw.encode("utf-8"),
             hashlib.sha256,
         ).digest()
     ).decode("utf-8")
-    auth_str = f"apiKey:{IYZICO_API_KEY}&randomKey:{rnd}&signature:{sig}"
-    return f"IYZWS {base64.b64encode(auth_str.encode()).decode()}", rnd
+    auth = f"IYZWS apiKey:{IYZICO_API_KEY}&randomKey:{rnd}&signature:{sig}"
+    return auth, rnd
 
 
 async def iyzico_post(uri: str, payload: Dict) -> Dict:
-    body     = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+    body      = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
     auth, rnd = build_auth(body)
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
         r = await client.post(
@@ -110,14 +110,18 @@ async def iyzico_post(uri: str, payload: Dict) -> Dict:
             headers={
                 "Authorization": auth,
                 "x-iyzi-rnd":    rnd,
+                "x-iyzi-client-version": "iyzipay-python-2.1.0",
                 "Content-Type":  "application/json",
                 "Accept":        "application/json",
             },
         )
+    logger.info(f"[IYZICO] {uri} → {r.status_code}")
     try:
         data = r.json()
     except Exception:
         raise HTTPException(502, f"iyzico geçersiz JSON (HTTP {r.status_code})")
+    if r.status_code == 401:
+        raise HTTPException(502, f"iyzico auth hatası: {data}")
     if r.status_code >= 400:
         raise HTTPException(502, data)
     return data
