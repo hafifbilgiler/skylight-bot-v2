@@ -4,7 +4,7 @@ metadata:
   name: skylight-payment-service
   namespace: skylight-bot-v2
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: skylight-payment-service
@@ -15,85 +15,84 @@ spec:
     spec:
       containers:
         - name: payment-service
-          image: docker.io/hafifbilgiler/skylight-payment-service:1.1
+          image: docker.io/hafifbilgiler/skylight-payment-service:1.2
           imagePullPolicy: Always
           ports:
             - containerPort: 8005
-              name: http
-          
+
           env:
-            # iyzico Configuration
+            # iyzico
             - name: IYZICO_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: iyzico-secret
                   key: api-key
-            
+
             - name: IYZICO_SECRET_KEY
               valueFrom:
                 secretKeyRef:
                   name: iyzico-secret
                   key: secret-key
-            
-            - name: IYZICO_BASE_URL
-              value: "https://sandbox-api.iyzipay.com"
-            
-            # Callback URL (UPDATED - points to payment service, not PHP)
-            - name: PAYMENT_CALLBACK_URL
-              value: "https://skylight.ai/api/payment/callback"
-            
-            - name: APP_PUBLIC_URL
-              value: "https://skylight.ai"
-            
+
             - name: IYZICO_MONTHLY_PLAN_CODE
               valueFrom:
                 secretKeyRef:
                   name: iyzico-secret
                   key: monthly-plan-code
-            
+
+            - name: IYZICO_BASE_URL
+              value: "https://api.iyzipay.com"   # production
+
+            # ONE-BUNE URLs
+            - name: PAYMENT_CALLBACK_URL
+              value: "https://api.one-bune.com:8000/payment/callback"
+
+            - name: APP_PUBLIC_URL
+              value: "https://one-bune.com"
+
             - name: PAYMENT_HTTP_TIMEOUT
               value: "45"
-            
-            # Database Configuration (using pg-secret)
+
+            # Database
             - name: DB_HOST
               value: "postgres"
-            
+
             - name: DB_PORT
               value: "5432"
-            
+
             - name: DB_NAME
               valueFrom:
                 secretKeyRef:
                   name: pg-secret
                   key: dbname
-            
+
             - name: DB_USER
               valueFrom:
                 secretKeyRef:
                   name: pg-secret
                   key: username
-            
+
             - name: DB_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: pg-secret
                   key: password
-          
+
           resources:
             requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
               memory: "256Mi"
               cpu: "250m"
-            limits:
-              memory: "512Mi"
-              cpu: "500m"
-          
+
           livenessProbe:
             httpGet:
               path: /health
               port: 8005
             initialDelaySeconds: 10
             periodSeconds: 30
-          
+
           readinessProbe:
             httpGet:
               path: /health
@@ -111,8 +110,6 @@ spec:
   selector:
     app: skylight-payment-service
   ports:
-    - name: http
-      protocol: TCP
-      port: 8005
+    - port: 8005
       targetPort: 8005
   type: ClusterIP
