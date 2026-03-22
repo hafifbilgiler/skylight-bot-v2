@@ -1585,8 +1585,8 @@ async def get_usage(authorization: str = Header(None)):
         try:
             # Bugünkü kullanım
             cur.execute("""
-                SELECT daily_count, date FROM usage_tracking
-                WHERE user_id = %s AND date = CURRENT_DATE
+                SELECT messages_sent FROM usage_tracking
+                WHERE user_id = %s AND usage_date = CURRENT_DATE
             """, (user_id,))
             today = cur.fetchone()
 
@@ -1619,12 +1619,12 @@ async def get_usage(authorization: str = Header(None)):
             daily_limit = plan_row[0] if plan_row else 50
 
             return {
-                "today_messages":     today[0] if today else 0,
-                "daily_limit":        daily_limit,
-                "total_messages":     total_messages,
-                "total_conversations":total_conversations,
-                "member_since":       user_row[0].strftime("%d.%m.%Y") if user_row else "",
-                "is_premium":         user_row[1] if user_row else False,
+                "today_messages":      today[0] if today else 0,
+                "daily_limit":         daily_limit,
+                "total_messages":      total_messages,
+                "total_conversations": total_conversations,
+                "member_since":        user_row[0].strftime("%d.%m.%Y") if user_row else "",
+                "is_premium":          user_row[1] if user_row else False,
             }
         finally:
             pool.putconn(conn)
