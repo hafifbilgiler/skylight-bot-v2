@@ -1409,8 +1409,20 @@ async def list_conversations(limit: int = 50, authorization: Optional[str] = Hea
         raise HTTPException(status_code=500, detail=f"Failed to list conversations: {str(e)}")
 
 
+def validate_uuid(value: str, field: str = "ID") -> str:
+    """UUID formatını doğrula — geçersizse 400 döndür"""
+    if not value:
+        raise HTTPException(status_code=400, detail=f"{field} boş olamaz")
+    try:
+        uuid.UUID(str(value))
+        return value
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Geçersiz {field} formatı")
+
+
 @app.get("/conversations/{conversation_id}/messages")
 async def get_conversation_messages(conversation_id: str, authorization: Optional[str] = Header(None)):
+    validate_uuid(conversation_id, "conversation_id")
     user_id = get_user_from_token(authorization)
     if not user_id:
         raise HTTPException(status_code=401, detail="User required")
@@ -1438,6 +1450,7 @@ async def get_conversation_messages(conversation_id: str, authorization: Optiona
 
 @app.put("/conversations/{conversation_id}")
 async def update_conversation(conversation_id: str, data: ConversationUpdate, authorization: Optional[str] = Header(None)):
+    validate_uuid(conversation_id, "conversation_id")
     user_id = get_user_from_token(authorization)
     if not user_id:
         raise HTTPException(status_code=401, detail="User required")
@@ -1467,6 +1480,7 @@ async def update_conversation(conversation_id: str, data: ConversationUpdate, au
 
 @app.delete("/conversations/{conversation_id}")
 async def delete_conversation(conversation_id: str, authorization: Optional[str] = Header(None)):
+    validate_uuid(conversation_id, "conversation_id")
     user_id = get_user_from_token(authorization)
     if not user_id:
         raise HTTPException(status_code=401, detail="User required")
