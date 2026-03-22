@@ -45,7 +45,7 @@ spec:
 
             # ONE-BUNE URLs
             - name: PAYMENT_CALLBACK_URL
-              value: "https://api.one-bune.com:8000/payment/callback"
+              value: "https://one-bune.com/payment/callback.php"
 
             - name: APP_PUBLIC_URL
               value: "https://one-bune.com"
