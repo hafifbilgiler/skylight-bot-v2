@@ -41,7 +41,7 @@ spec:
                   key: monthly-plan-code
 
             - name: IYZICO_BASE_URL
-              value: "https://sandbox-api.iyzipay.com"   # production
+              value: "https://api.iyzipay.com"   # production
 
             # ONE-BUNE URLs
             - name: PAYMENT_CALLBACK_URL
