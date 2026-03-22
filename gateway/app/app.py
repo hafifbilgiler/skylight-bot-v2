@@ -55,6 +55,7 @@ RAG_SERVICE_URL = os.getenv("RAG_SERVICE_URL", "http://skylight-rag:8084")
 IMAGE_GEN_SERVICE_URL = os.getenv("IMAGE_GEN_SERVICE_URL", "http://skylight-image-gen:8083")
 IMAGE_ANALYSIS_SERVICE_URL = os.getenv("IMAGE_ANALYSIS_SERVICE_URL", "http://skylight-image-analysis:8002")
 SMART_TOOLS_URL = os.getenv("SMART_TOOLS_URL", "http://skylight-smart-tools:8081")
+BORSA_URL       = os.getenv("BORSA_URL",       "http://skylight-borsa:8086")
 ABUSE_CONTROL_URL = os.getenv("ABUSE_CONTROL_URL", "http://skylight-bot-abuse-control:8010")
 
 JWT_SECRET = os.getenv("JWT_SECRET", "31aad766798d891f4c587d7f3bc925cd7e1e14989c421ae3c38eb80c1d4ede05")
@@ -965,6 +966,11 @@ _CHAT_HANDLES_THESE = (
     "maç sonucu","maç skoru","skor kaç","gol attı","kazandı mı",
     "galatasaray maç","fenerbahçe maç","beşiktaş maç",
     "premier league","süper lig sonuç",
+    # Borsa
+    "borsa","bist","hisse","thyao","garan","akbnk","eregl","kchol","sahol",
+    "fiyatı ne","kaç tl","kaç dolar","teknik analiz","rsi","macd",
+    "destek direnç","mum grafiği","mum analizi","hisse analiz",
+    "kripto analiz","btc analiz","eth analiz",
 )
 
 # ── Deep search tetikleyen sinyaller ────────────────────────────
@@ -1534,7 +1540,185 @@ async def get_profile(authorization: str = Header(None)):
         raise HTTPException(status_code=500, detail=f"Profile error: {str(e)}")
 
 
-@app.delete("/profile/topics")
+@app.put("/profile/update")
+async def update_profile(
+    data: dict = Body(...),
+    authorization: str = Header(None)
+):
+    user_id = get_user_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="User required")
+
+    new_name  = data.get("name", "").strip()
+    new_email = data.get("email", "").strip().lower()
+
+    if not new_name and not new_email:
+        raise HTTPException(status_code=400, detail="Ad veya e-posta gerekli")
+
+    try:
+        pool = _get_pool(); conn = pool.getconn(); cur = conn.cursor()
+        try:
+            if new_name:
+                cur.execute("UPDATE users SET name=$1 WHERE id=$2", (new_name, user_id))
+            if new_email:
+                cur.execute("SELECT id FROM users WHERE email=$1 AND id!=$2", (new_email, user_id))
+                if cur.fetchone():
+                    raise HTTPException(status_code=409, detail="Bu e-posta zaten kullanılıyor")
+                cur.execute("UPDATE users SET email=$1 WHERE id=$2", (new_email, user_id))
+            conn.commit()
+            return {"status": "success", "message": "Profil güncellendi"}
+        finally:
+            pool.putconn(conn)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Update error: {str(e)}")
+
+
+@app.get("/profile/usage")
+async def get_usage(authorization: str = Header(None)):
+    user_id = get_user_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="User required")
+    try:
+        pool = _get_pool(); conn = pool.getconn(); cur = conn.cursor()
+        try:
+            # Bugünkü kullanım
+            cur.execute("""
+                SELECT daily_count, date FROM usage_tracking
+                WHERE user_id = %s AND date = CURRENT_DATE
+            """, (user_id,))
+            today = cur.fetchone()
+
+            # Toplam mesaj
+            cur.execute("""
+                SELECT COUNT(*) FROM messages m
+                JOIN conversations c ON m.conversation_id = c.id
+                WHERE c.user_id = %s AND m.role = 'user'
+            """, (user_id,))
+            total_messages = cur.fetchone()[0]
+
+            # Toplam konuşma
+            cur.execute("""
+                SELECT COUNT(*) FROM conversations WHERE user_id = %s AND is_deleted = FALSE
+            """, (user_id,))
+            total_conversations = cur.fetchone()[0]
+
+            # Kayıt tarihi
+            cur.execute("SELECT created_at, is_premium FROM users WHERE id = %s", (user_id,))
+            user_row = cur.fetchone()
+
+            # Plan limiti
+            cur.execute("""
+                SELECT sp.daily_messages FROM user_subscriptions us
+                JOIN subscription_plans sp ON us.plan_id = sp.id
+                WHERE us.user_id = %s AND us.status IN ('active','trialing')
+                ORDER BY us.created_at DESC LIMIT 1
+            """, (user_id,))
+            plan_row = cur.fetchone()
+            daily_limit = plan_row[0] if plan_row else 50
+
+            return {
+                "today_messages":     today[0] if today else 0,
+                "daily_limit":        daily_limit,
+                "total_messages":     total_messages,
+                "total_conversations":total_conversations,
+                "member_since":       user_row[0].strftime("%d.%m.%Y") if user_row else "",
+                "is_premium":         user_row[1] if user_row else False,
+            }
+        finally:
+            pool.putconn(conn)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Usage error: {str(e)}")
+
+
+@app.get("/profile/payment-history")
+async def get_payment_history(authorization: str = Header(None)):
+    user_id = get_user_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="User required")
+    try:
+        pool = _get_pool(); conn = pool.getconn(); cur = conn.cursor()
+        try:
+            cur.execute("""
+                SELECT plan_id, amount, currency, status,
+                       iyzico_payment_id, paid_at, created_at
+                FROM payment_history
+                WHERE user_id = %s
+                ORDER BY created_at DESC
+                LIMIT 24
+            """, (user_id,))
+            rows = cur.fetchall()
+            return [{
+                "plan":       r[0],
+                "amount":     float(r[1]) if r[1] else 0,
+                "currency":   r[2] or "TRY",
+                "status":     r[3],
+                "payment_id": r[4],
+                "paid_at":    r[5].strftime("%d.%m.%Y") if r[5] else "",
+                "date":       r[6].strftime("%d.%m.%Y") if r[6] else "",
+            } for r in rows]
+        finally:
+            pool.putconn(conn)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Payment history error: {str(e)}")
+
+
+@app.put("/profile/notifications")
+async def update_notifications(
+    data: dict = Body(...),
+    authorization: str = Header(None)
+):
+    user_id = get_user_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="User required")
+    try:
+        pool = _get_pool(); conn = pool.getconn(); cur = conn.cursor()
+        try:
+            prefs = {
+                "email_updates":    bool(data.get("email_updates", True)),
+                "email_security":   bool(data.get("email_security", True)),
+                "email_billing":    bool(data.get("email_billing", True)),
+            }
+            cur.execute("""
+                INSERT INTO user_profiles (user_id, preferences)
+                VALUES (%s, %s::jsonb)
+                ON CONFLICT (user_id) DO UPDATE
+                SET preferences = user_profiles.preferences || %s::jsonb
+            """, (user_id, json.dumps(prefs), json.dumps(prefs)))
+            conn.commit()
+            return {"status": "success"}
+        finally:
+            pool.putconn(conn)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Notification error: {str(e)}")
+
+
+@app.delete("/profile/account")
+async def delete_account(authorization: str = Header(None)):
+    user_id = get_user_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="User required")
+    try:
+        pool = _get_pool(); conn = pool.getconn(); cur = conn.cursor()
+        try:
+            # Soft delete - 30 gün sonra kalıcı silinecek
+            cur.execute("""
+                UPDATE users
+                SET is_deleted = TRUE,
+                    deleted_at = NOW(),
+                    email = email || '_deleted_' || id::text
+                WHERE id = %s
+            """, (user_id,))
+            conn.commit()
+            return {"status": "success", "message": "Hesap silindi"}
+        finally:
+            pool.putconn(conn)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Delete error: {str(e)}")
+
+
+
 async def clear_topics(authorization: str = Header(None)):
     user_id = get_user_from_token(authorization)
     if not user_id:
