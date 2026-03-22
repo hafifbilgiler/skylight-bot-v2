@@ -393,7 +393,45 @@ ONE-BUNE AI / SKYMERGE TECHNOLOGY
 # ENDPOINTS
 # ═══════════════════════════════════════════════════════════════
 
-@app.get("/payment/health")
+from pydantic import BaseModel, Field, field_validator
+import re as _re
+
+class CheckoutBody(BaseModel):
+    token:          Optional[str] = None
+    gsmNumber:      Optional[str] = Field(None, max_length=15)
+    identityNumber: Optional[str] = Field(None, max_length=11)
+    address:        Optional[str] = Field(None, max_length=500)
+    city:           Optional[str] = Field(None, max_length=100)
+    zipCode:        Optional[str] = Field(None, max_length=10)
+    email:          Optional[str] = Field(None, max_length=255)
+    name:           Optional[str] = Field(None, max_length=100)
+    surname:        Optional[str] = Field(None, max_length=100)
+
+    @field_validator("gsmNumber")
+    @classmethod
+    def validate_phone(cls, v):
+        if v:
+            digits = _re.sub(r'[\s\-\+]', '', v)
+            if not digits.isdigit() or len(digits) < 10:
+                raise ValueError("Geçersiz telefon numarası")
+        return v
+
+    @field_validator("identityNumber")
+    @classmethod
+    def validate_identity(cls, v):
+        if v and (not v.isdigit() or len(v) != 11):
+            raise ValueError("TC Kimlik No 11 haneli rakam olmalı")
+        return v
+
+
+class CancelBody(BaseModel):
+    token:     Optional[str] = None
+    immediate: bool = False
+    admin:     bool = False
+    user_id:   Optional[int] = None
+
+
+
 async def health():
     return {
         "status":           "healthy",
@@ -409,13 +447,13 @@ async def health():
 @app.post("/payment/checkout")
 async def payment_checkout(
     request: Request,
-    body: dict = Body(...),
+    body: CheckoutBody = Body(...),
     authorization: Optional[str] = Header(None),
 ):
     """iyzico checkout formu başlat"""
     ensure_config()
 
-    token = (body.get("token")
+    token = (body.token
              or (authorization.split(" ")[1] if authorization and " " in authorization else None))
     if not token:
         raise HTTPException(401, "Login required")
@@ -430,17 +468,17 @@ async def payment_checkout(
         raise HTTPException(400, "Zaten abone")
 
     # Müşteri bilgileri
-    email    = body.get("email")    or user.get("email") or "user@one-bune.com"
+    email    = body.email    or user.get("email") or "user@one-bune.com"
     fullname = user.get("name", "One Bune User")
     parts    = fullname.split(" ", 1)
-    name     = body.get("name")    or parts[0]
-    surname  = body.get("surname") or (parts[1] if len(parts) > 1 else "User")
+    name     = body.name    or parts[0]
+    surname  = body.surname or (parts[1] if len(parts) > 1 else "User")
     # Fatura bilgileri — request'ten al, DB'ye kaydet, yoksa DB'den çek
-    phone_input    = body.get("gsmNumber", "").strip()
-    city_input     = body.get("city", "").strip()
-    address_input  = body.get("address", "").strip()
-    zip_input      = body.get("zipCode", "").strip()
-    identity_input = body.get("identityNumber", "").strip()
+    phone_input    = (body.gsmNumber      or "").strip()
+    city_input     = (body.city           or "").strip()
+    address_input  = (body.address        or "").strip()
+    zip_input      = (body.zipCode        or "").strip()
+    identity_input = (body.identityNumber or "").strip()
 
     # Telefon formatla
     gsm = None
@@ -643,22 +681,16 @@ async def subscription_status(authorization: Optional[str] = Header(None)):
 @app.post("/payment/subscription/cancel")
 async def subscription_cancel(
     request: Request,
-    body: dict = Body(...),
+    body: CancelBody = Body(...),
     authorization: Optional[str] = Header(None),
 ):
-    """
-    Abonelik iptali:
-    - iyzico'ya bildir
-    - DB'yi güncelle (dönem sonunda iptal veya anında)
-    """
-    # Admin iptal — user_id ile doğrudan
-    admin_cancel = bool(body.get("admin", False))
-    direct_user_id = body.get("user_id")
+    admin_cancel   = body.admin
+    direct_user_id = body.user_id
 
     if admin_cancel and direct_user_id:
-        target_user_id = int(direct_user_id)
+        target_user_id = direct_user_id
     else:
-        token = (body.get("token")
+        token = (body.token
                  or (authorization.split(" ")[1] if authorization and " " in authorization else None))
         if not token:
             raise HTTPException(401, "Login required")
@@ -667,7 +699,7 @@ async def subscription_cancel(
             raise HTTPException(401, "Geçersiz token")
         target_user_id = user["id"]
 
-    immediate = bool(body.get("immediate", False))
+    immediate = body.immediate
 
     try:
         if not db_pool:
