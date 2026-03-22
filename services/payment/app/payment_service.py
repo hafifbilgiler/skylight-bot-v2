@@ -640,6 +640,98 @@ async def subscription_status(authorization: Optional[str] = Header(None)):
     }
 
 
+@app.post("/payment/subscription/cancel")
+async def subscription_cancel(
+    request: Request,
+    body: dict = Body(...),
+    authorization: Optional[str] = Header(None),
+):
+    """
+    Abonelik iptali:
+    - iyzico'ya bildir
+    - DB'yi güncelle (dönem sonunda iptal veya anında)
+    """
+    # Admin iptal — user_id ile doğrudan
+    admin_cancel = bool(body.get("admin", False))
+    direct_user_id = body.get("user_id")
+
+    if admin_cancel and direct_user_id:
+        target_user_id = int(direct_user_id)
+    else:
+        token = (body.get("token")
+                 or (authorization.split(" ")[1] if authorization and " " in authorization else None))
+        if not token:
+            raise HTTPException(401, "Login required")
+        user = await get_user(token)
+        if not user:
+            raise HTTPException(401, "Geçersiz token")
+        target_user_id = user["id"]
+
+    try:
+        if not db_pool:
+            raise HTTPException(500, "DB bağlantısı yok")
+
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT iyzico_subscription_ref, current_period_end
+                FROM user_subscriptions
+                WHERE user_id = $1 AND status IN ('active','trialing')
+                LIMIT 1
+            """, target_user_id)
+
+            if not row:
+                raise HTTPException(404, "Aktif abonelik bulunamadı")
+
+            sub_ref    = row["iyzico_subscription_ref"]
+            period_end = row["current_period_end"]
+
+            # iyzico'ya iptal bildir
+            iyzico_ok = False
+            if sub_ref and IYZICO_API_KEY:
+                try:
+                    result = await iyzico_post(
+                        f"/v2/subscription/cancel/{sub_ref}",
+                        {"locale": "tr", "conversationId": f"cancel-{target_user_id}-{int(time.time())}"}
+                    )
+                    iyzico_ok = result.get("status") == "success"
+                    logger.info(f"[CANCEL] iyzico: {result}")
+                except Exception as e:
+                    logger.error(f"[CANCEL] iyzico hatası: {e}")
+
+            if immediate:
+                await conn.execute("""
+                    UPDATE user_subscriptions
+                    SET status='cancelled', cancelled_at=NOW(),
+                        cancel_at_period_end=FALSE, updated_at=NOW()
+                    WHERE user_id=$1 AND status IN ('active','trialing')
+                """, target_user_id)
+                await conn.execute("""
+                    UPDATE users SET is_premium=FALSE, subscription_active=FALSE
+                    WHERE id=$1
+                """, target_user_id)
+                message = "Abonelik iptal edildi."
+            else:
+                await conn.execute("""
+                    UPDATE user_subscriptions
+                    SET cancel_at_period_end=TRUE, updated_at=NOW()
+                    WHERE user_id=$1 AND status IN ('active','trialing')
+                """, target_user_id)
+                period_str = period_end.strftime("%d.%m.%Y") if period_end else ""
+                message = f"Abonelik {period_str} tarihinde sona erecek."
+
+            await log_event("subscription_cancel", target_user_id,
+                           {"immediate": immediate, "iyzico_ok": iyzico_ok},
+                           request.client.host)
+
+        return {"success": True, "message": message, "immediate": immediate}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[CANCEL ERROR] {e}")
+        raise HTTPException(500, str(e))
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8005)
