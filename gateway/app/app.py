@@ -1585,52 +1585,70 @@ async def get_usage(authorization: str = Header(None)):
         conn = pool.getconn()
         cur  = conn.cursor()
         try:
-            # Bugünkü kullanım
-            cur.execute("""
-                SELECT COALESCE(messages_sent, 0)
-                FROM usage_tracking
-                WHERE user_id = %s AND usage_date = CURRENT_DATE
-            """, (user_id,))
-            row = cur.fetchone()
-            today_messages = row[0] if row else 0
+            today_messages = 0
+            total_messages = 0
+            total_conversations = 0
+            member_since = ""
+            is_premium = False
+            daily_limit = 50
 
-            # Toplam mesaj
-            cur.execute("""
-                SELECT COALESCE(SUM(messages_sent), 0)
-                FROM usage_tracking
-                WHERE user_id = %s
-            """, (user_id,))
-            total_messages = int(cur.fetchone()[0])
+            try:
+                cur.execute("""
+                    SELECT COALESCE(messages_sent, 0)
+                    FROM usage_tracking
+                    WHERE user_id = %s AND usage_date = CURRENT_DATE
+                """, (user_id,))
+                row = cur.fetchone()
+                today_messages = row[0] if row else 0
+            except Exception:
+                pass
 
-            # Toplam konuşma
-            cur.execute("""
-                SELECT COUNT(*) FROM conversations
-                WHERE user_id = %s AND is_deleted = FALSE
-            """, (user_id,))
-            total_conversations = cur.fetchone()[0]
+            try:
+                cur.execute("""
+                    SELECT COALESCE(SUM(messages_sent), 0)
+                    FROM usage_tracking WHERE user_id = %s
+                """, (user_id,))
+                row = cur.fetchone()
+                total_messages = int(row[0]) if row else 0
+            except Exception:
+                pass
 
-            # Kayıt tarihi + premium
-            cur.execute("SELECT created_at, is_premium FROM users WHERE id = %s", (user_id,))
-            user_row = cur.fetchone()
+            try:
+                cur.execute("""
+                    SELECT COUNT(*) FROM conversations
+                    WHERE user_id = %s AND is_deleted = FALSE
+                """, (user_id,))
+                total_conversations = cur.fetchone()[0]
+            except Exception:
+                pass
 
-            # Plan limiti
-            cur.execute("""
-                SELECT sp.daily_messages
-                FROM user_subscriptions us
-                JOIN subscription_plans sp ON us.plan_id = sp.id
-                WHERE us.user_id = %s AND us.status IN ('active','trialing')
-                ORDER BY us.created_at DESC LIMIT 1
-            """, (user_id,))
-            plan_row = cur.fetchone()
-            daily_limit = plan_row[0] if plan_row else 50
+            try:
+                cur.execute("SELECT created_at, is_premium FROM users WHERE id = %s", (user_id,))
+                row = cur.fetchone()
+                if row:
+                    member_since = row[0].strftime("%d.%m.%Y")
+                    is_premium   = bool(row[1])
+            except Exception:
+                pass
+
+            try:
+                cur.execute("""
+                    SELECT daily_messages FROM subscription_plans
+                    WHERE id = 'premium'
+                """)
+                row = cur.fetchone()
+                if row and is_premium:
+                    daily_limit = row[0]
+            except Exception:
+                pass
 
             return {
                 "today_messages":      today_messages,
                 "daily_limit":         daily_limit,
                 "total_messages":      total_messages,
                 "total_conversations": total_conversations,
-                "member_since":        user_row[0].strftime("%d.%m.%Y") if user_row else "",
-                "is_premium":          user_row[1] if user_row else False,
+                "member_since":        member_since,
+                "is_premium":          is_premium,
             }
         finally:
             pool.putconn(conn)
