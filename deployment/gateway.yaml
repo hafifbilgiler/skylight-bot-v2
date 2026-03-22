@@ -103,6 +103,16 @@ spec:
         # OTP doğrulama kodu bu adrese gönderilir
         - name: ADMIN_NOTIFICATION_EMAIL
           value: "serkan.ozmn.so@gmail.com"   # ← buraya yaz
+        - name: IYZICO_API_KEY
+          value: "4HCFCqXWrK60PhzyzHr2HPQctHpTzqxn"
+        - name: IYZICO_SECRET_KEY
+          value: "O4zwGBNdVr51FzXbjPDkvCpe9wXI9bJ9"
+        - name: IYZICO_PRODUCT_CODE
+          value: "4b2cf409-5871-4f73-87f5-421708fd9720"
+        - name: IYZICO_MONTHLY_PLAN_CODE
+          value: "d973d412-94e2-4bb0-8a97-5ebf24b1d147"
+        - name: IYZICO_BASE_URL
+          value: "https://api.iyzipay.com"
         resources:
           requests:
             memory: "256Mi"
