@@ -382,27 +382,27 @@ class ChatMessage(BaseModel):
     content: str
 
 class ChatRequest(BaseModel):
-    prompt: str
-    mode: str = "assistant"
-    conversation_id: Optional[str] = None
+    prompt: str = Field(..., max_length=10000)
+    mode: str = Field("assistant", max_length=50)
+    conversation_id: Optional[str] = Field(None, max_length=36)
     history: Optional[List[ChatMessage]] = None
-    context: Optional[str] = None
+    context: Optional[str] = Field(None, max_length=50000)
     image_data: Optional[str] = None
-    session_summary: Optional[str] = None
+    session_summary: Optional[str] = Field(None, max_length=5000)
 
 class ImageGenerationRequest(BaseModel):
-    prompt: str
-    mode: str = "assistant"
-    conversation_id: Optional[str] = None
-    width: Optional[int] = 1024
-    height: Optional[int] = 1024
-    num_images: Optional[int] = 1
+    prompt: str = Field(..., max_length=2000)
+    mode: str = Field("assistant", max_length=50)
+    conversation_id: Optional[str] = Field(None, max_length=36)
+    width: Optional[int] = Field(1024, ge=256, le=2048)
+    height: Optional[int] = Field(1024, ge=256, le=2048)
+    num_images: Optional[int] = Field(1, ge=1, le=4)
 
 class ImageAnalysisRequest(BaseModel):
-    image_data: str
-    query: Optional[str] = None
-    mode: str = "assistant"
-    conversation_id: Optional[str] = None
+    image_data: str = Field(..., max_length=10_000_000)  # ~7MB base64
+    query: Optional[str] = Field(None, max_length=2000)
+    mode: str = Field("assistant", max_length=50)
+    conversation_id: Optional[str] = Field(None, max_length=36)
 
 class OTPRequest(BaseModel):
     email: EmailStr
