@@ -725,6 +725,18 @@ async def subscription_cancel(
                            {"immediate": immediate, "iyzico_ok": iyzico_ok},
                            request.client.host)
 
+            # İptal emaili gönder
+            user_row = await conn.fetchrow(
+                "SELECT email, name FROM users WHERE id = $1", target_user_id
+            )
+
+        if user_row and SMTP_SERVER and SMTP_USER:
+            try:
+                _send_cancel_email(user_row["email"], user_row["name"] or "Kullanıcı",
+                                   period_end, immediate)
+            except Exception as e:
+                logger.error(f"[CANCEL EMAIL] {e}")
+
         return {"success": True, "message": message, "immediate": immediate}
 
     except HTTPException:
@@ -732,6 +744,111 @@ async def subscription_cancel(
     except Exception as e:
         logger.error(f"[CANCEL ERROR] {e}")
         raise HTTPException(500, str(e))
+
+
+def _send_cancel_email(email: str, name: str, period_end, immediate: bool):
+    msg = MIMEMultipart("alternative")
+    msg["From"]    = f"ONE-BUNE <{SMTP_FROM}>"
+    msg["To"]      = email
+    msg["Subject"] = "ONE-BUNE Premium abonelik iptali"
+
+    first_name  = name.split()[0] if name else "Kullanici"
+    period_str  = period_end.strftime("%d.%m.%Y") if period_end else ""
+
+    if immediate:
+        detail = "Premium aboneliginiz aninda iptal edildi."
+        sub    = "Premium ozelliklerine erisim sona erdi."
+    else:
+        detail = f"Premium aboneliginiz <strong>{period_str}</strong> tarihine kadar aktif kalacak, bu tarihten itibaren ucretsiz plana gececeksiniz."
+        sub    = f"Erisim {period_str} tarihine kadar devam eder."
+
+    html = f"""<!DOCTYPE html>
+<html lang="tr">
+<head><meta charset="UTF-8"></head>
+<body style="margin:0;padding:0;background:#f4f4f5;font-family:Inter,-apple-system,sans-serif;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f5;padding:40px 20px;">
+  <tr><td align="center">
+    <table width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%;">
+
+      <tr>
+        <td style="background:#0a0a0c;border-radius:16px 16px 0 0;padding:32px;text-align:center;">
+          <div style="font-size:32px;margin-bottom:12px;">&#128274;</div>
+          <h1 style="color:#ffffff;font-size:20px;font-weight:700;margin:0 0 6px;">
+            Abonelik Iptali
+          </h1>
+          <p style="color:#8e8ea0;font-size:13px;margin:0;">ONE-BUNE AI &middot; SKYMERGE TECHNOLOGY</p>
+        </td>
+      </tr>
+
+      <tr>
+        <td style="background:#111114;padding:32px;">
+          <p style="color:#eeeef0;font-size:15px;margin:0 0 20px;">
+            Merhaba <strong>{first_name}</strong>,
+          </p>
+          <p style="color:#8e8ea0;font-size:14px;line-height:1.7;margin:0 0 24px;">
+            {detail}
+          </p>
+
+          <div style="background:#18181d;border-radius:10px;padding:16px 20px;
+                      border:1px solid rgba(255,180,0,0.2);margin-bottom:24px;">
+            <p style="color:#ffb400;font-size:13px;margin:0;">
+              &#9432; {sub}
+            </p>
+          </div>
+
+          <p style="color:#8e8ea0;font-size:13px;line-height:1.7;margin:0 0 24px;">
+            Tekrar abone olmak isterseniz one-bune.com uzerinden
+            Premium'a geri donebilirsiniz.
+          </p>
+
+          <table width="100%" cellpadding="0" cellspacing="0">
+            <tr><td align="center">
+              <a href="https://one-bune.com"
+                 style="display:inline-block;padding:12px 32px;
+                        background:#18181d;border:1px solid rgba(255,255,255,0.1);
+                        color:#eeeef0;font-size:13px;font-weight:600;
+                        border-radius:10px;text-decoration:none;">
+                one-bune.com
+              </a>
+            </td></tr>
+          </table>
+        </td>
+      </tr>
+
+      <tr>
+        <td style="background:#0a0a0c;border-radius:0 0 16px 16px;padding:20px 32px;
+                   text-align:center;border-top:1px solid rgba(255,255,255,0.05);">
+          <p style="color:#55556a;font-size:11px;margin:0;line-height:1.6;">
+            Bu e-posta abonelik iptaliniz nedeniyle gonderilmistir.<br>
+            ONE-BUNE AI / SKYMERGE TECHNOLOGY
+          </p>
+        </td>
+      </tr>
+
+    </table>
+  </td></tr>
+</table>
+</body>
+</html>"""
+
+    plain = f"""Merhaba {first_name},
+
+{detail.replace('<strong>','').replace('</strong>','')}
+
+{sub}
+
+Tekrar abone olmak icin: https://one-bune.com
+
+ONE-BUNE AI / SKYMERGE TECHNOLOGY
+"""
+    msg.attach(MIMEText(plain, "plain", "utf-8"))
+    msg.attach(MIMEText(html,  "html",  "utf-8"))
+
+    with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as s:
+        s.ehlo(); s.starttls(); s.ehlo()
+        s.login(SMTP_USER, SMTP_PASS)
+        s.send_message(msg)
+    logger.info(f"[CANCEL EMAIL] Gonderildi: {email}")
 
 
 if __name__ == "__main__":
