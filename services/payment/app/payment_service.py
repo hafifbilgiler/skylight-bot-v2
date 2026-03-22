@@ -271,10 +271,16 @@ async def payment_checkout(
     parts    = fullname.split(" ", 1)
     name     = body.get("name")    or parts[0]
     surname  = body.get("surname") or (parts[1] if len(parts) > 1 else "User")
-    # Telefon — önce request'ten, sonra DB'den, sonra dummy
-    phone_input = body.get("gsmNumber", "").strip()
+    # Fatura bilgileri — request'ten al, DB'ye kaydet, yoksa DB'den çek
+    phone_input    = body.get("gsmNumber", "").strip()
+    city_input     = body.get("city", "").strip()
+    address_input  = body.get("address", "").strip()
+    zip_input      = body.get("zipCode", "").strip()
+    identity_input = body.get("identityNumber", "").strip()
+
+    # Telefon formatla
+    gsm = None
     if phone_input:
-        # Formatla: +90XXXXXXXXXX
         digits = phone_input.replace("+","").replace(" ","").replace("-","")
         if digits.startswith("90") and len(digits) == 12:
             gsm = "+" + digits
@@ -285,26 +291,46 @@ async def payment_checkout(
         else:
             gsm = "+" + digits
 
-        # DB'ye kaydet
-        if db_pool:
-            async with db_pool.acquire() as conn:
-                await conn.execute(
-                    "UPDATE users SET phone = $1 WHERE id = $2",
-                    gsm, user["id"]
-                )
-    else:
-        # DB'den çek
-        if db_pool:
-            async with db_pool.acquire() as conn:
-                row = await conn.fetchrow(
-                    "SELECT phone FROM users WHERE id = $1", user["id"]
-                )
-                gsm = (row["phone"] if row and row["phone"] else "+905300000000")
-        else:
-            gsm = "+905300000000"
-    identity = body.get("identityNumber") or "11111111111"
+    # DB'den mevcut bilgileri çek + yeni bilgileri kaydet
+    if db_pool:
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT phone, city, address, zip_code, identity_no
+                FROM users WHERE id = $1
+            """, user["id"])
+            if row:
+                gsm            = gsm            or row["phone"]       or "+905300000000"
+                city_input     = city_input     or row["city"]        or "Istanbul"
+                address_input  = address_input  or row["address"]     or "Türkiye"
+                zip_input      = zip_input      or row["zip_code"]    or "34000"
+                identity_input = identity_input or row["identity_no"] or "11111111111"
 
-    conv_id  = f"onebune-{user['id']}-{int(time.time())}"
+            # Güncel bilgileri kaydet
+            await conn.execute("""
+                UPDATE users SET
+                    phone       = COALESCE(NULLIF($1,''), phone),
+                    city        = COALESCE(NULLIF($2,''), city),
+                    address     = COALESCE(NULLIF($3,''), address),
+                    zip_code    = COALESCE(NULLIF($4,''), zip_code),
+                    identity_no = COALESCE(NULLIF($5,''), identity_no)
+                WHERE id = $6
+            """, gsm, city_input, address_input, zip_input, identity_input, user["id"])
+    else:
+        gsm            = gsm            or "+905300000000"
+        city_input     = city_input     or "Istanbul"
+        address_input  = address_input  or "Türkiye"
+        zip_input      = zip_input      or "34000"
+        identity_input = identity_input or "11111111111"
+
+    billing = {
+        "contactName": f"{name} {surname}",
+        "address":     address_input,
+        "zipCode":     zip_input,
+        "city":        city_input,
+        "country":     "Türkiye",
+    }
+
+    conv_id = f"onebune-{user['id']}-{int(time.time())}"
 
     payload = {
         "locale":                   "tr",
@@ -313,11 +339,13 @@ async def payment_checkout(
         "pricingPlanReferenceCode": IYZICO_MONTHLY_PLAN_CODE,
         "subscriptionInitialStatus":"ACTIVE",
         "customer": {
-            "name":           name,
-            "surname":        surname,
-            "email":          email,
-            "gsmNumber":      gsm,
-            "identityNumber": identity,
+            "name":            name,
+            "surname":         surname,
+            "email":           email,
+            "gsmNumber":       gsm,
+            "identityNumber":  identity_input,
+            "billingAddress":  billing,
+            "shippingAddress": billing,
         },
     }
 
