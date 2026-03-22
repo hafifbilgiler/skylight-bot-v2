@@ -1581,36 +1581,42 @@ async def get_usage(authorization: str = Header(None)):
     if not user_id:
         raise HTTPException(status_code=401, detail="User required")
     try:
-        pool = _get_pool(); conn = pool.getconn(); cur = conn.cursor()
+        pool = _get_pool()
+        conn = pool.getconn()
+        cur  = conn.cursor()
         try:
             # Bugünkü kullanım
             cur.execute("""
-                SELECT messages_sent FROM usage_tracking
+                SELECT COALESCE(messages_sent, 0)
+                FROM usage_tracking
                 WHERE user_id = %s AND usage_date = CURRENT_DATE
             """, (user_id,))
-            today = cur.fetchone()
+            row = cur.fetchone()
+            today_messages = row[0] if row else 0
 
             # Toplam mesaj
             cur.execute("""
-                SELECT COUNT(*) FROM messages m
-                JOIN conversations c ON m.conversation_id = c.id
-                WHERE c.user_id = %s AND m.role = 'user'
+                SELECT COALESCE(SUM(messages_sent), 0)
+                FROM usage_tracking
+                WHERE user_id = %s
             """, (user_id,))
-            total_messages = cur.fetchone()[0]
+            total_messages = int(cur.fetchone()[0])
 
             # Toplam konuşma
             cur.execute("""
-                SELECT COUNT(*) FROM conversations WHERE user_id = %s AND is_deleted = FALSE
+                SELECT COUNT(*) FROM conversations
+                WHERE user_id = %s AND is_deleted = FALSE
             """, (user_id,))
             total_conversations = cur.fetchone()[0]
 
-            # Kayıt tarihi
+            # Kayıt tarihi + premium
             cur.execute("SELECT created_at, is_premium FROM users WHERE id = %s", (user_id,))
             user_row = cur.fetchone()
 
             # Plan limiti
             cur.execute("""
-                SELECT sp.daily_messages FROM user_subscriptions us
+                SELECT sp.daily_messages
+                FROM user_subscriptions us
                 JOIN subscription_plans sp ON us.plan_id = sp.id
                 WHERE us.user_id = %s AND us.status IN ('active','trialing')
                 ORDER BY us.created_at DESC LIMIT 1
@@ -1619,7 +1625,7 @@ async def get_usage(authorization: str = Header(None)):
             daily_limit = plan_row[0] if plan_row else 50
 
             return {
-                "today_messages":      today[0] if today else 0,
+                "today_messages":      today_messages,
                 "daily_limit":         daily_limit,
                 "total_messages":      total_messages,
                 "total_conversations": total_conversations,
