@@ -4,7 +4,9 @@ ONE-BUNE PAYMENT SERVICE - iyzico Subscription
 ═══════════════════════════════════════════════════════════════
 """
 
-import os, json, time, base64, hashlib, hmac, secrets, logging
+import os, json, time, base64, hashlib, hmac, secrets, logging, smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
 
@@ -45,6 +47,12 @@ DB_PORT     = int(os.getenv("DB_PORT", "5432"))
 DB_NAME     = os.getenv("DB_NAME", "one_bune_db")
 DB_USER     = os.getenv("DB_USER", "postgres")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "")
+
+SMTP_SERVER = os.getenv("SMTP_SERVER", "").strip()
+SMTP_PORT   = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER   = os.getenv("SMTP_USER", "").strip()
+SMTP_PASS   = os.getenv("SMTP_PASS", "").strip()
+SMTP_FROM   = os.getenv("SMTP_FROM", SMTP_USER).strip()
 
 db_pool = None
 
@@ -201,7 +209,7 @@ async def activate_subscription(user_id: int, subscription_ref: str, plan_code: 
                 WHERE id = $1
             """, user_id)
 
-            # user_subscriptions — mevcut şemaya uygun kolonlar
+            # user_subscriptions
             await conn.execute("""
                 INSERT INTO user_subscriptions
                     (user_id, plan_id, status, billing_period,
@@ -220,9 +228,90 @@ async def activate_subscription(user_id: int, subscription_ref: str, plan_code: 
                     updated_at            = NOW()
             """, user_id, subscription_ref)
 
-            logger.info(f"[SUBSCRIPTION] User {user_id} aktifleştirildi")
+            # Email için kullanıcı bilgilerini al
+            row = await conn.fetchrow(
+                "SELECT email, name FROM users WHERE id = $1", user_id
+            )
+
+        logger.info(f"[SUBSCRIPTION] User {user_id} aktifleştirildi")
+
+        # Hoş geldin emaili gönder
+        if row and SMTP_SERVER and SMTP_USER:
+            try:
+                _send_premium_welcome(row["email"], row["name"] or "Kullanıcı")
+            except Exception as e:
+                logger.error(f"[WELCOME EMAIL] {e}")
+
     except Exception as e:
         logger.error(f"[SUBSCRIPTION ERROR] {e}")
+
+
+def _send_premium_welcome(email: str, name: str):
+    msg = MIMEMultipart("alternative")
+    msg["From"]    = SMTP_FROM
+    msg["To"]      = email
+    msg["Subject"] = "🎉 ONE-BUNE Premium Üyeliğiniz Aktif!"
+    html = f"""
+    <div style="font-family:Inter,Arial,sans-serif;max-width:560px;margin:0 auto;
+                background:#0a0a0c;padding:40px 32px;border-radius:16px;
+                border:1px solid rgba(255,255,255,0.07);">
+
+        <div style="text-align:center;margin-bottom:32px;">
+            <div style="display:inline-flex;align-items:center;justify-content:center;
+                        width:64px;height:64px;border-radius:50%;
+                        background:linear-gradient(135deg,#bc4efd,#00f2fe);
+                        font-size:28px;margin-bottom:16px;">👑</div>
+            <h1 style="color:#ffffff;font-size:24px;font-weight:700;margin:0 0 8px;">
+                Premium'a Hoş Geldiniz!
+            </h1>
+            <p style="color:#8e8ea0;font-size:14px;margin:0;">
+                Merhaba <strong style="color:#eeeef0;">{name}</strong>, 
+                Premium üyeliğiniz başarıyla aktif edildi.
+            </p>
+        </div>
+
+        <div style="background:#111114;border-radius:12px;padding:24px;
+                    border:1px solid rgba(0,242,254,0.15);margin-bottom:24px;">
+            <h2 style="color:#00f2fe;font-size:14px;font-weight:600;
+                       text-transform:uppercase;letter-spacing:1px;margin:0 0 16px;">
+                Artık Erişebilecekleriniz
+            </h2>
+            <div style="display:flex;flex-direction:column;gap:10px;">
+                {"".join(f'''<div style="display:flex;align-items:center;gap:10px;color:#eeeef0;font-size:13px;">
+                    <span style="color:#00f2fe;font-size:16px;">{icon}</span> {text}
+                </div>''' for icon, text in [
+                    ("🤖", "7 AI modu — Asistan, Kod, IT Uzmanı, Öğrenci, Sosyal"),
+                    ("∞", "Sınırsız mesaj hakkı"),
+                    ("📁", "Dosya yükleme ve analiz"),
+                    ("🖼️", "AI görsel oluşturma"),
+                    ("🔍", "Web arama ve RAG"),
+                    ("✈️", "Ucuz bilet ve fiyat araştırma"),
+                    ("🎧", "Öncelikli destek"),
+                ])}
+            </div>
+        </div>
+
+        <div style="text-align:center;">
+            <a href="https://one-bune.com" 
+               style="display:inline-block;padding:14px 32px;
+                      background:linear-gradient(135deg,#bc4efd,#00f2fe);
+                      color:#0a0a0c;font-weight:700;font-size:14px;
+                      border-radius:12px;text-decoration:none;">
+                Hemen Başla →
+            </a>
+        </div>
+
+        <p style="color:#55556a;font-size:11px;text-align:center;margin-top:24px;">
+            ONE-BUNE AI · SKYMERGE TECHNOLOGY<br>
+            İstediğin zaman iptal edebilirsin.
+        </p>
+    </div>"""
+    msg.attach(MIMEText(html, "html", "utf-8"))
+    with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as s:
+        s.ehlo(); s.starttls(); s.ehlo()
+        s.login(SMTP_USER, SMTP_PASS)
+        s.send_message(msg)
+    logger.info(f"[WELCOME EMAIL] Gönderildi: {email}")
 
 
 # ═══════════════════════════════════════════════════════════════

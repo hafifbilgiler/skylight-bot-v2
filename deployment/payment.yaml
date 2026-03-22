@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: payment-service
-          image: docker.io/hafifbilgiler/skylight-payment-service:2.2
+          image: docker.io/hafifbilgiler/skylight-payment-service:2.3
           imagePullPolicy: Always
           ports:
             - containerPort: 8005
@@ -80,7 +80,32 @@ spec:
                 secretKeyRef:
                   name: pg-secret
                   key: password
-
+            # SMTP — gateway ile aynı
+            - name: SMTP_SERVER
+              valueFrom:
+                secretKeyRef:
+                  name: smtp-secret
+                  key: server
+            - name: SMTP_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: smtp-secret
+                  key: port
+            - name: SMTP_USER
+              valueFrom:
+                secretKeyRef:
+                  name: smtp-secret
+                  key: user
+            - name: SMTP_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: smtp-secret
+                  key: password
+            - name: SMTP_FROM
+              valueFrom:
+                secretKeyRef:
+                  name: smtp-secret
+                  key: from
           resources:
             requests:
               memory: "128Mi"
