@@ -432,6 +432,7 @@ class CancelBody(BaseModel):
 
 
 
+@app.get("/payment/health")
 async def health():
     return {
         "status":           "healthy",
