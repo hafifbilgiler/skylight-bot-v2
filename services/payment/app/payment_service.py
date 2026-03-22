@@ -667,6 +667,8 @@ async def subscription_cancel(
             raise HTTPException(401, "Geçersiz token")
         target_user_id = user["id"]
 
+    immediate = bool(body.get("immediate", False))
+
     try:
         if not db_pool:
             raise HTTPException(500, "DB bağlantısı yok")
