@@ -325,6 +325,29 @@ async def get_live_data(query: str, mode: str = "assistant") -> Optional[str]:
 # MEMORY & CONTEXT
 # ═══════════════════════════════════════════════════════════════
 
+def _extract_active_commands(history: List[Dict]) -> List[str]:
+    """
+    Konuşma geçmişinden kullanıcının verdiği aktif komutları çıkar.
+    Bu komutlar system prompt'a enjekte edilir — LLM her mesajda görür.
+    """
+    from intent_classifier import classify_intent, Intent
+    commands = []
+    seen = set()
+    for msg in history:
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content", "")
+        if not content:
+            continue
+        result = classify_intent(content, [], "assistant")
+        if result["intent"] == Intent.USER_COMMAND:
+            cmd = content.strip()
+            if cmd not in seen:
+                seen.add(cmd)
+                commands.append(cmd)
+    return commands
+
+
 async def load_user_memory(user_id: int) -> Optional[str]:
     if not db_pool:
         return None
@@ -836,11 +859,21 @@ async def build_messages(
     system_content = config["system_prompt"]
 
     # ── REASONING LAYER — Intent classification (LOCAL, 0ms) ─────
-    # Claude'un iç akıl yürütmesini simüle eder.
-    # Kullanıcının niyetini tespit eder, LLM'e ne yapması gerektiğini söyler.
     reasoning_hint = build_reasoning_hint(user_prompt, history or [], mode)
     system_content = reasoning_hint + "\n\n" + system_content
     print(f"[INTENT] {reasoning_hint.split(chr(10))[0]}")
+    # ─────────────────────────────────────────────────────────────
+
+    # ── USER COMMAND — konuşma boyunca aktif kural ───────────────
+    # Kullanıcı bu konuşmada komut verdiyse system prompt'a ekle
+    active_commands = _extract_active_commands(history or [])
+    if active_commands:
+        commands_str = "\n".join(f"- {cmd}" for cmd in active_commands)
+        system_content += (
+            f"\n\n[AKTİF KULLANICI KURALLARI — KESİNLİKLE UYGULA]\n"
+            f"{commands_str}\n"
+            f"[/AKTİF KULLANICI KURALLARI]"
+        )
     # ─────────────────────────────────────────────────────────────
 
     # ── GÜNCEL TARİH — smart_tools NTP (worldtimeapi) ────────────

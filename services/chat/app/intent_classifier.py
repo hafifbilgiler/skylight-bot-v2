@@ -59,6 +59,14 @@ class Intent:
     OPINION_REQUEST      = "opinion_request"      # "ne düşünüyorsun / tavsiye et"
     COMPARISON           = "comparison"           # "X vs Y" — genel karşılaştırma
 
+    # ── Kullanıcı Komutları ───────────────────────────────────
+    USER_COMMAND         = "user_command"         # "bana sormadan kod yazma", "türkçe konuş"
+    USER_PREFERENCE      = "user_preference"      # "kısa cevap ver", "emoji kullanma"
+
+    # ── Duygusal / Sosyal ─────────────────────────────────────
+    EMOTIONAL            = "emotional"            # "seni gördüğüme sevindim", teşekkür, övgü
+    FRUSTRATION          = "frustration"          # "saçmalıyorsun", "yanlış yaptın"
+
     # ── Genel ─────────────────────────────────────────────────
     PROBLEM_SOLVE        = "problem_solve"        # genel problem
     NEW_TOPIC            = "new_topic"            # yeni konu
@@ -254,6 +262,58 @@ _GREETINGS = (
     "how are you", "what's up", "sup", "yo ",
 )
 
+# Kullanıcı komutları — bunlar hafızaya kaydedilmeli
+_USER_COMMAND_SIGNALS = (
+    # Kod davranışı
+    "sormadan kod yazma", "kod yazma sormadan", "önce sor",
+    "izin almadan yazma", "sormadan yapma", "sormadan başlama",
+    "don't write code", "ask before", "ask me first",
+    "without asking", "don't do anything without",
+    # Dil
+    "türkçe konuş", "türkçe cevap ver", "türkçe yaz",
+    "ingilizce konuş", "ingilizce cevap", "speak turkish",
+    "speak english", "respond in turkish", "respond in english",
+    # Format
+    "kısa cevap ver", "uzun yazma", "madde madde yaz",
+    "emoji kullanma", "emoji kullan", "kod bloğu kullan",
+    "keep it short", "be concise", "no emoji",
+    # Kişilik
+    "daha resmi ol", "daha samimi ol", "sen modunda konuş",
+    "siz modunda konuş", "formal", "informal",
+    # Genel yasaklar
+    "bunu yapma", "öyle yapma", "şöyle yapma",
+    "sadece şunu yap", "sadece bunu yap",
+)
+
+_USER_PREFERENCE_SIGNALS = (
+    "her zaman", "bundan sonra", "hep böyle", "artık hep",
+    "from now on", "always", "never", "in the future",
+    "tercihim", "istiyorum ki", "prefer",
+)
+
+# Duygusal sinyaller
+_EMOTIONAL_POSITIVE_SIGNALS = (
+    "sevindim", "mutlu oldum", "harika", "muhteşem", "mükemmel",
+    "teşekkür", "sağ ol", "eyvallah", "süper", "çok iyi",
+    "güzel", "bravo", "aferin", "tebrikler", "şahane",
+    "thank you", "thanks", "awesome", "great job", "well done",
+    "love it", "perfect", "excellent",
+)
+
+_EMOTIONAL_NEGATIVE_SIGNALS = (
+    "saçmalıyorsun", "yanlış", "berbat", "rezalet", "olmadı",
+    "beğenmedim", "beklediğim bu değil", "hayır hayır",
+    "you're wrong", "that's not right", "terrible",
+    "sinir bozucu", "bıktım", "artık olmaz",
+)
+
+_FRUSTRATION_SIGNALS = (
+    "anlamıyorsun", "dinlemiyorsun", "söyledim ama", "kaç kere",
+    "yine aynı hatayı", "hâlâ aynı", "hala aynı",
+    "you don't understand", "i told you", "again", "still wrong",
+    "not listening",
+)
+
 
 # ─────────────────────────────────────────────────────────────
 # YARDIMCI FONKSİYONLAR
@@ -352,6 +412,60 @@ def classify_intent(
             "response_strategy": (
                 "Kullanıcı sohbet başlatıyor. Samimi ve kısa karşılık ver. "
                 "Önceki konuşmayı referans verme. Proaktif yardım öner ama kısa tut."
+            ),
+            "confidence": "high",
+        }
+
+    # ══════════════════════════════════════════════════════════
+    # 0b. KULLANICI KOMUTU — hafızaya kaydedilmeli
+    # ══════════════════════════════════════════════════════════
+    if any(sig in p for sig in _USER_COMMAND_SIGNALS):
+        # Komutu çıkar
+        command_text = prompt.strip()
+        is_persistent = any(sig in p for sig in _USER_PREFERENCE_SIGNALS)
+        return {
+            "intent": Intent.USER_COMMAND,
+            "target": command_text,
+            "has_prior_context": has_history,
+            "is_persistent": is_persistent,  # "bundan sonra hep böyle" → DB'ye yaz
+            "response_strategy": (
+                f"Kullanıcı bir komut/kural belirledi: '{command_text}'. "
+                "BU KURALI HEMEN UYGULA ve kısa onay ver. "
+                "Örn: 'Anladım, bundan sonra sormadan kod yazmayacağım.' "
+                "Açıklama yapma, özür dileme, sadece onayla ve uygula. "
+                "Bu kural bu konuşmanın geri kalanında geçerli."
+            ),
+            "confidence": "high",
+        }
+
+    # ══════════════════════════════════════════════════════════
+    # 0c. DUYGUSAL / SOSYAL MESAJ
+    # ══════════════════════════════════════════════════════════
+    if any(sig in p for sig in _EMOTIONAL_POSITIVE_SIGNALS):
+        return {
+            "intent": Intent.EMOTIONAL,
+            "target": None,
+            "has_prior_context": has_history,
+            "response_strategy": (
+                "Kullanıcı duygusal/sosyal bir mesaj gönderiyor. "
+                "Kısa, samimi ve sıcak karşılık ver. "
+                "KESİNLİKLE KOD YAZMA — bunun için gerek yok. "
+                "1-2 cümle yeterli. "
+                "Kullanıcı ne yapmak istediğini sormak istiyorsa kısaca sor."
+            ),
+            "confidence": "high",
+        }
+
+    if any(sig in p for sig in _FRUSTRATION_SIGNALS):
+        return {
+            "intent": Intent.FRUSTRATION,
+            "target": None,
+            "has_prior_context": True,
+            "response_strategy": (
+                "Kullanıcı hayal kırıklığı veya sinirlilik yaşıyor. "
+                "Savunmaya geçme. Özür dile, ne anlamadığını sor. "
+                "Kısa, sakin ve empatik ol. "
+                "Sorunu net anlamadan bir daha deneme."
             ),
             "confidence": "high",
         }
@@ -830,6 +944,10 @@ def build_reasoning_hint(
         Intent.STEP_BY_STEP:        "📶 ADIM ADIM",
         Intent.COMPARISON:          "⚖️  KARŞILAŞTIRMA",
         Intent.OPINION_REQUEST:     "💭 GÖRÜş / TAVSİYE",
+        Intent.USER_COMMAND:        "⚡ KULLANICI KOMUTU",
+        Intent.USER_PREFERENCE:     "⚙️  KULLANICI TERCİHİ",
+        Intent.EMOTIONAL:           "💛 DUYGUSAL",
+        Intent.FRUSTRATION:         "😤 HAYAL KIRIKLIGI",
         Intent.NEW_TOPIC:           "🆕 YENİ KONU",
         Intent.CHAT:                "💬 SOHBET",
     }
@@ -904,6 +1022,8 @@ def get_intent_thinking_steps(
         Intent.FOLLOW_UP_SIMPLIFY, Intent.FOLLOW_UP_EXPAND,
         Intent.FOLLOW_UP_EXAMPLE, Intent.CONCEPT_LEARN,
         Intent.NEW_TOPIC, Intent.OPINION_REQUEST,
+        Intent.EMOTIONAL, Intent.FRUSTRATION,
+        Intent.USER_COMMAND, Intent.USER_PREFERENCE,
     }
 
     if intent in _NO_STEPS:
