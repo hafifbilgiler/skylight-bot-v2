@@ -657,36 +657,29 @@ async def build_code_messages(
 # ═══════════════════════════════════════════════════════════════
 
 def should_show_thinking(prompt: str, mode: str, history: list = None) -> bool:
-    """Intent-aware thinking display."""
+    """
+    Thinking adımlarını SADECE hata/debug/analiz durumlarında göster.
+    Her şey için gösterme — sadece kullanıcı bir sorun bildiriyorsa.
+    """
     p = prompt.lower().strip()
 
-    # Selamlama veya çok kısa → asla thinking gösterme
-    _GREETINGS = ("selam","merhaba","hey","hi ","hello","naber","nasılsın",
-                  "günaydın","iyi günler","slm","mrb","selamlar")
-    if any(p == g or p.startswith(g) for g in _GREETINGS):
-        return False
-    if len(p.split()) <= 2:
-        return False
-
-    # Debug/hata — her zaman thinking göster
-    debug_indicators = ['debug','hata','fix','düzelt','error','crash',
-                        'çalışmıyor','exception','traceback','crashloopback',
-                        'imagepull','oomkilled','pending']
-    if any(i in p for i in debug_indicators):
+    # Önce hata/debug sinyallerini kontrol et (kelime sayısından bağımsız)
+    SHOW_INDICATORS = [
+        'hata alıyorum', 'hata veriyor', 'hata var',
+        'çalışmıyor', 'exception', 'traceback', 'debug',
+        'neden çalışmıyor', 'sorun var', 'sorun nedir',
+        'crashloopback', 'oomkilled', 'imagepull',
+        'analiz et', 'incele', 'kontrol et',
+    ]
+    if any(ind in p for ind in SHOW_INDICATORS):
         return True
 
-    # Code modunda ağır işlemler
-    if mode == "code" and any(i in p for i in ['refactor','optimize','dosya','tüm dosya']):
+    # Error kelimesi tek başına kısa mesajda da göster
+    words = p.split()
+    if 'error' in words or 'crash' in words:
         return True
 
-    # IT expert modunda sorunlar
-    if mode == "it_expert" and any(i in p for i in ['error','hata','sorun','problem']):
-        return True
-
-    # Kısa follow-up → thinking gösterme
-    if len(p.split()) <= 5:
-        return False
-
+    # Bunların dışında → asla thinking gösterme
     return False
 
 
@@ -695,9 +688,44 @@ async def generate_thinking_steps(
     mode: str,
     history: List[Dict] = None,
 ) -> List[ThinkingStep]:
-    """Intent-aware thinking steps."""
-    raw_steps = get_intent_thinking_steps(prompt, history or [], mode)
-    return [ThinkingStep(emoji=e, message=m) for e, m in raw_steps]
+    """
+    Thinking steps — sadece debug/hata analizinde çıkar.
+    İçerik: problem tespiti → root cause → çözüm.
+    """
+    p    = prompt.lower()
+    is_tr = any(c in prompt for c in "çğışöüÇĞİŞÖÜ")
+
+    steps = []
+
+    if any(w in p for w in ['hata', 'error', 'crash', 'exception', 'çalışmıyor', 'traceback']):
+        steps.append(ThinkingStep(
+            emoji="🔍",
+            message="Hata analiz ediliyor..." if is_tr else "Analyzing the error..."
+        ))
+        steps.append(ThinkingStep(
+            emoji="💡",
+            message="Root cause tespit ediliyor..." if is_tr else "Finding root cause..."
+        ))
+        steps.append(ThinkingStep(
+            emoji="🔧",
+            message="Çözüm hazırlanıyor..." if is_tr else "Preparing fix..."
+        ))
+    elif any(w in p for w in ['analiz', 'incele', 'kontrol']):
+        steps.append(ThinkingStep(
+            emoji="🔍",
+            message="Analiz ediliyor..." if is_tr else "Analyzing..."
+        ))
+        steps.append(ThinkingStep(
+            emoji="🔧",
+            message="Sonuç hazırlanıyor..." if is_tr else "Preparing result..."
+        ))
+    else:
+        steps.append(ThinkingStep(
+            emoji="🔍",
+            message="İnceleniyor..." if is_tr else "Checking..."
+        ))
+
+    return steps
 
 
 # ═══════════════════════════════════════════════════════════════
