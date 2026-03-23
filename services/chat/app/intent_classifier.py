@@ -267,6 +267,31 @@ def classify_intent(
     }
     """
     p = prompt.lower().strip()
+
+    # ── 0. GREETING GUARD — Her zaman önce kontrol et ─────────
+    # Selamlama/basit sohbet başlangıcı → asla thinking gösterme, asla devam etme
+    _GREETINGS = (
+        "selam", "merhaba", "hey", "hi ", "hello", "naber", "nasılsın",
+        "günaydın", "iyi günler", "iyi akşamlar", "iyi geceler",
+        "selamlar", "heyy", "seleam", "slm", "mrb",
+        "how are you", "what's up", "sup",
+    )
+    if any(p == g or p.startswith(g) for g in _GREETINGS):
+        # Selamlama → sohbet, thinking yok
+        return {
+            "intent": Intent.CHAT,
+            "target": None,
+            "has_prior_context": False,
+            "response_strategy": (
+                "Kullanıcı sohbet başlatıyor. "
+                "Samimi ve kısa karşılık ver. "
+                "Önceki konuşmayı referans verme. "
+                "Proaktif yardım öner ama kısa tut."
+            ),
+            "confidence": "high",
+        }
+    # ─────────────────────────────────────────────────────────────
+
     has_code_context   = _has_recent_code(history)
     has_tech_context   = _has_recent_technical_answer(history)
     has_history        = len(history) >= 1

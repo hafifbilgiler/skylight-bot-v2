@@ -658,21 +658,35 @@ async def build_code_messages(
 
 def should_show_thinking(prompt: str, mode: str, history: list = None) -> bool:
     """Intent-aware thinking display."""
-    # Debug/hata her zaman
+    p = prompt.lower().strip()
+
+    # Selamlama veya çok kısa → asla thinking gösterme
+    _GREETINGS = ("selam","merhaba","hey","hi ","hello","naber","nasılsın",
+                  "günaydın","iyi günler","slm","mrb","selamlar")
+    if any(p == g or p.startswith(g) for g in _GREETINGS):
+        return False
+    if len(p.split()) <= 2:
+        return False
+
+    # Debug/hata — her zaman thinking göster
     debug_indicators = ['debug','hata','fix','düzelt','error','crash',
-                        'çalışmıyor','exception','traceback','crashloopback']
-    p = prompt.lower()
+                        'çalışmıyor','exception','traceback','crashloopback',
+                        'imagepull','oomkilled','pending']
     if any(i in p for i in debug_indicators):
         return True
-    # Code modunda teknik işlemler
-    if mode == "code" and any(i in p for i in ['dosya','file','refactor','optimize']):
+
+    # Code modunda ağır işlemler
+    if mode == "code" and any(i in p for i in ['refactor','optimize','dosya','tüm dosya']):
         return True
+
     # IT expert modunda sorunlar
     if mode == "it_expert" and any(i in p for i in ['error','hata','sorun','problem']):
         return True
-    # Kısa follow-up sorularda thinking gösterme
-    if history and len(prompt.split()) <= 5:
+
+    # Kısa follow-up → thinking gösterme
+    if len(p.split()) <= 5:
         return False
+
     return False
 
 
