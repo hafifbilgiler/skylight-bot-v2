@@ -37,6 +37,7 @@ import asyncio
 import re
 from datetime import datetime
 
+from intent_classifier import build_reasoning_hint, get_intent_thinking_steps, Intent
 from prompts_production import (
     ASSISTANT_SYSTEM_PROMPT,
     CODE_SYSTEM_PROMPT,
@@ -177,6 +178,15 @@ _NEWS_KW      = ("son haberler","güncel haberler","bugünün haberleri","son da
 _PRICE_KW     = ("kaç lira","fiyatı ne kadar","fiyatı kaç","altın fiyatı",
                  "gram altın","petrol fiyatı","borsa","bist","hisse fiyatı")
 
+# ── Borsa keywords ──────────────────────────────────────────
+_BORSA_KW     = (
+    "borsa","bist","hisse","teknik analiz","mum analiz","mum grafiği",
+    "rsi","macd","bollinger","destek direnç","al sinyali","sat sinyali",
+    "hisse analiz","thyao","garan","akbnk","eregl","kchol",
+    "btc analiz","eth analiz","kripto analiz",
+)
+BORSA_URL = os.getenv("BORSA_URL", "http://skylight-borsa:8086")
+
 # ── Canlı veri gerekmez ─────────────────────────────────────────
 _STATIC_KW    = ("nasıl kullanılır","syntax","örnek ver","açıkla","anlat",
                  "ne demek","tanımı nedir","nasıl yapılır","tutorial")
@@ -198,6 +208,7 @@ def _detect_live_type(query: str, mode: str) -> Optional[str]:
     if any(k in q for k in _CRYPTO_KW):   return "crypto"
     if any(k in q for k in _TIME_KW):     return "time"
     if any(k in q for k in _NEWS_KW):     return "news"
+    if any(k in q for k in _BORSA_KW):    return "borsa"
     if any(k in q for k in _PRICE_KW):    return "price_search"
     return None
 
@@ -212,6 +223,39 @@ async def get_live_data(query: str, mode: str = "assistant") -> Optional[str]:
     """
     live_type = _detect_live_type(query, mode)
     if not live_type:
+        return None
+
+    # Borsa — borsa servisine git
+    if live_type == "borsa":
+        try:
+            # Sembolü query'den çıkar
+            import re as _re
+            # Bilinen BIST sembolleri
+            known = ["THYAO","GARAN","AKBNK","EREGL","KCHOL","SAHOL","PETKM","TUPRS",
+                     "BIMAS","ASELS","FROTO","TOASO","SISE","TTKOM","ARCLK",
+                     "BTC","ETH","BNB","SOL","XRP","DOGE"]
+            sym = None
+            q_upper = query.upper()
+            for k in known:
+                if k in q_upper:
+                    sym = k
+                    break
+            # Regex ile 2-6 harf sembol bul
+            if not sym:
+                m = _re.search(r'\b([A-ZÇĞİÖŞÜ]{2,6})\b', q_upper)
+                if m:
+                    sym = m.group(1)
+
+            if sym:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.get(f"{BORSA_URL}/analyze/{sym}")
+                    if resp.status_code == 200:
+                        d = resp.json()
+                        summary = d.get("ai_summary", "")
+                        print(f"[BORSA] ✅ {sym} analizi alındı")
+                        return f"[Borsa Analizi]\n{summary}\n[/Borsa Analizi]"
+        except Exception as e:
+            print(f"[BORSA] Hata: {e}")
         return None
 
     if not SMART_TOOLS_URL:
@@ -545,6 +589,12 @@ async def build_code_messages(
 
     system_content = config["system_prompt"]
 
+    # ── REASONING LAYER — Code mode intent ───────────────────────
+    reasoning_hint = build_reasoning_hint(user_prompt, history or [], "code")
+    system_content = reasoning_hint + "\n\n" + system_content
+    print(f"[INTENT/CODE] {reasoning_hint.split(chr(10))[0]}")
+    # ─────────────────────────────────────────────────────────────
+
     # Memory
     user_memory = await load_user_memory(user_id)
     system_content = system_content.replace(
@@ -606,33 +656,34 @@ async def build_code_messages(
 # THINKING DISPLAY
 # ═══════════════════════════════════════════════════════════════
 
-def should_show_thinking(prompt: str, mode: str) -> bool:
-    indicators = ['debug','hata','fix','düzelt','refactor','iyileştir',
-                  'optimize','deploy','analyze','analiz']
+def should_show_thinking(prompt: str, mode: str, history: list = None) -> bool:
+    """Intent-aware thinking display."""
+    # Debug/hata her zaman
+    debug_indicators = ['debug','hata','fix','düzelt','error','crash',
+                        'çalışmıyor','exception','traceback','crashloopback']
     p = prompt.lower()
-    if any(i in p for i in indicators):
+    if any(i in p for i in debug_indicators):
         return True
-    if mode == "code" and any(i in p for i in ['dosya','file','kod','code']):
+    # Code modunda teknik işlemler
+    if mode == "code" and any(i in p for i in ['dosya','file','refactor','optimize']):
         return True
+    # IT expert modunda sorunlar
     if mode == "it_expert" and any(i in p for i in ['error','hata','sorun','problem']):
         return True
+    # Kısa follow-up sorularda thinking gösterme
+    if history and len(prompt.split()) <= 5:
+        return False
     return False
 
 
-async def generate_thinking_steps(prompt: str, mode: str) -> List[ThinkingStep]:
-    p    = prompt.lower()
-    is_tr = any(c in prompt for c in "çğıöşü")
-    steps = [ThinkingStep(emoji="🔍",
-                          message="Problemi anlıyorum..." if is_tr else "Understanding...")]
-    if any(w in p for w in ['debug','fix','error','hata','sorun']):
-        steps.append(ThinkingStep(emoji="📊",
-                     message="Bağlamı kontrol ediyorum..." if is_tr else "Checking context..."))
-    if any(w in p for w in ['debug','hata','bug']):
-        steps.append(ThinkingStep(emoji="💡",
-                     message="Root cause analizi..." if is_tr else "Root cause analysis..."))
-    steps.append(ThinkingStep(emoji="🔧",
-                 message="Çözüm hazırlanıyor..." if is_tr else "Preparing solution..."))
-    return steps
+async def generate_thinking_steps(
+    prompt: str,
+    mode: str,
+    history: List[Dict] = None,
+) -> List[ThinkingStep]:
+    """Intent-aware thinking steps."""
+    raw_steps = get_intent_thinking_steps(prompt, history or [], mode)
+    return [ThinkingStep(emoji=e, message=m) for e, m in raw_steps]
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -742,6 +793,14 @@ async def build_messages(
     messages       = []
     system_content = config["system_prompt"]
 
+    # ── REASONING LAYER — Intent classification (LOCAL, 0ms) ─────
+    # Claude'un iç akıl yürütmesini simüle eder.
+    # Kullanıcının niyetini tespit eder, LLM'e ne yapması gerektiğini söyler.
+    reasoning_hint = build_reasoning_hint(user_prompt, history or [], mode)
+    system_content = reasoning_hint + "\n\n" + system_content
+    print(f"[INTENT] {reasoning_hint.split(chr(10))[0]}")
+    # ─────────────────────────────────────────────────────────────
+
     # ── GÜNCEL TARİH — smart_tools NTP (worldtimeapi) ────────────
     try:
         async with httpx.AsyncClient(timeout=4.0) as _c:
@@ -841,7 +900,7 @@ async def chat(request: ChatRequest):
         raise HTTPException(status_code=400, detail=f"Invalid mode: {request.mode}")
 
     config        = MODE_CONFIGS[request.mode]
-    show_thinking = should_show_thinking(request.prompt, request.mode)
+    show_thinking = should_show_thinking(request.prompt, request.mode, request.history or [])
 
     messages = await build_messages(
         mode=request.mode, user_id=request.user_id,
@@ -860,7 +919,7 @@ async def chat(request: ChatRequest):
 
             # Thinking display
             if show_thinking:
-                steps = await generate_thinking_steps(request.prompt, request.mode)
+                steps = await generate_thinking_steps(request.prompt, request.mode, request.history or [])
                 for step in steps:
                     yield f"{step.emoji} {step.message}\n"
                 yield "\n"
