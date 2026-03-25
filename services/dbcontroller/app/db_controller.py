@@ -5,7 +5,7 @@ ONE-BUNE AI Platform - Database Controller Service
 ═══════════════════════════════════════════════════════════════
 COMPLETE VERSION - All Tables + Payment System + Memory System
 
-Version: 2.5.0
+Version: 2.5.1
 Changes v2.5.0:
   - Admin columns added to users table:
       is_admin, is_banned, ban_reason, banned_at, last_active
@@ -129,7 +129,7 @@ def ensure_constraint(cur, table_name: str, constraint_name: str, constraint_sql
 def init_database_schema() -> bool:
     log_info("=" * 70)
     log_info("DATABASE SCHEMA INITIALIZATION STARTED")
-    log_info("Version: 2.5.0 - Admin Panel + Payment System + Memory + Code Context")
+    log_info("Version: 2.5.1 - Admin Panel + Payment System + Memory + Code Context")
     log_info("=" * 70)
 
     try:
@@ -185,10 +185,11 @@ def init_database_schema() -> bool:
         ensure_column(cur, "users", "city",        "VARCHAR(100)")
         ensure_column(cur, "users", "address",     "TEXT")
         ensure_column(cur, "users", "zip_code",    "VARCHAR(10)")
-        ensure_column(cur, "users", "identity_no", "VARCHAR(20)")
+        ensure_column(cur, "users", "identity_no",   "VARCHAR(20)")
+        ensure_column(cur, "users", "avatar_style",  "VARCHAR(50) DEFAULT 'avataaars'")
         # ────────────────────────────────────────────────────
 
-        log_success("USERS table OK (with admin + payment columns)")
+        log_success("USERS table OK (with admin + payment + avatar columns)")
 
         # ─────────────────────────────────────────────
         # 2. OTP_CODES
@@ -1194,7 +1195,7 @@ def seed_admin_user() -> bool:
 
 def main():
     log_info("🚀 ONE-BUNE DATABASE CONTROLLER SERVICE STARTING...")
-    log_info("📦 Version: 2.5.0 - Admin Panel + Payment System + Memory + Code Context")
+    log_info("📦 Version: 2.5.1 - Admin Panel + Payment System + Memory + Code Context")
     log_info(f"🐘 PostgreSQL Host: {os.getenv('DB_HOST', 'postgres')}")
     log_info(f"🗄️ Database Name:   {os.getenv('DB_NAME', 'N/A')}")
     log_info("=" * 70)

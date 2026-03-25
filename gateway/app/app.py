@@ -1517,15 +1517,15 @@ async def get_profile(authorization: str = Header(None)):
     try:
         pool = _get_pool(); conn = pool.getconn(); cur = conn.cursor()
         try:
-            cur.execute("SELECT email, name FROM users WHERE id = %s", (user_id,))
+            cur.execute("SELECT email, name, avatar_style FROM users WHERE id = %s", (user_id,))
             row = cur.fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="User not found")
-            email, name = row
+            email, name, avatar_style = row[0], row[1], (row[2] or "avataaars")
             cur.execute("SELECT topics, preferences, summary FROM user_profiles WHERE user_id = %s", (user_id,))
             profile_row = cur.fetchone()
             return {
-                "user": {"id": user_id, "email": email, "name": name},
+                "user": {"id": user_id, "email": email, "name": name, "avatar_style": avatar_style},
                 "profile": {
                     "topics": profile_row[0] if profile_row else [],
                     "preferences": profile_row[1] if profile_row else {},
@@ -1549,22 +1549,33 @@ async def update_profile(
     if not user_id:
         raise HTTPException(status_code=401, detail="User required")
 
-    new_name  = data.get("name", "").strip()
-    new_email = data.get("email", "").strip().lower()
+    new_name         = data.get("name", "").strip()
+    new_email        = data.get("email", "").strip().lower()
+    new_avatar_style = data.get("avatar_style", "").strip()
 
-    if not new_name and not new_email:
-        raise HTTPException(status_code=400, detail="Ad veya e-posta gerekli")
+    # Geçerli DiceBear stilleri
+    VALID_AVATAR_STYLES = {
+        "avataaars", "pixel-art", "bottts", "lorelei",
+        "notionists", "fun-emoji", "shapes", "identicon"
+    }
+    if new_avatar_style and new_avatar_style not in VALID_AVATAR_STYLES:
+        new_avatar_style = ""  # geçersiz stil, yoksay
+
+    if not new_name and not new_email and not new_avatar_style:
+        raise HTTPException(status_code=400, detail="Güncellenecek alan gerekli")
 
     try:
         pool = _get_pool(); conn = pool.getconn(); cur = conn.cursor()
         try:
             if new_name:
-                cur.execute("UPDATE users SET name=$1 WHERE id=$2", (new_name, user_id))
+                cur.execute("UPDATE users SET name=%s WHERE id=%s", (new_name, user_id))
             if new_email:
-                cur.execute("SELECT id FROM users WHERE email=$1 AND id!=$2", (new_email, user_id))
+                cur.execute("SELECT id FROM users WHERE email=%s AND id!=%s", (new_email, user_id))
                 if cur.fetchone():
                     raise HTTPException(status_code=409, detail="Bu e-posta zaten kullanılıyor")
-                cur.execute("UPDATE users SET email=$1 WHERE id=$2", (new_email, user_id))
+                cur.execute("UPDATE users SET email=%s WHERE id=%s", (new_email, user_id))
+            if new_avatar_style:
+                cur.execute("UPDATE users SET avatar_style=%s WHERE id=%s", (new_avatar_style, user_id))
             conn.commit()
             return {"status": "success", "message": "Profil güncellendi"}
         finally:
