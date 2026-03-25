@@ -490,20 +490,56 @@ app.add_middleware(
 # HELPER
 # ═══════════════════════════════════════════════════════════════
 
-async def call_service(service_url: str, endpoint: str, data: dict,
-                       stream: bool = False, timeout: int = 30):
+async def call_service(
+    service_url: str,
+    endpoint: str,
+    data: dict,
+    stream: bool = False,
+    timeout: int = 30,
+):
+    """
+    Downstream servislere istek atar.
+    Hata durumunda kullanıcıya ham hata/traceback gitmez —
+    temiz, Türkçe mesaj döner.
+    """
     url = f"{service_url}{endpoint}"
+
     if stream:
         async def stream_generator():
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                async with client.stream("POST", url, json=data) as response:
-                    async for chunk in response.aiter_text():
-                        yield chunk
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    async with client.stream("POST", url, json=data) as response:
+                        if response.status_code >= 500:
+                            yield "Şu an yanıt veremiyorum, lütfen birkaç saniye sonra tekrar dene."
+                            return
+                        if response.status_code == 429:
+                            yield "⏳ Çok fazla istek geldi, lütfen bekle."
+                            return
+                        if response.status_code >= 400:
+                            yield "Bir sorun oluştu, lütfen tekrar dene."
+                            return
+                        async for chunk in response.aiter_text():
+                            yield chunk
+            except httpx.ConnectError:
+                yield "Şu an bağlanamıyorum, lütfen biraz sonra tekrar dene."
+            except httpx.TimeoutException:
+                yield "Yanıt çok uzun sürdü, lütfen tekrar dene."
+            except httpx.ReadError:
+                yield "Bağlantı kesildi, lütfen tekrar dene."
+            except Exception as e:
+                print(f"[CALL_SERVICE] Beklenmedik hata: {e}")
+                yield "Beklenmedik bir sorun oluştu, lütfen tekrar dene."
+
         return stream_generator()
+
     else:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(url, json=data)
-            return response.json()
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(url, json=data)
+                return response.json()
+        except Exception as e:
+            print(f"[CALL_SERVICE] Non-stream hata: {e}")
+            return {"error": str(e)}
 
 # ═══════════════════════════════════════════════════════════════
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
