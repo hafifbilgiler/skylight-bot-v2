@@ -1554,10 +1554,7 @@ async def update_profile(
     new_avatar_style = data.get("avatar_style", "").strip()
 
     # Geçerli DiceBear stilleri
-    VALID_AVATAR_STYLES = {
-        "avataaars", "pixel-art", "bottts", "lorelei",
-        "notionists", "fun-emoji", "shapes", "identicon"
-    }
+    VALID_AVATAR_STYLES = {"av-01", "av-02", "av-03", "av-04", "av-05", "av-06", "av-07", "av-08", "av-09", "av-10", "av-11", "av-12", "av-13", "av-14", "av-15", "av-16", "av-17", "av-18", "av-19", "av-20", "av-21", "av-22", "av-23", "av-24", "av-25", "av-26", "av-27", "av-28", "av-29", "av-30", "av-31", "av-32", "av-33", "av-34", "av-35", "av-36", "av-37", "av-38", "av-39", "av-40", "av-41", "av-42", "av-43", "av-44", "av-45", "av-46", "av-47", "av-48", "av-49", "av-50"}
     if new_avatar_style and new_avatar_style not in VALID_AVATAR_STYLES:
         new_avatar_style = ""  # geçersiz stil, yoksay
 
