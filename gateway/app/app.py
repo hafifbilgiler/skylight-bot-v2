@@ -490,56 +490,20 @@ app.add_middleware(
 # HELPER
 # ═══════════════════════════════════════════════════════════════
 
-async def call_service(
-    service_url: str,
-    endpoint: str,
-    data: dict,
-    stream: bool = False,
-    timeout: int = 30,
-):
-    """
-    Downstream servislere istek atar.
-    Hata durumunda kullanıcıya ham hata/traceback gitmez —
-    temiz, Türkçe mesaj döner.
-    """
+async def call_service(service_url: str, endpoint: str, data: dict,
+                       stream: bool = False, timeout: int = 30):
     url = f"{service_url}{endpoint}"
-
     if stream:
         async def stream_generator():
-            try:
-                async with httpx.AsyncClient(timeout=timeout) as client:
-                    async with client.stream("POST", url, json=data) as response:
-                        if response.status_code >= 500:
-                            yield "Şu an yanıt veremiyorum, lütfen birkaç saniye sonra tekrar dene."
-                            return
-                        if response.status_code == 429:
-                            yield "⏳ Çok fazla istek geldi, lütfen bekle."
-                            return
-                        if response.status_code >= 400:
-                            yield "Bir sorun oluştu, lütfen tekrar dene."
-                            return
-                        async for chunk in response.aiter_text():
-                            yield chunk
-            except httpx.ConnectError:
-                yield "Şu an bağlanamıyorum, lütfen biraz sonra tekrar dene."
-            except httpx.TimeoutException:
-                yield "Yanıt çok uzun sürdü, lütfen tekrar dene."
-            except httpx.ReadError:
-                yield "Bağlantı kesildi, lütfen tekrar dene."
-            except Exception as e:
-                print(f"[CALL_SERVICE] Beklenmedik hata: {e}")
-                yield "Beklenmedik bir sorun oluştu, lütfen tekrar dene."
-
-        return stream_generator()
-
-    else:
-        try:
             async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(url, json=data)
-                return response.json()
-        except Exception as e:
-            print(f"[CALL_SERVICE] Non-stream hata: {e}")
-            return {"error": str(e)}
+                async with client.stream("POST", url, json=data) as response:
+                    async for chunk in response.aiter_text():
+                        yield chunk
+        return stream_generator()
+    else:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(url, json=data)
+            return response.json()
 
 # ═══════════════════════════════════════════════════════════════
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1762,20 +1726,26 @@ async def delete_account(authorization: str = Header(None)):
     try:
         pool = _get_pool(); conn = pool.getconn(); cur = conn.cursor()
         try:
-            # Soft delete - 30 gün sonra kalıcı silinecek
-            cur.execute("""
-                UPDATE users
-                SET is_deleted = TRUE,
-                    deleted_at = NOW(),
-                    email = email || '_deleted_' || id::text
-                WHERE id = %s
-            """, (user_id,))
+            # 1. Bağlı verileri temizle
+            cur.execute("DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE user_id = %s)", (user_id,))
+            cur.execute("DELETE FROM conversations WHERE user_id = %s", (user_id,))
+            cur.execute("DELETE FROM usage_tracking WHERE user_id = %s", (user_id,))
+            cur.execute("DELETE FROM user_memory WHERE user_id = %s", (user_id,))
+            cur.execute("DELETE FROM user_subscriptions WHERE user_id = %s", (user_id,))
+            cur.execute("DELETE FROM feedback WHERE user_id = %s", (user_id,))
+
+            # 2. OTP temizle
+            cur.execute("DELETE FROM otp_codes WHERE email = (SELECT email FROM users WHERE id = %s)", (user_id,))
+
+            # 3. Kullanıcıyı sil
+            cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
             conn.commit()
-            return {"status": "success", "message": "Hesap silindi"}
+            return {"status": "success", "message": "Hesap kalıcı olarak silindi"}
         finally:
             pool.putconn(conn)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Delete error: {str(e)}")
+        print(f"[DELETE ACCOUNT ERROR] user_id={user_id} error={e}")
+        raise HTTPException(status_code=500, detail=f"Hesap silinirken hata oluştu")
 
 
 
