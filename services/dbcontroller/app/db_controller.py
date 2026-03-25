@@ -186,7 +186,7 @@ def init_database_schema() -> bool:
         ensure_column(cur, "users", "address",     "TEXT")
         ensure_column(cur, "users", "zip_code",    "VARCHAR(10)")
         ensure_column(cur, "users", "identity_no",   "VARCHAR(20)")
-        ensure_column(cur, "users", "avatar_style",  "VARCHAR(50) DEFAULT 'avataaars'")
+        ensure_column(cur, "users", "avatar_style",  "VARCHAR(50) DEFAULT 'av-01'")
         # ────────────────────────────────────────────────────
 
         log_success("USERS table OK (with admin + payment + avatar columns)")
