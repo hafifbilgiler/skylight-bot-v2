@@ -2,15 +2,22 @@
 ═══════════════════════════════════════════════════════════════
 ONE-BUNE PAYMENT SERVICE - iyzico Subscription
 ═══════════════════════════════════════════════════════════════
+v2.2 değişiklikleri:
+  ✅ Callback idempotency — duplicate activation önlendi
+  ✅ DB yoksa kullanıcıya bilgi verilir, sessiz fail yok
+  ✅ paidPrice hardcoded 64 kaldırıldı — iyzico'dan alınıyor
+  ✅ İptal guard — iyzico fail ederse DB dokunulmaz
+  ✅ Email async (aiosmtplib) — event loop bloklanmıyor
+═══════════════════════════════════════════════════════════════
 """
 
-import os, json, time, base64, hashlib, hmac, secrets, logging, smtplib
+import os, json, time, base64, hashlib, hmac, secrets, logging, asyncio
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
 
-import httpx, asyncpg
+import httpx, asyncpg, aiosmtplib
 from fastapi import FastAPI, HTTPException, Header, Body, Request
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,7 +26,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # CONFIG
 # ═══════════════════════════════════════════════════════════════
 
-app = FastAPI(title="ONE-BUNE Payment Service", version="2.1.0")
+app = FastAPI(title="ONE-BUNE Payment Service", version="2.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -196,65 +203,39 @@ async def log_event(event: str, user_id: int = None, data: dict = None, ip: str 
         logger.error(f"[AUDIT] {e}")
 
 
-async def activate_subscription(user_id: int, subscription_ref: str, plan_code: str):
-    """Kullanıcıyı premium yap — DB şeması ile uyumlu"""
-    if not db_pool:
+# ─────────────────────────────────────────────────────────────
+# EMAIL — ASYNC (event loop bloklanmaz)
+# ─────────────────────────────────────────────────────────────
+
+async def _send_email_async(to: str, subject: str, html: str, plain: str):
+    """Async SMTP ile email gönder — aiosmtplib kullanır."""
+    if not SMTP_SERVER or not SMTP_USER:
+        logger.warning("[EMAIL] SMTP yapılandırılmamış, email gönderilmedi.")
         return
     try:
-        async with db_pool.acquire() as conn:
-            # users tablosu güncelle
-            await conn.execute("""
-                UPDATE users
-                SET is_premium = TRUE, subscription_active = TRUE
-                WHERE id = $1
-            """, user_id)
+        msg = MIMEMultipart("alternative")
+        msg["From"]       = f"ONE-BUNE <{SMTP_FROM}>"
+        msg["To"]         = to
+        msg["Subject"]    = subject
+        msg["X-Priority"] = "3"
+        msg.attach(MIMEText(plain, "plain", "utf-8"))
+        msg.attach(MIMEText(html,  "html",  "utf-8"))
 
-            # user_subscriptions
-            await conn.execute("""
-                INSERT INTO user_subscriptions
-                    (user_id, plan_id, status, billing_period,
-                     current_period_start, current_period_end,
-                     iyzico_subscription_ref, created_at, updated_at)
-                VALUES ($1, 'premium', 'active', 'monthly',
-                        NOW(), NOW() + INTERVAL '30 days',
-                        $2, NOW(), NOW())
-                ON CONFLICT (user_id) WHERE status IN ('active','trialing')
-                DO UPDATE SET
-                    plan_id               = 'premium',
-                    status                = 'active',
-                    iyzico_subscription_ref = $2,
-                    current_period_start  = NOW(),
-                    current_period_end    = NOW() + INTERVAL '30 days',
-                    updated_at            = NOW()
-            """, user_id, subscription_ref)
-
-            # Email için kullanıcı bilgilerini al
-            row = await conn.fetchrow(
-                "SELECT email, name FROM users WHERE id = $1", user_id
-            )
-
-        logger.info(f"[SUBSCRIPTION] User {user_id} aktifleştirildi")
-
-        # Hoş geldin emaili gönder
-        if row and SMTP_SERVER and SMTP_USER:
-            try:
-                _send_premium_welcome(row["email"], row["name"] or "Kullanıcı")
-            except Exception as e:
-                logger.error(f"[WELCOME EMAIL] {e}")
-
+        await aiosmtplib.send(
+            msg,
+            hostname=SMTP_SERVER,
+            port=SMTP_PORT,
+            username=SMTP_USER,
+            password=SMTP_PASS,
+            start_tls=True,
+        )
+        logger.info(f"[EMAIL] Gönderildi: {to} / {subject}")
     except Exception as e:
-        logger.error(f"[SUBSCRIPTION ERROR] {e}")
+        logger.error(f"[EMAIL ERROR] to={to} subject={subject} error={e}")
 
 
-def _send_premium_welcome(email: str, name: str):
-    msg = MIMEMultipart("alternative")
-    msg["From"]    = f"ONE-BUNE <{SMTP_FROM}>"
-    msg["To"]      = email
-    msg["Subject"] = "Premium uyeliginiz aktif edildi"
-    msg["X-Priority"] = "3"
-
-    first_name = name.split()[0] if name else "Kullanici"
-
+def _build_welcome_email(first_name: str) -> tuple[str, str]:
+    """Premium hoş geldin email içeriği döner: (html, plain)"""
     html = f"""<!DOCTYPE html>
 <html lang="tr">
 <head>
@@ -379,414 +360,12 @@ Kullanmaya baslamak icin: https://one-bune.com
 
 ONE-BUNE AI / SKYMERGE TECHNOLOGY
 """
-    msg.attach(MIMEText(plain, "plain", "utf-8"))
-    msg.attach(MIMEText(html,  "html",  "utf-8"))
+    return html, plain
 
-    with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as s:
-        s.ehlo(); s.starttls(); s.ehlo()
-        s.login(SMTP_USER, SMTP_PASS)
-        s.send_message(msg)
-    logger.info(f"[WELCOME EMAIL] Gonderildi: {email}")
 
-
-# ═══════════════════════════════════════════════════════════════
-# ENDPOINTS
-# ═══════════════════════════════════════════════════════════════
-
-from pydantic import BaseModel, Field, field_validator
-import re as _re
-
-class CheckoutBody(BaseModel):
-    token:          Optional[str] = None
-    gsmNumber:      Optional[str] = Field(None, max_length=15)
-    identityNumber: Optional[str] = Field(None, max_length=11)
-    address:        Optional[str] = Field(None, max_length=500)
-    city:           Optional[str] = Field(None, max_length=100)
-    zipCode:        Optional[str] = Field(None, max_length=10)
-    email:          Optional[str] = Field(None, max_length=255)
-    name:           Optional[str] = Field(None, max_length=100)
-    surname:        Optional[str] = Field(None, max_length=100)
-
-    @field_validator("gsmNumber")
-    @classmethod
-    def validate_phone(cls, v):
-        if v:
-            digits = _re.sub(r'[\s\-\+]', '', v)
-            if not digits.isdigit() or len(digits) < 10:
-                raise ValueError("Geçersiz telefon numarası")
-        return v
-
-    @field_validator("identityNumber")
-    @classmethod
-    def validate_identity(cls, v):
-        if v and (not v.isdigit() or len(v) != 11):
-            raise ValueError("TC Kimlik No 11 haneli rakam olmalı")
-        return v
-
-
-class CancelBody(BaseModel):
-    token:     Optional[str] = None
-    immediate: bool = False
-    admin:     bool = False
-    user_id:   Optional[int] = None
-
-
-
-@app.get("/payment/health")
-async def health():
-    return {
-        "status":           "healthy",
-        "service":          "payment-service",
-        "version":          "2.1.0",
-        "iyzico_base_url":  IYZICO_BASE_URL,
-        "has_api_key":      bool(IYZICO_API_KEY),
-        "has_plan_code":    bool(IYZICO_MONTHLY_PLAN_CODE),
-        "database":         "ok" if db_pool else "error",
-    }
-
-
-@app.post("/payment/checkout")
-async def payment_checkout(
-    request: Request,
-    body: CheckoutBody = Body(...),
-    authorization: Optional[str] = Header(None),
-):
-    """iyzico checkout formu başlat"""
-    ensure_config()
-
-    token = (body.token
-             or (authorization.split(" ")[1] if authorization and " " in authorization else None))
-    if not token:
-        raise HTTPException(401, "Login required")
-
-    user = await get_user(token)
-    if not user:
-        await log_event("checkout_failed", data={"reason": "invalid_token"},
-                        ip=request.client.host)
-        raise HTTPException(401, "Geçersiz token")
-
-    if user.get("subscription_active"):
-        raise HTTPException(400, "Zaten abone")
-
-    # Müşteri bilgileri
-    email    = body.email    or user.get("email") or "user@one-bune.com"
-    fullname = user.get("name", "One Bune User")
-    parts    = fullname.split(" ", 1)
-    name     = body.name    or parts[0]
-    surname  = body.surname or (parts[1] if len(parts) > 1 else "User")
-    # Fatura bilgileri — request'ten al, DB'ye kaydet, yoksa DB'den çek
-    phone_input    = (body.gsmNumber      or "").strip()
-    city_input     = (body.city           or "").strip()
-    address_input  = (body.address        or "").strip()
-    zip_input      = (body.zipCode        or "").strip()
-    identity_input = (body.identityNumber or "").strip()
-
-    # Telefon formatla
-    gsm = None
-    if phone_input:
-        digits = phone_input.replace("+","").replace(" ","").replace("-","")
-        if digits.startswith("90") and len(digits) == 12:
-            gsm = "+" + digits
-        elif digits.startswith("0") and len(digits) == 11:
-            gsm = "+9" + digits
-        elif len(digits) == 10:
-            gsm = "+90" + digits
-        else:
-            gsm = "+" + digits
-
-    # DB'den mevcut bilgileri çek + yeni bilgileri kaydet
-    if db_pool:
-        async with db_pool.acquire() as conn:
-            row = await conn.fetchrow("""
-                SELECT phone, city, address, zip_code, identity_no
-                FROM users WHERE id = $1
-            """, user["id"])
-            if row:
-                gsm            = gsm            or row["phone"]       or "+905300000000"
-                city_input     = city_input     or row["city"]        or "Istanbul"
-                address_input  = address_input  or row["address"]     or "Türkiye"
-                zip_input      = zip_input      or row["zip_code"]    or "34000"
-                identity_input = identity_input or row["identity_no"] or "11111111111"
-
-            # Güncel bilgileri kaydet
-            await conn.execute("""
-                UPDATE users SET
-                    phone       = COALESCE(NULLIF($1,''), phone),
-                    city        = COALESCE(NULLIF($2,''), city),
-                    address     = COALESCE(NULLIF($3,''), address),
-                    zip_code    = COALESCE(NULLIF($4,''), zip_code),
-                    identity_no = COALESCE(NULLIF($5,''), identity_no)
-                WHERE id = $6
-            """, gsm, city_input, address_input, zip_input, identity_input, user["id"])
-    else:
-        gsm            = gsm            or "+905300000000"
-        city_input     = city_input     or "Istanbul"
-        address_input  = address_input  or "Türkiye"
-        zip_input      = zip_input      or "34000"
-        identity_input = identity_input or "11111111111"
-
-    billing = {
-        "contactName": f"{name} {surname}",
-        "address":     address_input,
-        "zipCode":     zip_input,
-        "city":        city_input,
-        "country":     "Türkiye",
-    }
-
-    conv_id = f"onebune-{user['id']}-{int(time.time())}"
-
-    payload = {
-        "locale":                   "tr",
-        "conversationId":           conv_id,
-        "callbackUrl":              PAYMENT_CALLBACK_URL,
-        "pricingPlanReferenceCode": IYZICO_MONTHLY_PLAN_CODE,
-        "subscriptionInitialStatus":"ACTIVE",
-        "customer": {
-            "name":            name,
-            "surname":         surname,
-            "email":           email,
-            "gsmNumber":       gsm,
-            "identityNumber":  identity_input,
-            "billingAddress":  billing,
-            "shippingAddress": billing,
-        },
-    }
-
-    try:
-        data = await iyzico_post("/v2/subscription/checkoutform/initialize", payload)
-
-        if data.get("status") != "success":
-            logger.error(f"[IYZICO] {data}")
-            await log_event("checkout_failed", user["id"], {"error": data},
-                            request.client.host)
-            raise HTTPException(400, data.get("errorMessage", "Checkout başlatılamadı"))
-
-        if db_pool:
-            async with db_pool.acquire() as conn:
-                await conn.execute("""
-                    INSERT INTO subscription_checkouts
-                        (user_id, conversation_id, iyzico_token, pricing_plan_code,
-                         status, customer_email, customer_name, customer_surname, created_at)
-                    VALUES ($1,$2,$3,$4,'pending',$5,$6,$7,NOW())
-                """, user["id"], conv_id, data.get("token"),
-                     IYZICO_MONTHLY_PLAN_CODE, email, name, surname)
-
-        await log_event("checkout_success", user["id"], {"conv_id": conv_id},
-                        request.client.host)
-
-        return {
-            "status":             "success",
-            "checkoutFormContent": data.get("checkoutFormContent"),
-            "token":              data.get("token"),
-            "conversationId":     conv_id,
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"[CHECKOUT] {e}")
-        raise HTTPException(500, "Checkout başlatılamadı")
-
-
-@app.post("/payment/callback")
-async def payment_callback(request: Request):
-    """iyzico ödeme sonucu callback"""
-    ensure_config()
-
-    form  = await request.form()
-    token = form.get("token")
-
-    if not token:
-        return HTMLResponse("<h1>Hata: Token eksik</h1>", status_code=400)
-
-    try:
-        data = await iyzico_get(f"/v2/subscription/checkoutform/{token}")
-
-        if data.get("status") != "success":
-            logger.error(f"[CALLBACK] {data}")
-            return HTMLResponse(f"""
-                <html><head><meta http-equiv="refresh" content="3;url={APP_PUBLIC_URL}"></head>
-                <body><h1>❌ Ödeme Başarısız</h1><p>Lütfen tekrar deneyin.</p></body></html>
-            """)
-
-        if not db_pool:
-            raise Exception("DB yok")
-
-        async with db_pool.acquire() as conn:
-            checkout = await conn.fetchrow("""
-                SELECT user_id, conversation_id, pricing_plan_code
-                FROM subscription_checkouts WHERE iyzico_token = $1
-            """, token)
-
-            if not checkout:
-                return HTMLResponse("<h1>Hata: Checkout bulunamadı</h1>", status_code=404)
-
-            user_id  = checkout["user_id"]
-            plan_code = checkout["pricing_plan_code"]
-
-            # Checkout'u tamamlandı yap
-            await conn.execute("""
-                UPDATE subscription_checkouts
-                SET status='completed', iyzico_response=$2, completed_at=NOW()
-                WHERE iyzico_token=$1
-            """, token, json.dumps(data))
-
-            # Aboneliği aktifleştir
-            sub_ref = data.get("subscriptionReferenceCode", "")
-            await activate_subscription(user_id, sub_ref, plan_code)
-
-            # payment_history'e kaydet — mevcut DB şemasına uygun
-            await conn.execute("""
-                INSERT INTO payment_history
-                    (user_id, plan_id, amount, currency, status,
-                     iyzico_payment_id, iyzico_conversation_id,
-                     iyzico_raw_result, paid_at, created_at)
-                VALUES ($1, 'premium', $2, 'TRY', 'completed',
-                        $3, $4, $5, NOW(), NOW())
-            """, user_id,
-                 float(data.get("paidPrice", 64)),
-                 data.get("paymentId", ""),
-                 data.get("conversationId", ""),
-                 json.dumps(data))
-
-            await log_event("payment_success", user_id, {"token": token},
-                            request.client.host)
-
-        return HTMLResponse(f"""
-            <html><head><meta http-equiv="refresh" content="2;url={APP_PUBLIC_URL}?premium=1"></head>
-            <body><h1>✅ Ödeme Başarılı!</h1>
-            <p>Premium üyeliğiniz aktif edildi. Yönlendiriliyorsunuz...</p></body></html>
-        """)
-
-    except Exception as e:
-        logger.error(f"[CALLBACK ERROR] {e}")
-        return HTMLResponse("<h1>Ödeme işleme hatası</h1>", status_code=500)
-
-
-@app.get("/payment/subscription/status")
-async def subscription_status(authorization: Optional[str] = Header(None)):
-    if not authorization:
-        raise HTTPException(401, "Yetkisiz")
-    token = authorization.split(" ")[1] if " " in authorization else authorization
-    user  = await get_user(token)
-    if not user:
-        raise HTTPException(401, "Geçersiz token")
-    return {
-        "user_id":             user["id"],
-        "email":               user["email"],
-        "is_premium":          user.get("is_premium", False),
-        "subscription_active": user.get("subscription_active", False),
-    }
-
-
-@app.post("/payment/subscription/cancel")
-async def subscription_cancel(
-    request: Request,
-    body: CancelBody = Body(...),
-    authorization: Optional[str] = Header(None),
-):
-    admin_cancel   = body.admin
-    direct_user_id = body.user_id
-
-    if admin_cancel and direct_user_id:
-        target_user_id = direct_user_id
-    else:
-        token = (body.token
-                 or (authorization.split(" ")[1] if authorization and " " in authorization else None))
-        if not token:
-            raise HTTPException(401, "Login required")
-        user = await get_user(token)
-        if not user:
-            raise HTTPException(401, "Geçersiz token")
-        target_user_id = user["id"]
-
-    immediate = body.immediate
-
-    try:
-        if not db_pool:
-            raise HTTPException(500, "DB bağlantısı yok")
-
-        async with db_pool.acquire() as conn:
-            row = await conn.fetchrow("""
-                SELECT iyzico_subscription_ref, current_period_end
-                FROM user_subscriptions
-                WHERE user_id = $1 AND status IN ('active','trialing')
-                LIMIT 1
-            """, target_user_id)
-
-            if not row:
-                raise HTTPException(404, "Aktif abonelik bulunamadı")
-
-            sub_ref    = row["iyzico_subscription_ref"]
-            period_end = row["current_period_end"]
-
-            # iyzico'ya iptal bildir
-            iyzico_ok = False
-            if sub_ref and IYZICO_API_KEY:
-                try:
-                    result = await iyzico_post(
-                        f"/v2/subscription/cancel/{sub_ref}",
-                        {"locale": "tr", "conversationId": f"cancel-{target_user_id}-{int(time.time())}"}
-                    )
-                    iyzico_ok = result.get("status") == "success"
-                    logger.info(f"[CANCEL] iyzico: {result}")
-                except Exception as e:
-                    logger.error(f"[CANCEL] iyzico hatası: {e}")
-
-            if immediate:
-                await conn.execute("""
-                    UPDATE user_subscriptions
-                    SET status='cancelled', cancelled_at=NOW(),
-                        cancel_at_period_end=FALSE, updated_at=NOW()
-                    WHERE user_id=$1 AND status IN ('active','trialing')
-                """, target_user_id)
-                await conn.execute("""
-                    UPDATE users SET is_premium=FALSE, subscription_active=FALSE
-                    WHERE id=$1
-                """, target_user_id)
-                message = "Abonelik iptal edildi."
-            else:
-                await conn.execute("""
-                    UPDATE user_subscriptions
-                    SET cancel_at_period_end=TRUE, updated_at=NOW()
-                    WHERE user_id=$1 AND status IN ('active','trialing')
-                """, target_user_id)
-                period_str = period_end.strftime("%d.%m.%Y") if period_end else ""
-                message = f"Abonelik {period_str} tarihinde sona erecek."
-
-            await log_event("subscription_cancel", target_user_id,
-                           {"immediate": immediate, "iyzico_ok": iyzico_ok},
-                           request.client.host)
-
-            # İptal emaili gönder
-            user_row = await conn.fetchrow(
-                "SELECT email, name FROM users WHERE id = $1", target_user_id
-            )
-
-        if user_row and SMTP_SERVER and SMTP_USER:
-            try:
-                _send_cancel_email(user_row["email"], user_row["name"] or "Kullanıcı",
-                                   period_end, immediate)
-            except Exception as e:
-                logger.error(f"[CANCEL EMAIL] {e}")
-
-        return {"success": True, "message": message, "immediate": immediate}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"[CANCEL ERROR] {e}")
-        raise HTTPException(500, str(e))
-
-
-def _send_cancel_email(email: str, name: str, period_end, immediate: bool):
-    msg = MIMEMultipart("alternative")
-    msg["From"]    = f"ONE-BUNE <{SMTP_FROM}>"
-    msg["To"]      = email
-    msg["Subject"] = "ONE-BUNE Premium abonelik iptali"
-
-    first_name  = name.split()[0] if name else "Kullanici"
-    period_str  = period_end.strftime("%d.%m.%Y") if period_end else ""
+def _build_cancel_email(first_name: str, period_end, immediate: bool) -> tuple[str, str]:
+    """İptal email içeriği döner: (html, plain)"""
+    period_str = period_end.strftime("%d.%m.%Y") if period_end else ""
 
     if immediate:
         detail = "Premium aboneliginiz aninda iptal edildi."
@@ -874,14 +453,513 @@ Tekrar abone olmak icin: https://one-bune.com
 
 ONE-BUNE AI / SKYMERGE TECHNOLOGY
 """
-    msg.attach(MIMEText(plain, "plain", "utf-8"))
-    msg.attach(MIMEText(html,  "html",  "utf-8"))
+    return html, plain
 
-    with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as s:
-        s.ehlo(); s.starttls(); s.ehlo()
-        s.login(SMTP_USER, SMTP_PASS)
-        s.send_message(msg)
-    logger.info(f"[CANCEL EMAIL] Gonderildi: {email}")
+
+async def activate_subscription(user_id: int, subscription_ref: str, plan_code: str):
+    """Kullanıcıyı premium yap — DB şeması ile uyumlu"""
+    if not db_pool:
+        return
+    try:
+        async with db_pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE users
+                SET is_premium = TRUE, subscription_active = TRUE
+                WHERE id = $1
+            """, user_id)
+
+            await conn.execute("""
+                INSERT INTO user_subscriptions
+                    (user_id, plan_id, status, billing_period,
+                     current_period_start, current_period_end,
+                     iyzico_subscription_ref, created_at, updated_at)
+                VALUES ($1, 'premium', 'active', 'monthly',
+                        NOW(), NOW() + INTERVAL '30 days',
+                        $2, NOW(), NOW())
+                ON CONFLICT (user_id) WHERE status IN ('active','trialing')
+                DO UPDATE SET
+                    plan_id               = 'premium',
+                    status                = 'active',
+                    iyzico_subscription_ref = $2,
+                    current_period_start  = NOW(),
+                    current_period_end    = NOW() + INTERVAL '30 days',
+                    updated_at            = NOW()
+            """, user_id, subscription_ref)
+
+            row = await conn.fetchrow(
+                "SELECT email, name FROM users WHERE id = $1", user_id
+            )
+
+        logger.info(f"[SUBSCRIPTION] User {user_id} aktifleştirildi")
+
+        # Async email — event loop bloklanmaz
+        if row and SMTP_SERVER and SMTP_USER:
+            first_name = (row["name"] or "Kullanici").split()[0]
+            html, plain = _build_welcome_email(first_name)
+            asyncio.create_task(
+                _send_email_async(row["email"], "Premium üyeliğiniz aktif edildi", html, plain)
+            )
+
+    except Exception as e:
+        logger.error(f"[SUBSCRIPTION ERROR] {e}")
+
+
+# ═══════════════════════════════════════════════════════════════
+# ENDPOINTS
+# ═══════════════════════════════════════════════════════════════
+
+from pydantic import BaseModel, Field, field_validator
+import re as _re
+
+class CheckoutBody(BaseModel):
+    token:          Optional[str] = None
+    gsmNumber:      Optional[str] = Field(None, max_length=15)
+    identityNumber: Optional[str] = Field(None, max_length=11)
+    address:        Optional[str] = Field(None, max_length=500)
+    city:           Optional[str] = Field(None, max_length=100)
+    zipCode:        Optional[str] = Field(None, max_length=10)
+    email:          Optional[str] = Field(None, max_length=255)
+    name:           Optional[str] = Field(None, max_length=100)
+    surname:        Optional[str] = Field(None, max_length=100)
+
+    @field_validator("gsmNumber")
+    @classmethod
+    def validate_phone(cls, v):
+        if v:
+            digits = _re.sub(r'[\s\-\+]', '', v)
+            if not digits.isdigit() or len(digits) < 10:
+                raise ValueError("Geçersiz telefon numarası")
+        return v
+
+    @field_validator("identityNumber")
+    @classmethod
+    def validate_identity(cls, v):
+        if v and (not v.isdigit() or len(v) != 11):
+            raise ValueError("TC Kimlik No 11 haneli rakam olmalı")
+        return v
+
+
+class CancelBody(BaseModel):
+    token:     Optional[str] = None
+    immediate: bool = False
+    admin:     bool = False
+    user_id:   Optional[int] = None
+
+
+@app.get("/payment/health")
+async def health():
+    return {
+        "status":           "healthy",
+        "service":          "payment-service",
+        "version":          "2.2.0",
+        "iyzico_base_url":  IYZICO_BASE_URL,
+        "has_api_key":      bool(IYZICO_API_KEY),
+        "has_plan_code":    bool(IYZICO_MONTHLY_PLAN_CODE),
+        "database":         "ok" if db_pool else "error",
+    }
+
+
+@app.post("/payment/checkout")
+async def payment_checkout(
+    request: Request,
+    body: CheckoutBody = Body(...),
+    authorization: Optional[str] = Header(None),
+):
+    """iyzico checkout formu başlat"""
+    ensure_config()
+
+    token = (body.token
+             or (authorization.split(" ")[1] if authorization and " " in authorization else None))
+    if not token:
+        raise HTTPException(401, "Login required")
+
+    user = await get_user(token)
+    if not user:
+        await log_event("checkout_failed", data={"reason": "invalid_token"},
+                        ip=request.client.host)
+        raise HTTPException(401, "Geçersiz token")
+
+    if user.get("subscription_active"):
+        raise HTTPException(400, "Zaten abone")
+
+    email    = body.email    or user.get("email") or "user@one-bune.com"
+    fullname = user.get("name", "One Bune User")
+    parts    = fullname.split(" ", 1)
+    name     = body.name    or parts[0]
+    surname  = body.surname or (parts[1] if len(parts) > 1 else "User")
+
+    phone_input    = (body.gsmNumber      or "").strip()
+    city_input     = (body.city           or "").strip()
+    address_input  = (body.address        or "").strip()
+    zip_input      = (body.zipCode        or "").strip()
+    identity_input = (body.identityNumber or "").strip()
+
+    gsm = None
+    if phone_input:
+        digits = phone_input.replace("+","").replace(" ","").replace("-","")
+        if digits.startswith("90") and len(digits) == 12:
+            gsm = "+" + digits
+        elif digits.startswith("0") and len(digits) == 11:
+            gsm = "+9" + digits
+        elif len(digits) == 10:
+            gsm = "+90" + digits
+        else:
+            gsm = "+" + digits
+
+    if db_pool:
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT phone, city, address, zip_code, identity_no
+                FROM users WHERE id = $1
+            """, user["id"])
+            if row:
+                gsm            = gsm            or row["phone"]       or "+905300000000"
+                city_input     = city_input     or row["city"]        or "Istanbul"
+                address_input  = address_input  or row["address"]     or "Türkiye"
+                zip_input      = zip_input      or row["zip_code"]    or "34000"
+                identity_input = identity_input or row["identity_no"] or "11111111111"
+
+            await conn.execute("""
+                UPDATE users SET
+                    phone       = COALESCE(NULLIF($1,''), phone),
+                    city        = COALESCE(NULLIF($2,''), city),
+                    address     = COALESCE(NULLIF($3,''), address),
+                    zip_code    = COALESCE(NULLIF($4,''), zip_code),
+                    identity_no = COALESCE(NULLIF($5,''), identity_no)
+                WHERE id = $6
+            """, gsm, city_input, address_input, zip_input, identity_input, user["id"])
+    else:
+        gsm            = gsm            or "+905300000000"
+        city_input     = city_input     or "Istanbul"
+        address_input  = address_input  or "Türkiye"
+        zip_input      = zip_input      or "34000"
+        identity_input = identity_input or "11111111111"
+
+    billing = {
+        "contactName": f"{name} {surname}",
+        "address":     address_input,
+        "zipCode":     zip_input,
+        "city":        city_input,
+        "country":     "Türkiye",
+    }
+
+    conv_id = f"onebune-{user['id']}-{int(time.time())}"
+
+    payload = {
+        "locale":                   "tr",
+        "conversationId":           conv_id,
+        "callbackUrl":              PAYMENT_CALLBACK_URL,
+        "pricingPlanReferenceCode": IYZICO_MONTHLY_PLAN_CODE,
+        "subscriptionInitialStatus":"ACTIVE",
+        "customer": {
+            "name":            name,
+            "surname":         surname,
+            "email":           email,
+            "gsmNumber":       gsm,
+            "identityNumber":  identity_input,
+            "billingAddress":  billing,
+            "shippingAddress": billing,
+        },
+    }
+
+    try:
+        data = await iyzico_post("/v2/subscription/checkoutform/initialize", payload)
+
+        if data.get("status") != "success":
+            logger.error(f"[IYZICO] {data}")
+            await log_event("checkout_failed", user["id"], {"error": data},
+                            request.client.host)
+            raise HTTPException(400, data.get("errorMessage", "Checkout başlatılamadı"))
+
+        if db_pool:
+            async with db_pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO subscription_checkouts
+                        (user_id, conversation_id, iyzico_token, pricing_plan_code,
+                         status, customer_email, customer_name, customer_surname, created_at)
+                    VALUES ($1,$2,$3,$4,'pending',$5,$6,$7,NOW())
+                """, user["id"], conv_id, data.get("token"),
+                     IYZICO_MONTHLY_PLAN_CODE, email, name, surname)
+
+        await log_event("checkout_success", user["id"], {"conv_id": conv_id},
+                        request.client.host)
+
+        return {
+            "status":             "success",
+            "checkoutFormContent": data.get("checkoutFormContent"),
+            "token":              data.get("token"),
+            "conversationId":     conv_id,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[CHECKOUT] {e}")
+        raise HTTPException(500, "Checkout başlatılamadı")
+
+
+@app.post("/payment/callback")
+async def payment_callback(request: Request):
+    """
+    iyzico ödeme sonucu callback — v2.2
+    ✅ Idempotent: aynı token ikinci kez gelirse tekrar işlenmez
+    ✅ DB yoksa kullanıcıya bilgi verilir, sessiz fail olmaz
+    ✅ paidPrice iyzico'dan alınır, hardcoded değer yok
+    """
+    ensure_config()
+
+    form  = await request.form()
+    token = form.get("token")
+
+    if not token:
+        return HTMLResponse("<h1>Hata: Token eksik</h1>", status_code=400)
+
+    try:
+        # ── 1. iyzico'dan sonucu al ──────────────────────────────
+        data = await iyzico_get(f"/v2/subscription/checkoutform/{token}")
+
+        if data.get("status") != "success":
+            logger.error(f"[CALLBACK] iyzico ödeme başarısız: {data}")
+            await log_event("payment_failed", data={"token": token, "iyzico_response": data},
+                            ip=request.client.host)
+            return HTMLResponse(f"""
+                <html>
+                <head><meta http-equiv="refresh" content="3;url={APP_PUBLIC_URL}?payment=failed"></head>
+                <body style="font-family:sans-serif;text-align:center;padding:40px;">
+                <h1>❌ Ödeme Başarısız</h1>
+                <p>Lütfen tekrar deneyin.</p>
+                </body></html>
+            """)
+
+        # ── 2. DB kontrol ────────────────────────────────────────
+        if not db_pool:
+            logger.critical(
+                f"[CALLBACK] KRITIK: DB POOL YOK — "
+                f"token={token} subscriptionRef={data.get('subscriptionReferenceCode')} "
+                f"paymentId={data.get('paymentId')}"
+            )
+            # Ödeme iyzico'da başarılı ama DB'ye yazılamıyor
+            # Production'da buraya Slack/PagerDuty alert ekle
+            return HTMLResponse("""
+                <html>
+                <body style="font-family:sans-serif;text-align:center;padding:40px;">
+                <h1>⚠️ Geçici Sistem Hatası</h1>
+                <p>Ödemeniz alındı ancak aktivasyon gecikmeli olabilir.<br>
+                Lütfen destek ile iletişime geçin: destek@one-bune.com</p>
+                </body></html>
+            """, status_code=503)
+
+        async with db_pool.acquire() as conn:
+            # ── 3. Checkout kaydını bul ──────────────────────────
+            checkout = await conn.fetchrow("""
+                SELECT user_id, conversation_id, pricing_plan_code, status
+                FROM subscription_checkouts WHERE iyzico_token = $1
+            """, token)
+
+            if not checkout:
+                logger.error(f"[CALLBACK] Checkout bulunamadı: token={token}")
+                return HTMLResponse(
+                    "<h1>Hata: Ödeme kaydı bulunamadı. Destek ile iletişime geçin.</h1>",
+                    status_code=404
+                )
+
+            # ── 4. IDEMPOTENCY — zaten tamamlandıysa tekrar işleme ──
+            if checkout["status"] == "completed":
+                logger.warning(f"[CALLBACK] Duplicate callback yoksayıldı: token={token}")
+                return HTMLResponse(f"""
+                    <html>
+                    <head><meta http-equiv="refresh" content="2;url={APP_PUBLIC_URL}?premium=1"></head>
+                    <body style="font-family:sans-serif;text-align:center;padding:40px;">
+                    <h1>✅ Premium Zaten Aktif</h1>
+                    <p>Yönlendiriliyorsunuz...</p>
+                    </body></html>
+                """)
+
+            user_id   = checkout["user_id"]
+            plan_code = checkout["pricing_plan_code"]
+
+            # ── 5. Checkout'u tamamlandı yap ────────────────────
+            await conn.execute("""
+                UPDATE subscription_checkouts
+                SET status='completed', iyzico_response=$2, completed_at=NOW()
+                WHERE iyzico_token=$1
+            """, token, json.dumps(data))
+
+            # ── 6. Aboneliği aktifleştir ─────────────────────────
+            sub_ref = data.get("subscriptionReferenceCode", "")
+            await activate_subscription(user_id, sub_ref, plan_code)
+
+            # ── 7. Ödeme geçmişine kaydet — paidPrice iyzico'dan ─
+            paid_price = data.get("paidPrice")
+            if paid_price is None:
+                logger.warning(f"[CALLBACK] paidPrice eksik, data={data}")
+
+            await conn.execute("""
+                INSERT INTO payment_history
+                    (user_id, plan_id, amount, currency, status,
+                     iyzico_payment_id, iyzico_conversation_id,
+                     iyzico_raw_result, paid_at, created_at)
+                VALUES ($1, 'premium', $2, 'TRY', 'completed',
+                        $3, $4, $5, NOW(), NOW())
+            """, user_id,
+                 float(paid_price) if paid_price is not None else 0.0,
+                 data.get("paymentId", ""),
+                 data.get("conversationId", ""),
+                 json.dumps(data))
+
+            await log_event("payment_success", user_id, {"token": token}, request.client.host)
+
+        return HTMLResponse(f"""
+            <html>
+            <head><meta http-equiv="refresh" content="2;url={APP_PUBLIC_URL}?premium=1"></head>
+            <body style="font-family:sans-serif;text-align:center;padding:40px;">
+            <h1>✅ Ödeme Başarılı!</h1>
+            <p>Premium üyeliğiniz aktif edildi. Yönlendiriliyorsunuz...</p>
+            </body></html>
+        """)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[CALLBACK ERROR] {e}", exc_info=True)
+        return HTMLResponse("""
+            <html>
+            <body style="font-family:sans-serif;text-align:center;padding:40px;">
+            <h1>⚠️ İşlem Hatası</h1>
+            <p>Ödemeniz alınmış olabilir. Lütfen destek ile iletişime geçin:<br>
+            <strong>destek@one-bune.com</strong></p>
+            </body></html>
+        """, status_code=500)
+
+
+@app.get("/payment/subscription/status")
+async def subscription_status(authorization: Optional[str] = Header(None)):
+    if not authorization:
+        raise HTTPException(401, "Yetkisiz")
+    token = authorization.split(" ")[1] if " " in authorization else authorization
+    user  = await get_user(token)
+    if not user:
+        raise HTTPException(401, "Geçersiz token")
+    return {
+        "user_id":             user["id"],
+        "email":               user["email"],
+        "is_premium":          user.get("is_premium", False),
+        "subscription_active": user.get("subscription_active", False),
+    }
+
+
+@app.post("/payment/subscription/cancel")
+async def subscription_cancel(
+    request: Request,
+    body: CancelBody = Body(...),
+    authorization: Optional[str] = Header(None),
+):
+    admin_cancel   = body.admin
+    direct_user_id = body.user_id
+
+    if admin_cancel and direct_user_id:
+        target_user_id = direct_user_id
+    else:
+        token = (body.token
+                 or (authorization.split(" ")[1] if authorization and " " in authorization else None))
+        if not token:
+            raise HTTPException(401, "Login required")
+        user = await get_user(token)
+        if not user:
+            raise HTTPException(401, "Geçersiz token")
+        target_user_id = user["id"]
+
+    immediate = body.immediate
+
+    try:
+        if not db_pool:
+            raise HTTPException(500, "DB bağlantısı yok")
+
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT iyzico_subscription_ref, current_period_end
+                FROM user_subscriptions
+                WHERE user_id = $1 AND status IN ('active','trialing')
+                LIMIT 1
+            """, target_user_id)
+
+            if not row:
+                raise HTTPException(404, "Aktif abonelik bulunamadı")
+
+            sub_ref    = row["iyzico_subscription_ref"]
+            period_end = row["current_period_end"]
+
+            # ── iyzico iptal — fail ederse DB güncellenmez ───────
+            iyzico_ok    = False
+            iyzico_error = None
+
+            if sub_ref and IYZICO_API_KEY:
+                try:
+                    result = await iyzico_post(
+                        f"/v2/subscription/cancel/{sub_ref}",
+                        {"locale": "tr", "conversationId": f"cancel-{target_user_id}-{int(time.time())}"}
+                    )
+                    iyzico_ok = result.get("status") == "success"
+                    if not iyzico_ok:
+                        iyzico_error = result.get("errorMessage", "Bilinmeyen hata")
+                    logger.info(f"[CANCEL] iyzico: {result}")
+                except Exception as e:
+                    iyzico_error = str(e)
+                    logger.error(f"[CANCEL] iyzico hatası: {e}")
+
+                # iyzico başarısız → DB'ye dokunma, kullanıcıya hata ver
+                if not iyzico_ok:
+                    raise HTTPException(
+                        502,
+                        f"Abonelik iyzico tarafında iptal edilemedi: {iyzico_error}. "
+                        f"Lütfen destek ile iletişime geçin."
+                    )
+
+            # ── iyzico OK veya sub_ref yoksa DB güncelle ─────────
+            if immediate:
+                await conn.execute("""
+                    UPDATE user_subscriptions
+                    SET status='cancelled', cancelled_at=NOW(),
+                        cancel_at_period_end=FALSE, updated_at=NOW()
+                    WHERE user_id=$1 AND status IN ('active','trialing')
+                """, target_user_id)
+                await conn.execute("""
+                    UPDATE users SET is_premium=FALSE, subscription_active=FALSE
+                    WHERE id=$1
+                """, target_user_id)
+                message = "Abonelik iptal edildi."
+            else:
+                await conn.execute("""
+                    UPDATE user_subscriptions
+                    SET cancel_at_period_end=TRUE, updated_at=NOW()
+                    WHERE user_id=$1 AND status IN ('active','trialing')
+                """, target_user_id)
+                period_str = period_end.strftime("%d.%m.%Y") if period_end else ""
+                message = f"Abonelik {period_str} tarihinde sona erecek."
+
+            await log_event("subscription_cancel", target_user_id,
+                           {"immediate": immediate, "iyzico_ok": iyzico_ok},
+                           request.client.host)
+
+            user_row = await conn.fetchrow(
+                "SELECT email, name FROM users WHERE id = $1", target_user_id
+            )
+
+        # Async email — event loop bloklanmaz
+        if user_row and SMTP_SERVER and SMTP_USER:
+            first_name = (user_row["name"] or "Kullanici").split()[0]
+            html, plain = _build_cancel_email(first_name, period_end, immediate)
+            asyncio.create_task(
+                _send_email_async(user_row["email"], "ONE-BUNE Premium abonelik iptali", html, plain)
+            )
+
+        return {"success": True, "message": message, "immediate": immediate}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[CANCEL ERROR] {e}")
+        raise HTTPException(500, str(e))
 
 
 if __name__ == "__main__":
