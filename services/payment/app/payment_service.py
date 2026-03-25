@@ -786,13 +786,26 @@ async def payment_callback(request: Request):
             """, token, json.dumps(data))
 
             # ── 6. Aboneliği aktifleştir ─────────────────────────
-            sub_ref = data.get("subscriptionReferenceCode", "")
+            # iyzico subscription checkout'ta referenceCode data.data içinde gelir
+            inner = data.get("data") or {}
+            sub_ref = (
+                data.get("subscriptionReferenceCode")
+                or inner.get("referenceCode")
+                or inner.get("subscriptionReferenceCode")
+                or ""
+            )
             await activate_subscription(user_id, sub_ref, plan_code)
 
             # ── 7. Ödeme geçmişine kaydet — paidPrice iyzico'dan ─
-            paid_price = data.get("paidPrice")
+            # iyzico subscription checkout'ta paidPrice üst seviyede olmayabilir
+            inner = data.get("data") or {}
+            paid_price = (
+                data.get("paidPrice")
+                or inner.get("paidPrice")
+                or inner.get("price")
+            )
             if paid_price is None:
-                logger.warning(f"[CALLBACK] paidPrice eksik, data={data}")
+                logger.warning(f"[CALLBACK] paidPrice bulunamadı, 0.0 kaydediliyor")
 
             await conn.execute("""
                 INSERT INTO payment_history
