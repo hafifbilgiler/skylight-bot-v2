@@ -209,15 +209,93 @@ def scan_file_for_malware(filename: str, content: bytes) -> Tuple[bool, str]:
 
 def extract_text_from_file(filename: str, content: bytes) -> Tuple[str, str]:
     ext = os.path.splitext(filename.lower())[1]
-    if ext in (".txt", ".md", ".py", ".js", ".yaml", ".json", ".csv",
-               ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".cs",
-               ".php", ".rb", ".sql", ".sh", ".toml", ".ini", ".xml", ".html", ".css"):
+
+    # ── Düz metin dosyaları ────────────────────────────────────
+    TEXT_EXTS = {
+        ".txt", ".md", ".py", ".js", ".yaml", ".yml", ".json", ".csv", ".tsv",
+        ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".cs", ".php", ".rb",
+        ".sql", ".sh", ".bash", ".toml", ".ini", ".cfg", ".conf", ".env",
+        ".xml", ".html", ".css", ".tf", ".hcl", ".log",
+    }
+    if ext in TEXT_EXTS:
         try:
             text = content.decode("utf-8", errors="replace")
-            return text[:MAX_EXTRACTED_CHARS], ext[1:]
+            return text[:MAX_EXTRACTED_CHARS], ext[1:].replace(".", "")
         except Exception as e:
             return f"[Text read error: {str(e)[:100]}]", "text_error"
-    return f"[Unsupported file type: {ext}]", "unsupported"
+
+    # ── PDF ────────────────────────────────────────────────────
+    if ext == ".pdf":
+        try:
+            import io
+            try:
+                import pypdf
+                reader = pypdf.PdfReader(io.BytesIO(content))
+                pages  = []
+                for i, page in enumerate(reader.pages):
+                    if i >= 50:  # max 50 sayfa
+                        pages.append(f"\n... (toplam {len(reader.pages)} sayfa, ilk 50 gösterildi)")
+                        break
+                    txt = page.extract_text() or ""
+                    if txt.strip():
+                        pages.append(f"[Sayfa {i+1}]\n{txt}")
+                text = "\n\n".join(pages)
+                if not text.strip():
+                    return "[PDF boş veya taranmış görsel — metin çıkarılamadı]", "pdf_empty"
+                return text[:MAX_EXTRACTED_CHARS], "pdf"
+            except ImportError:
+                pass
+            # pypdf yoksa pdfplumber dene
+            try:
+                import pdfplumber
+                with pdfplumber.open(io.BytesIO(content)) as pdf:
+                    pages = []
+                    for i, page in enumerate(pdf.pages):
+                        if i >= 50:
+                            break
+                        txt = page.extract_text() or ""
+                        if txt.strip():
+                            pages.append(f"[Sayfa {i+1}]\n{txt}")
+                text = "\n\n".join(pages)
+                return text[:MAX_EXTRACTED_CHARS] if text.strip() else "[PDF metin içermiyor]", "pdf"
+            except ImportError:
+                return "[PDF desteği için pypdf kütüphanesi gerekli]", "pdf_error"
+        except Exception as e:
+            return f"[PDF okuma hatası: {str(e)[:200]}]", "pdf_error"
+
+    # ── DOCX ──────────────────────────────────────────────────
+    if ext in (".docx", ".doc"):
+        try:
+            import io
+            from docx import Document
+            doc  = Document(io.BytesIO(content))
+            parts = []
+            # Paragraflar
+            for para in doc.paragraphs:
+                if para.text.strip():
+                    style = para.style.name if para.style else ""
+                    if "Heading" in style:
+                        parts.append(f"\n## {para.text}")
+                    else:
+                        parts.append(para.text)
+            # Tablolar
+            for i, table in enumerate(doc.tables):
+                parts.append(f"\n[Tablo {i+1}]")
+                for row in table.rows:
+                    cells = [c.text.strip() for c in row.cells if c.text.strip()]
+                    if cells:
+                        parts.append(" | ".join(cells))
+            text = "\n".join(parts)
+            if not text.strip():
+                return "[DOCX boş]", "docx_empty"
+            return text[:MAX_EXTRACTED_CHARS], "docx"
+        except ImportError:
+            return "[DOCX desteği için python-docx kütüphanesi gerekli]", "docx_error"
+        except Exception as e:
+            return f"[DOCX okuma hatası: {str(e)[:200]}]", "docx_error"
+
+    # ── Desteklenmeyen ────────────────────────────────────────
+    return f"[Desteklenmeyen dosya türü: {ext}]", "unsupported"
 
 def _store_file_text(file_id: str, filename: str, text: str, user_id=None):
     import time as _time
