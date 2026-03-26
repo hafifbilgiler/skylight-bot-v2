@@ -5,6 +5,9 @@ metadata:
   namespace: skylight-bot-v2
 data:
   SEARXNG_URL: "http://searxng:8080"
+  DEEPINFRA_BASE_URL: "https://api.deepinfra.com/v1/openai"
+  SYNTHESIS_MODEL: "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"
+  REDIS_URL: "redis://skylight-redis:6379/2"
 
 ---
 apiVersion: apps/v1
@@ -14,7 +17,7 @@ metadata:
   namespace: skylight-bot-v2
   labels:
     app: skylight-smart-tools
-    version: "2.0.0"
+    version: "2.2.0"
 spec:
   replicas: 2
   selector:
@@ -24,22 +27,50 @@ spec:
     metadata:
       labels:
         app: skylight-smart-tools
-        version: "2.0.0"
+        version: "2.2.0"
     spec:
       containers:
       - name: smart-tools
-        image: docker.io/hafifbilgiler/smarttols:2.2 #1.6,1.8 2.1
+        image: docker.io/hafifbilgiler/smarttols:2.2
         imagePullPolicy: Always
         ports:
         - containerPort: 8081
           name: http
           protocol: TCP
         env:
+        # ── ConfigMap ──────────────────────────────────────
         - name: SEARXNG_URL
           valueFrom:
             configMapKeyRef:
               name: smart-tools-config
               key: SEARXNG_URL
+        - name: DEEPINFRA_BASE_URL
+          valueFrom:
+            configMapKeyRef:
+              name: smart-tools-config
+              key: DEEPINFRA_BASE_URL
+        - name: SYNTHESIS_MODEL
+          valueFrom:
+            configMapKeyRef:
+              name: smart-tools-config
+              key: SYNTHESIS_MODEL
+        - name: REDIS_URL
+          valueFrom:
+            configMapKeyRef:
+              name: smart-tools-config
+              key: REDIS_URL
+        # ── Secret ─────────────────────────────────────────
+        - name: DEEPINFRA_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: smart-tools-secret
+              key: DEEPINFRA_API_KEY
+        - name: BRAVE_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: smart-tools-secret
+              key: BRAVE_API_KEY
+              optional: true
         resources:
           requests:
             memory: "256Mi"
@@ -84,7 +115,6 @@ spec:
   sessionAffinity: None
 
 ---
-# Optional: HorizontalPodAutoscaler
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
