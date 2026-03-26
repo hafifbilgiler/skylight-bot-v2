@@ -1,6 +1,8 @@
 # ═══════════════════════════════════════════════════════════════
-# SEARXNG — Production Kubernetes Manifests
-# Namespace: skylight-bot-v2
+# SEARXNG — Fixed (no root, no PVC permission issue)
+# ═══════════════════════════════════════════════════════════════
+
+---
 apiVersion: v1
 kind: Secret
 metadata:
@@ -8,11 +10,9 @@ metadata:
   namespace: skylight-bot-v2
   labels:
     app: searxng
-    component: search
 type: Opaque
 stringData:
-  # BU DEĞERİ MUTLAKA DEĞİŞTİR
-  secret_key: "b597efad30dc58c0ade6a43a5aac2f1a36ead2628638b99cb3c50ab273c26f29"
+  secret_key: "BURAYA_OPENSSL_RAND_HEX_32_CIKTISI_KOY"
 
 ---
 apiVersion: v1
@@ -22,7 +22,6 @@ metadata:
   namespace: skylight-bot-v2
   labels:
     app: searxng
-    component: search
 data:
   settings.yml: |
     use_default_settings: true
@@ -30,34 +29,26 @@ data:
     general:
       debug: false
       instance_name: "Skylight Search"
-      privacypolicy_url: false
-      contact_url: false
       enable_metrics: false
 
     search:
-      safe_search: 1          # 0=off, 1=moderate, 2=strict
-      autocomplete: ""
+      safe_search: 1
       default_lang: "tr"
       languages:
         - "tr"
         - "en"
-      max_page: 1             # İlk sayfa yeterli
       formats:
         - html
-        - json               # API için json şart
+        - json
 
     server:
-      # Dışarı açılmayacak, sadece internal — bu yüzden limitleri gevşek tutuyoruz
       secret_key: "${SEARXNG_SECRET_KEY}"
       bind_address: "0.0.0.0"
       port: 8080
       base_url: false
-      image_proxy: false      # Bandwidth tasarrufu
-      http_protocol_version: "1.1"
+      image_proxy: false
       method: "GET"
 
-    # Bot koruması — internal kullanımda kapalı
-    # Canlı kullanıcıya açarsan true yap
     botdetection:
       enabled: false
 
@@ -66,12 +57,7 @@ data:
       default_locale: "tr"
       theme_args:
         simple_style: "dark"
-      query_in_title: false
-      infinite_scroll: false
-      results_on_new_tab: false
 
-    # Aktif motorlar — en güvenilir ücretsizler
-    # weight: arama sonuçlarındaki ağırlık
     engines:
       - name: bing
         engine: bing
@@ -103,7 +89,7 @@ data:
         shortcut: g
         weight: 1.2
         categories: general
-        disabled: false        # Google bazen block atar, true yap sorun olursa
+        disabled: false
         timeout: 10.0
 
       - name: startpage
@@ -114,7 +100,6 @@ data:
         disabled: false
         timeout: 8.0
 
-      # Haber için
       - name: bing news
         engine: bing_news
         shortcut: bn
@@ -123,41 +108,17 @@ data:
         disabled: false
         timeout: 8.0
 
-      - name: google news
-        engine: google_news
-        shortcut: gn
-        categories: news
-        weight: 1.0
-        disabled: false
-        timeout: 8.0
-
-    # Rate limiting — internal kullanım için kapalı
     limiter:
       enabled: false
 
-    # Redis cache — varsa ekle, yoksa false bırak
-    # Redis kullanıyorsan: redis://skylight-redis:6379/1
-    redis_url: "redis://skylight-redis:6379/1
+    redis_url: "redis://skylight-redis:6379/1"
 
 ---
-# ── 3. PERSISTENTVOLUMECLAIM ──────────────────────────────────
-# SearXNG ayarlarının pod restart'ta kaybolmaması için
-# Her pod restart'ta settings.yml sıfırlanmaz
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: searxng-data
-  namespace: skylight-bot-v2
-  labels:
-    app: searxng
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 1Gi
+# PVC kaldırıldı — ConfigMap volume kullanıyoruz
+# settings.yml her seferinde ConfigMap'ten gelir
+# Pod restart'ta ayarlar kaybolmaz çünkü ConfigMap'te saklı
+
 ---
-# ── 4. DEPLOYMENT ─────────────────────────────────────────────
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -165,50 +126,29 @@ metadata:
   namespace: skylight-bot-v2
   labels:
     app: searxng
-    component: search
-    version: "2024.10"
 spec:
   replicas: 1
   selector:
     matchLabels:
       app: searxng
   strategy:
-    type: Recreate              # RWO PVC için Recreate şart (RollingUpdate olmaz)
+    type: Recreate
   template:
     metadata:
       labels:
         app: searxng
-        component: search
     spec:
-      # Güvenlik — root olmayan kullanıcıyla çalış
+      # ── Düzeltme 1: Tüm pod non-root ──────────────────────
       securityContext:
         runAsNonRoot: true
         runAsUser: 977
         runAsGroup: 977
         fsGroup: 977
 
-      # SearXNG image init: /etc/searxng dizinini hazırla
-      initContainers:
-        - name: init-settings
-          image: busybox:1.35
-          command:
-            - sh
-            - -c
-            - |
-              if [ ! -f /etc/searxng/settings.yml ]; then
-                cp /config/settings.yml /etc/searxng/settings.yml
-                echo "settings.yml kopyalandı"
-              else
-                echo "settings.yml zaten var, atlandı"
-              fi
-              chown -R 977:977 /etc/searxng
-          volumeMounts:
-            - name: searxng-config
-              mountPath: /config
-            - name: searxng-data
-              mountPath: /etc/searxng
-          securityContext:
-            runAsUser: 0       # Init container root olabilir
+      # ── Düzeltme 2: Init container kaldırıldı ─────────────
+      # Root gerektiriyordu, cluster policy izin vermiyor
+      # settings.yml direkt ConfigMap'ten mount ediliyor
+      # initContainers: YOK
 
       containers:
         - name: searxng
@@ -217,24 +157,24 @@ spec:
           ports:
             - containerPort: 8080
               name: http
-              protocol: TCP
 
           env:
-            # Secret'tan al
             - name: SEARXNG_SECRET_KEY
               valueFrom:
                 secretKeyRef:
                   name: searxng-secret
                   key: secret_key
-            # Temel config
             - name: SEARXNG_BASE_URL
               value: "http://searxng.skylight-bot-v2.svc.cluster.local:8080"
             - name: INSTANCE_NAME
               value: "Skylight Search"
 
           volumeMounts:
-            - name: searxng-data
-              mountPath: /etc/searxng
+            # ── Düzeltme 3: settings.yml doğrudan ConfigMap'ten ──
+            - name: searxng-settings
+              mountPath: /etc/searxng/settings.yml
+              subPath: settings.yml
+              readOnly: true
 
           resources:
             requests:
@@ -262,31 +202,21 @@ spec:
             timeoutSeconds: 3
             failureThreshold: 3
 
-          # Güvenlik — container içinde root yetkisi yok
           securityContext:
             allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: false   # SearXNG /tmp yazar
             capabilities:
               drop:
                 - ALL
 
       volumes:
-        - name: searxng-config
+        - name: searxng-settings
           configMap:
             name: searxng-config
-        - name: searxng-data
-          persistentVolumeClaim:
-            claimName: searxng-data
-
-      # Tolerations — node affinity varsa ekle
-      # nodeSelector:
-      #   kubernetes.io/os: linux
+            items:
+              - key: settings.yml
+                path: settings.yml
 
 ---
-# ── 5. SERVICE ────────────────────────────────────────────────
-# ClusterIP — sadece internal, dışarıya kapalı
-# Smart Tools bu adresten erişir: http://searxng:8080
-# veya tam DNS: http://searxng.skylight-bot-v2.svc.cluster.local:8080
 apiVersion: v1
 kind: Service
 metadata:
@@ -294,7 +224,6 @@ metadata:
   namespace: skylight-bot-v2
   labels:
     app: searxng
-    component: search
 spec:
   type: ClusterIP
   selector:
@@ -304,35 +233,26 @@ spec:
       targetPort: 8080
       protocol: TCP
       name: http
-  sessionAffinity: None
 
 ---
-# ── 6. SMART TOOLS CONFIGMAP GÜNCELLEMESİ ────────────────────
-# Mevcut smart-tools-config'e SEARXNG_URL'i doğru ekle
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: smart-tools-config
   namespace: skylight-bot-v2
 data:
-  # Aynı namespace → kısa DNS yeterli
   SEARXNG_URL: "http://searxng:8080"
   DEEPINFRA_BASE_URL: "https://api.deepinfra.com/v1/openai"
   SYNTHESIS_MODEL: "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"
-  JINA_BASE_URL: "https://r.jina.ai"
-  # API key'ler Secret'tan gelecek — buraya yazma
+  REDIS_URL: "redis://skylight-redis:6379/2"
 
 ---
-# ── 7. SMART TOOLS SECRET ─────────────────────────────────────
-# DEEPINFRA_API_KEY buraya — ConfigMap'e yazma, şifreli olsun
 apiVersion: v1
 kind: Secret
 metadata:
   name: smart-tools-secret
   namespace: skylight-bot-v2
-  labels:
-    app: skylight-smart-tools
 type: Opaque
 stringData:
   DEEPINFRA_API_KEY: "DEEPINFRA_KEY_BURAYA"
-  BRAVE_API_KEY: "" 
+  BRAVE_API_KEY: ""
