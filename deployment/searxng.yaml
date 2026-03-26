@@ -12,7 +12,7 @@ metadata:
     app: searxng
 type: Opaque
 stringData:
-  secret_key: "BURAYA_OPENSSL_RAND_HEX_32_CIKTISI_KOY"
+  secret_key: "b597efad30dc58c0ade6a43a5aac2f1a36ead2628638b99cb3c50ab273c26f29"
 
 ---
 apiVersion: v1
@@ -254,5 +254,5 @@ metadata:
   namespace: skylight-bot-v2
 type: Opaque
 stringData:
-  DEEPINFRA_API_KEY: "DEEPINFRA_KEY_BURAYA"
+  DEEPINFRA_API_KEY: "4hcNLCkZvisyP6wuD2sdY5NPFU2GjBSn"
   BRAVE_API_KEY: ""
