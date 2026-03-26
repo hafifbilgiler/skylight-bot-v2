@@ -187,7 +187,28 @@ _BORSA_KW     = (
 )
 BORSA_URL = os.getenv("BORSA_URL", "http://skylight-borsa:8086")
 
-# ── Canlı veri gerekmez ─────────────────────────────────────────
+# ── Güncel bilgi gerektiren sinyaller — deep_search'e gider ────
+# Bu sinyaller varsa keyword detection yerine deep_search çağrılır
+_DEEP_SEARCH_KW = (
+    # Mevzuat / hukuk / vergi
+    "asgari ücret","asgari sermaye","vergi oranı","vergi dilimi",
+    "sgk prim","kıdem tazminatı","ihbar tazminatı",
+    "limited şirket","anonim şirket","şirket kuruluş",
+    "kdv oranı","stopaj oranı","gelir vergisi",
+    # Nüfus / istatistik
+    "nüfusu kaç","nüfus kaç","kaç kişi yaşıyor",
+    "istatistik","tüik","tüfe","enflasyon","işsizlik oranı",
+    # Teknoloji / ürün güncelliği
+    "son model","en yeni","güncel model","yeni sürüm","son sürüm",
+    "hangi model","kaçıncı nesil",
+    # Genel güncel soru sinyalleri
+    "2024","2025","2026","bu yıl","geçen yıl","son yıl",
+    "güncel","günümüzde","şu an","şu anda","bugün itibariyle",
+    "en son","kaç oldu","kaça yükseldi","kaça düştü",
+    "son açıklanan","yeni açıklanan","resmi rakam",
+)
+
+# ── Canlı veri gerekmez — bu kalıplar statik bilgi ─────────────
 _STATIC_KW    = ("nasıl kullanılır","syntax","örnek ver","açıkla","anlat",
                  "ne demek","tanımı nedir","nasıl yapılır","tutorial")
 _TECH_MODES   = {"code","it_expert"}
@@ -196,13 +217,21 @@ _TECH_MODES   = {"code","it_expert"}
 def _detect_live_type(query: str, mode: str) -> Optional[str]:
     """
     LOCAL detection — 0ms, network yok.
-    Döner: "currency" | "weather" | "crypto" | "time" | "news" | "price" | None
+    Döner: "currency" | "weather" | "crypto" | "time" | "news" |
+           "price_search" | "borsa" | "deep_search" | None
+
+    v2: deep_search sinyalleri eklendi — güncel mevzuat, istatistik,
+        ürün bilgileri artık web'den alınıyor.
     """
     if mode in _TECH_MODES:
         return None
     q = query.lower()
+
+    # Kesinlikle statik — web'e gitme
     if any(k in q for k in _STATIC_KW) and len(q.split()) <= 6:
         return None
+
+    # Önce anlık API sinyalleri — bunlar /unified'a gider
     if any(k in q for k in _CURRENCY_KW): return "currency"
     if any(k in q for k in _WEATHER_KW):  return "weather"
     if any(k in q for k in _CRYPTO_KW):   return "crypto"
@@ -210,6 +239,10 @@ def _detect_live_type(query: str, mode: str) -> Optional[str]:
     if any(k in q for k in _NEWS_KW):     return "news"
     if any(k in q for k in _BORSA_KW):    return "borsa"
     if any(k in q for k in _PRICE_KW):    return "price_search"
+
+    # Güncel bilgi sinyali — deep_search pipeline'a gider
+    if any(k in q for k in _DEEP_SEARCH_KW): return "deep_search"
+
     return None
 
 
@@ -263,6 +296,44 @@ async def get_live_data(query: str, mode: str = "assistant") -> Optional[str]:
 
     print(f"[LIVE DATA] '{query[:40]}' → {live_type}")
 
+    # ── Deep search pipeline — güncel mevzuat, istatistik, ürün bilgisi ──
+    if live_type == "deep_search":
+        try:
+            async with httpx.AsyncClient(timeout=25.0) as client:
+                resp = await client.post(
+                    f"{SMART_TOOLS_URL}/deep_search",
+                    json={
+                        "query":        query,
+                        "num_results":  5,
+                        "fetch_pages":  2,
+                        "synthesize":   True,
+                        "language":     "tr",
+                    },
+                )
+                if resp.status_code != 200:
+                    print(f"[DEEP SEARCH] HTTP {resp.status_code}")
+                    return None
+
+                data = resp.json()
+                if not data.get("success"):
+                    return None
+
+                synthesis = data.get("data", {}).get("synthesis", "")
+                if synthesis:
+                    result = (
+                        f"[Web Araştırma Sonucu]\n"
+                        f"{synthesis}\n"
+                        f"[/Web Araştırma Sonucu]"
+                    )
+                    print(f"[DEEP SEARCH] ✅ {len(synthesis)} chars")
+                    return result
+        except httpx.TimeoutException:
+            print(f"[DEEP SEARCH] Timeout — fallback yok")
+        except Exception as e:
+            print(f"[DEEP SEARCH] Error: {e}")
+        return None
+
+    # ── Anlık API araçları — /unified ────────────────────────────
     try:
         async with httpx.AsyncClient(timeout=8.0) as client:
             resp = await client.post(
