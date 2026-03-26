@@ -390,6 +390,8 @@ class ChatRequest(BaseModel):
     context: Optional[str] = Field(None, max_length=50000)
     image_data: Optional[str] = None
     session_summary: Optional[str] = Field(None, max_length=5000)
+    file_id: Optional[str] = Field(None, max_length=50)       # Yüklenen dosya ID'si
+    file_context: Optional[str] = Field(None, max_length=100000)  # Dosya içeriği (ön-doldurulmuş)
 
 class ImageGenerationRequest(BaseModel):
     prompt: str = Field(..., max_length=2000)
@@ -2297,6 +2299,32 @@ async def chat_endpoint(
         final_context = f"[WEB ARAŞTIRMA — GÜNCEL BİLGİ]\n{web_context}\n[/WEB ARAŞTIRMA]"
     if request_body.context:
         final_context = (final_context + "\n\n" + request_body.context).strip()
+
+    # ── FILE INJECT — dosya içeriğini prompt'a ekle ─────────────
+    file_context_text = None
+    if request_body.file_id:
+        file_entry = _file_store.get(request_body.file_id)
+        if file_entry:
+            import time as _t
+            if _t.time() < file_entry.get("expire_time", 0):
+                file_text = file_entry["text"]
+                filename  = file_entry["filename"]
+                # Dosyayı prompt'a enjekte et
+                file_context_text = (
+                    f"[YÜKLENEN DOSYA: {filename}]\n"
+                    f"{file_text[:12000]}"
+                    f"{'...(dosya kısaltıldı)' if len(file_text) > 12000 else ''}\n"
+                    f"[/YÜKLENEN DOSYA]"
+                )
+                print(f"[FILE INJECT] '{filename}' → {len(file_text)} chars → prompt'a eklendi")
+            else:
+                print(f"[FILE INJECT] file_id={request_body.file_id} süresi dolmuş")
+        else:
+            print(f"[FILE INJECT] file_id={request_body.file_id} bulunamadı (pod restart?)")
+
+    # Final context: web araştırma + dosya + gateway context
+    if file_context_text:
+        final_context = (file_context_text + "\n\n" + final_context).strip() if final_context else file_context_text
 
     chat_data = {
         "prompt":          prompt,

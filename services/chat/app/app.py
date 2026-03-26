@@ -77,7 +77,7 @@ MODE_CONFIGS = {
         "temperature": float(os.getenv("DEEPINFRA_CODE_TEMPERATURE", "0.2")),
         "top_p":       0.85,
         "system_prompt":           CODE_SYSTEM_PROMPT,
-        "compression_threshold":   12,
+        "compression_threshold":   20,   # 20 mesajda bir sıkıştır (önceki 12'ydi)
         "large_file_threshold":    2000,
     },
     "it_expert": {
@@ -730,7 +730,7 @@ async def build_code_messages(
         asyncio.create_task(compress_code_context(conversation_id, history, config))
 
     # History
-    recent = history[-8:] if (code_context and code_context.get('compressed_history') and len(history) > 10) else history[-20:]
+    recent = history[-15:] if (code_context and code_context.get('compressed_history') and len(history) > 15) else history[-25:]
     for msg in recent:
         messages.append({"role": msg["role"], "content": msg["content"]})
 
@@ -783,41 +783,51 @@ async def generate_thinking_steps(
     history: List[Dict] = None,
 ) -> List[ThinkingStep]:
     """
-    Thinking steps — sadece debug/hata analizinde çıkar.
-    İçerik: problem tespiti → root cause → çözüm.
+    Thinking steps — debug/analiz/karmaşık kod sorularında göster.
+    Kullanıcıya botun ne yaptığını hissettir — güven artırır.
     """
-    p    = prompt.lower()
+    p     = prompt.lower()
     is_tr = any(c in prompt for c in "çğışöüÇĞİŞÖÜ")
-
     steps = []
 
-    if any(w in p for w in ['hata', 'error', 'crash', 'exception', 'çalışmıyor', 'traceback']):
-        steps.append(ThinkingStep(
-            emoji="🔍",
-            message="Hata analiz ediliyor..." if is_tr else "Analyzing the error..."
-        ))
-        steps.append(ThinkingStep(
-            emoji="💡",
-            message="Root cause tespit ediliyor..." if is_tr else "Finding root cause..."
-        ))
-        steps.append(ThinkingStep(
-            emoji="🔧",
-            message="Çözüm hazırlanıyor..." if is_tr else "Preparing fix..."
-        ))
-    elif any(w in p for w in ['analiz', 'incele', 'kontrol']):
-        steps.append(ThinkingStep(
-            emoji="🔍",
-            message="Analiz ediliyor..." if is_tr else "Analyzing..."
-        ))
-        steps.append(ThinkingStep(
-            emoji="🔧",
-            message="Sonuç hazırlanıyor..." if is_tr else "Preparing result..."
-        ))
+    # Hata / debug
+    if any(w in p for w in ['hata', 'error', 'crash', 'exception', 'çalışmıyor',
+                              'traceback', 'failed', 'broken', 'bug', 'fix']):
+        steps.append(ThinkingStep(emoji="🔍", message="Hata mesajı okunuyor..." if is_tr else "Reading the error..."))
+        steps.append(ThinkingStep(emoji="🧠", message="Root cause analiz ediliyor..." if is_tr else "Finding root cause..."))
+        steps.append(ThinkingStep(emoji="🔧", message="Fix hazırlanıyor..." if is_tr else "Preparing the fix..."))
+
+    # Mimari / tasarım
+    elif any(w in p for w in ['mimari', 'tasarla', 'nasıl yapılır', 'architecture',
+                                'design', 'yapılandır', 'kur', 'implement']):
+        steps.append(ThinkingStep(emoji="📐", message="Gereksinimler analiz ediliyor..." if is_tr else "Analyzing requirements..."))
+        steps.append(ThinkingStep(emoji="🏗️", message="En uygun yaklaşım seçiliyor..." if is_tr else "Selecting best approach..."))
+        steps.append(ThinkingStep(emoji="✍️",  message="Kod yazılıyor..." if is_tr else "Writing code..."))
+
+    # Refactor / optimize
+    elif any(w in p for w in ['refactor', 'optimize', 'temizle', 'iyileştir',
+                                'clean', 'improve', 'performans']):
+        steps.append(ThinkingStep(emoji="🔬", message="Mevcut kod inceleniyor..." if is_tr else "Reviewing existing code..."))
+        steps.append(ThinkingStep(emoji="⚡", message="İyileştirme noktaları tespit ediliyor..." if is_tr else "Finding improvements..."))
+        steps.append(ThinkingStep(emoji="✨", message="Temiz kod yazılıyor..." if is_tr else "Writing clean code..."))
+
+    # Dosya / belge analizi
+    elif any(w in p for w in ['analiz', 'incele', 'anla', 'özetle', 'analyze',
+                                'review', 'dosya', 'file', 'pdf', 'belgeni']):
+        steps.append(ThinkingStep(emoji="📄", message="Dosya okunuyor..." if is_tr else "Reading the file..."))
+        steps.append(ThinkingStep(emoji="🧩", message="İçerik analiz ediliyor..." if is_tr else "Analyzing content..."))
+        steps.append(ThinkingStep(emoji="📝", message="Sonuç hazırlanıyor..." if is_tr else "Preparing summary..."))
+
+    # Test yazma
+    elif any(w in p for w in ['test', 'spec', 'unit test', 'coverage']):
+        steps.append(ThinkingStep(emoji="🧪", message="Fonksiyon analiz ediliyor..." if is_tr else "Analyzing function..."))
+        steps.append(ThinkingStep(emoji="🎯", message="Edge case'ler belirleniyor..." if is_tr else "Identifying edge cases..."))
+        steps.append(ThinkingStep(emoji="✅", message="Test yazılıyor..." if is_tr else "Writing tests..."))
+
+    # Genel kod sorusu
     else:
-        steps.append(ThinkingStep(
-            emoji="🔍",
-            message="İnceleniyor..." if is_tr else "Checking..."
-        ))
+        steps.append(ThinkingStep(emoji="💭", message="Problem analiz ediliyor..." if is_tr else "Analyzing the problem..."))
+        steps.append(ThinkingStep(emoji="⚙️",  message="Çözüm üretiliyor..." if is_tr else "Generating solution..."))
 
     return steps
 
