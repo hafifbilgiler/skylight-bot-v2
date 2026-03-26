@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ONE-BUNE Admin</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@700;800&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg:#0a0a0c; --card:#111114; --accent:#00f2fe;
+            --purple:#bc4efd; --red:#ff4b4b; --green:#00e676;
+            --border:rgba(255,255,255,0.07);
+            --t1:#eeeef0; --t2:#8e8ea0; --t3:#55556a;
+        }
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body {
+            background:var(--bg); color:var(--t1);
+            font-family:'Inter',sans-serif;
+            min-height:100vh; display:flex;
+            align-items:center; justify-content:center;
+            position:relative; overflow:hidden;
+        }
+        body::before {
+            content:''; position:fixed; inset:0;
+            background-image:
+                linear-gradient(rgba(0,242,254,.03) 1px,transparent 1px),
+                linear-gradient(90deg,rgba(0,242,254,.03) 1px,transparent 1px);
+            background-size:40px 40px; pointer-events:none;
+        }
+        body::after {
+            content:''; position:fixed;
+            top:-200px; left:50%; transform:translateX(-50%);
+            width:600px; height:600px;
+            background:radial-gradient(circle,rgba(0,242,254,.06) 0%,transparent 70%);
+            pointer-events:none;
+        }
+        .card {
+            background:var(--card); border:1px solid var(--border);
+            border-radius:20px; padding:48px 40px;
+            width:100%; max-width:420px;
+            position:relative; z-index:1;
+            box-shadow:0 24px 80px rgba(0,0,0,.6);
+        }
+        .card::before {
+            content:''; position:absolute; top:0; left:0; right:0; height:2px;
+            background:linear-gradient(90deg,transparent,var(--accent),var(--purple),transparent);
+            border-radius:20px 20px 0 0;
+        }
+        .logo { text-align:center; margin-bottom:32px; }
+        .logo-icon {
+            width:56px; height:56px;
+            background:linear-gradient(135deg,rgba(0,242,254,.15),rgba(188,78,253,.15));
+            border:1px solid rgba(0,242,254,.2); border-radius:14px;
+            display:inline-flex; align-items:center; justify-content:center;
+            margin-bottom:14px; font-size:22px;
+        }
+        .logo-title {
+            font-family:'Outfit',sans-serif; font-size:22px; font-weight:800;
+            background:linear-gradient(135deg,var(--accent),var(--purple));
+            -webkit-background-clip:text; -webkit-text-fill-color:transparent;
+        }
+        .logo-sub { font-size:11px; color:var(--t3); margin-top:3px; letter-spacing:2px; text-transform:uppercase; }
+
+        /* Steps */
+        .step-dots { display:flex; justify-content:center; gap:8px; margin-bottom:28px; }
+        .dot {
+            width:8px; height:8px; border-radius:50%; background:var(--border);
+            transition:all .3s;
+        }
+        .dot.active { background:var(--accent); box-shadow:0 0 8px var(--accent); }
+        .dot.done   { background:var(--green); }
+
+        .step { display:none; }
+        .step.show { display:block; }
+
+        /* Form */
+        label { display:block; font-size:11px; font-weight:700; color:var(--t2); margin-bottom:7px; letter-spacing:.5px; text-transform:uppercase; }
+        .field { position:relative; margin-bottom:16px; }
+        .field i { position:absolute; left:14px; top:50%; transform:translateY(-50%); color:var(--t3); font-size:13px; pointer-events:none; }
+        input {
+            width:100%; background:rgba(255,255,255,.04);
+            border:1px solid var(--border); border-radius:10px;
+            padding:12px 14px 12px 40px;
+            color:var(--t1); font-size:14px; font-family:inherit;
+            outline:none; transition:border-color .2s,box-shadow .2s;
+        }
+        input:focus { border-color:rgba(0,242,254,.4); box-shadow:0 0 0 3px rgba(0,242,254,.08); }
+        input::placeholder { color:var(--t3); }
+        .btn-eye { position:absolute; right:12px; top:50%; transform:translateY(-50%); background:none; border:none; color:var(--t3); cursor:pointer; font-size:13px; transition:color .2s; }
+        .btn-eye:hover { color:var(--t2); }
+
+        /* OTP input */
+        .otp-input { font-family:'JetBrains Mono',monospace !important; font-size:30px !important; letter-spacing:10px !important; text-align:center !important; padding:16px 14px !important; }
+
+        .btn {
+            width:100%; padding:13px; border:none; border-radius:10px;
+            font-size:14px; font-weight:700; font-family:inherit; cursor:pointer;
+            transition:opacity .2s,transform .1s; margin-top:4px;
+        }
+        .btn-primary { background:linear-gradient(135deg,var(--accent),var(--purple)); color:#000; }
+        .btn-primary:hover { opacity:.9; }
+        .btn-primary:active { transform:scale(.99); }
+        .btn-primary:disabled { opacity:.45; cursor:not-allowed; }
+
+        .btn-back { display:flex; align-items:center; gap:6px; background:none; border:none; color:var(--t3); font-size:12px; cursor:pointer; font-family:inherit; margin-bottom:18px; transition:color .2s; }
+        .btn-back:hover { color:var(--t2); }
+
+        .alert { border-radius:10px; padding:11px 14px; font-size:13px; margin-bottom:16px; display:none; align-items:center; gap:8px; }
+        .alert.show { display:flex; }
+        .alert.error   { background:rgba(255,75,75,.1);  border:1px solid rgba(255,75,75,.25);  color:#ff6b6b; }
+        .alert.success { background:rgba(0,230,118,.1);  border:1px solid rgba(0,230,118,.25);  color:var(--green); }
+        .alert.warn    { background:rgba(255,165,0,.1);  border:1px solid rgba(255,165,0,.25);  color:#ffa500; }
+
+        .otp-note { text-align:center; font-size:13px; color:var(--t2); margin-bottom:20px; line-height:1.6; }
+        .otp-note strong { color:var(--accent); }
+
+        .resend { text-align:center; margin-top:14px; font-size:12px; color:var(--t3); }
+        .btn-resend { background:none; border:none; color:var(--accent); font-size:12px; cursor:pointer; font-family:inherit; text-decoration:underline; }
+        .btn-resend:disabled { opacity:.4; cursor:not-allowed; text-decoration:none; }
+        .cd { font-weight:600; color:var(--t2); }
+
+        .spinner { display:inline-block; width:15px; height:15px; border:2px solid rgba(0,0,0,.3); border-top-color:#000; border-radius:50%; animation:spin .7s linear infinite; vertical-align:middle; margin-right:5px; }
+        @keyframes spin { to { transform:rotate(360deg); } }
+
+        .footer-note { text-align:center; font-size:11px; color:var(--t3); margin-top:22px; display:flex; align-items:center; justify-content:center; gap:5px; }
+        .att { font-size:11px; color:var(--t3); text-align:center; margin-top:10px; }
+        .att span { color:var(--red); font-weight:600; }
+    </style>
+</head>
+<body>
+<div class="card">
+    <div class="logo">
+        <div class="logo-icon">🛡️</div>
+        <div class="logo-title">ONE-BUNE</div>
+        <div class="logo-sub">Admin Panel</div>
+    </div>
+
+    <div class="step-dots">
+        <div class="dot active" id="d1"></div>
+        <div class="dot"        id="d2"></div>
+    </div>
+
+    <!-- ══ ADIM 1: Kullanıcı adı + Şifre ══ -->
+    <div class="step show" id="s1">
+        <div class="alert error" id="e1"><i class="fas fa-exclamation-circle"></i><span id="e1t">Hata.</span></div>
+        <div class="alert warn"  id="lock"><i class="fas fa-lock"></i><span id="lockT">Hesap kilitlendi.</span></div>
+
+        <form id="f1">
+            <label>Kullanıcı Adı</label>
+            <div class="field">
+                <i class="fas fa-user"></i>
+                <input type="text" id="uname" placeholder="admin" autocomplete="username" autofocus>
+            </div>
+
+            <label>Şifre</label>
+            <div class="field">
+                <i class="fas fa-lock"></i>
+                <input type="password" id="pass" placeholder="••••••••••" autocomplete="current-password">
+                <button type="button" class="btn-eye" onclick="togglePass()">
+                    <i class="fas fa-eye" id="eyeI"></i>
+                </button>
+            </div>
+
+            <button type="submit" class="btn btn-primary" id="b1">Devam Et</button>
+        </form>
+        <div class="att" id="attInfo" style="display:none">Kalan deneme: <span id="attC">5</span></div>
+    </div>
+
+    <!-- ══ ADIM 2: OTP ══ -->
+    <div class="step" id="s2">
+        <button class="btn-back" onclick="goBack()"><i class="fas fa-arrow-left"></i> Geri</button>
+
+        <div class="alert error"   id="e2"><i class="fas fa-exclamation-circle"></i><span id="e2t">Hata.</span></div>
+        <div class="alert success" id="ok"><i class="fas fa-check-circle"></i>Doğrulandı! Yönlendiriliyor...</div>
+
+        <div class="otp-note">
+            Doğrulama kodu<br>
+            <strong>kayıtlı e-posta adresinize</strong><br>
+            gönderildi
+        </div>
+
+        <form id="f2">
+            <label>6 Haneli Kod</label>
+            <div class="field">
+                <i class="fas fa-key"></i>
+                <input type="tel" id="otpI" class="otp-input"
+                       placeholder="000000" maxlength="6"
+                       autocomplete="one-time-code" pattern="[0-9]{6}">
+            </div>
+            <button type="submit" class="btn btn-primary" id="b2">Doğrula</button>
+        </form>
+
+        <div class="resend">
+            Kod gelmedi?
+            <button class="btn-resend" id="resendB" onclick="resend()">Tekrar gönder</button>
+            <span class="cd" id="cdWrap" style="display:none">(<span id="cdS">60</span>s)</span>
+        </div>
+    </div>
+
+    <div class="footer-note"><i class="fas fa-shield-alt"></i> Güvenli bağlantı · IP kaydedilmektedir</div>
+</div>
+
+<script>
+const API = 'admin.php';
+let cdTimer = null;
+
+// ── Lockout ───────────────────────────────────────────
+async function checkLockout() {
+    try {
+        const r = await call({ action:'check_lockout' });
+        if (r.locked) doLockout(r.remaining_seconds);
+    } catch(e) {}
+}
+function doLockout(sec) {
+    document.getElementById('b1').disabled = true;
+    document.getElementById('lock').classList.add('show');
+    const t = document.getElementById('lockT');
+    let r = sec;
+    const iv = setInterval(() => {
+        const m = Math.floor(r/60), s = r%60;
+        t.textContent = `Çok fazla hatalı giriş. ${m}:${String(s).padStart(2,'0')} bekleyin.`;
+        r--;
+        if (r < 0) {
+            clearInterval(iv);
+            document.getElementById('lock').classList.remove('show');
+            document.getElementById('b1').disabled = false;
+        }
+    }, 1000);
+}
+
+// ── Adım 1 ────────────────────────────────────────────
+document.getElementById('f1').addEventListener('submit', async e => {
+    e.preventDefault();
+    const uname = document.getElementById('uname').value.trim();
+    const pass  = document.getElementById('pass').value;
+    const btn   = document.getElementById('b1');
+    const err   = document.getElementById('e1');
+    if (!uname || !pass) return;
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>Kontrol ediliyor...';
+    err.classList.remove('show');
+
+    try {
+        const r = await call({ action:'admin_login', username:uname, password:pass });
+
+        if (r.status === 'otp_required') {
+            step(2);
+            startCd(60);
+            document.getElementById('otpI').focus();
+        } else if (r.locked) {
+            doLockout(r.remaining_seconds || 900);
+        } else {
+            document.getElementById('e1t').textContent = r.message || 'Hatalı giriş.';
+            err.classList.add('show');
+            if (r.attempts_left) {
+                document.getElementById('attInfo').style.display = 'block';
+                document.getElementById('attC').textContent = r.attempts_left;
+            }
+            document.getElementById('pass').value = '';
+            document.getElementById('pass').focus();
+        }
+    } catch(ex) {
+        document.getElementById('e1t').textContent = 'Bağlantı hatası.';
+        err.classList.add('show');
+    }
+    btn.disabled = false;
+    btn.innerHTML = 'Devam Et';
+});
+
+// ── Adım 2 ────────────────────────────────────────────
+document.getElementById('f2').addEventListener('submit', async e => {
+    e.preventDefault();
+    const otp = document.getElementById('otpI').value.trim();
+    const btn = document.getElementById('b2');
+    const err = document.getElementById('e2');
+    if (!otp || otp.length !== 6) return;
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>Doğrulanıyor...';
+    err.classList.remove('show');
+
+    try {
+        const r = await call({ action:'verify_otp', otp });
+
+        if (r.status === 'success') {
+            document.getElementById('ok').classList.add('show');
+            btn.innerHTML = '<i class="fas fa-check"></i> Doğrulandı';
+            setTimeout(() => window.location.href='index.html', 800);
+        } else if (r.expired) {
+            document.getElementById('e2t').textContent = r.message;
+            err.classList.add('show');
+            setTimeout(() => goBack(), 2500);
+        } else {
+            const txt = r.message + (r.attempts_left !== undefined ? ` (${r.attempts_left} hak kaldı)` : '');
+            document.getElementById('e2t').textContent = txt;
+            err.classList.add('show');
+            document.getElementById('otpI').value = '';
+            document.getElementById('otpI').focus();
+            btn.disabled = false;
+            btn.innerHTML = 'Doğrula';
+        }
+    } catch(ex) {
+        document.getElementById('e2t').textContent = 'Bağlantı hatası.';
+        err.classList.add('show');
+        btn.disabled = false;
+        btn.innerHTML = 'Doğrula';
+    }
+});
+
+// ── Resend ────────────────────────────────────────────
+async function resend() {
+    const btn = document.getElementById('resendB');
+    btn.disabled = true;
+    try {
+        const r = await call({ action:'resend_otp' });
+        if (r.status === 'success') {
+            document.getElementById('otpI').value = '';
+            document.getElementById('otpI').focus();
+            startCd(60);
+        } else {
+            btn.disabled = false;
+        }
+    } catch(e) { btn.disabled = false; }
+}
+function startCd(sec) {
+    clearInterval(cdTimer);
+    const btn  = document.getElementById('resendB');
+    const wrap = document.getElementById('cdWrap');
+    const span = document.getElementById('cdS');
+    btn.disabled = true;
+    wrap.style.display = 'inline';
+    let r = sec;
+    span.textContent = r;
+    cdTimer = setInterval(() => {
+        r--;
+        span.textContent = r;
+        if (r <= 0) {
+            clearInterval(cdTimer);
+            btn.disabled = false;
+            wrap.style.display = 'none';
+        }
+    }, 1000);
+}
+
+// ── Navigation ────────────────────────────────────────
+function step(n) {
+    document.querySelectorAll('.step').forEach(s => s.classList.remove('show'));
+    document.getElementById('s' + n).classList.add('show');
+    document.getElementById('d1').className = 'dot ' + (n>1 ? 'done' : 'active');
+    document.getElementById('d2').className = 'dot ' + (n>=2 ? 'active' : '');
+}
+function goBack() {
+    clearInterval(cdTimer);
+    document.getElementById('otpI').value = '';
+    document.getElementById('e2').classList.remove('show');
+    document.getElementById('pass').value = '';
+    step(1);
+    document.getElementById('uname').focus();
+}
+function togglePass() {
+    const inp = document.getElementById('pass');
+    const ic  = document.getElementById('eyeI');
+    inp.type = inp.type==='password' ? 'text' : 'password';
+    ic.className = inp.type==='password' ? 'fas fa-eye' : 'fas fa-eye-slash';
+}
+document.getElementById('otpI').addEventListener('input', function() {
+    this.value = this.value.replace(/\D/g,'').slice(0,6);
+});
+
+// ── Fetch helper ──────────────────────────────────────
+async function call(data) {
+    const r = await fetch(API, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(data),
+    });
+    return r.json();
+}
+
+checkLockout();
+</script>
+</body>
+</html>

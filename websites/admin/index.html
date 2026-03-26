@@ -1,0 +1,1380 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Panel — ONE-BUNE</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg:       #0a0a0c;
+            --surface:  #111114;
+            --surface2: #18181d;
+            --accent:   #00f2fe;
+            --purple:   #bc4efd;
+            --green:    #00e676;
+            --orange:   #ff9100;
+            --red:      #ff4b4b;
+            --border:   rgba(255,255,255,0.07);
+            --text1:    #eeeef0;
+            --text2:    #8e8ea0;
+            --text3:    #55556a;
+        }
+        * { margin:0; padding:0; box-sizing:border-box; }
+
+        body {
+            background: var(--bg);
+            color: var(--text1);
+            font-family: 'Inter', sans-serif;
+            min-height: 100vh;
+            display: flex;
+        }
+
+        /* ── SIDEBAR ── */
+        .sidebar {
+            width: 230px;
+            min-height: 100vh;
+            background: var(--surface);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            position: fixed;
+            top: 0; left: 0;
+            z-index: 100;
+        }
+
+        .sidebar-logo {
+            padding: 24px 20px 20px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .logo-text {
+            font-family: 'Outfit', sans-serif;
+            font-size: 18px;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--accent), var(--purple));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .logo-badge {
+            font-size: 10px;
+            background: rgba(0,242,254,0.1);
+            border: 1px solid rgba(0,242,254,0.2);
+            color: var(--accent);
+            padding: 2px 8px;
+            border-radius: 20px;
+            margin-left: 8px;
+            font-weight: 600;
+            letter-spacing: 1px;
+            vertical-align: middle;
+            -webkit-text-fill-color: var(--accent);
+        }
+
+        .nav {
+            padding: 16px 12px;
+            flex: 1;
+        }
+
+        .nav-section {
+            font-size: 10px;
+            font-weight: 700;
+            color: var(--text3);
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+            padding: 12px 8px 6px;
+        }
+
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 9px 12px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text2);
+            transition: all 0.15s;
+            margin-bottom: 2px;
+            text-decoration: none;
+        }
+
+        .nav-item i { width: 16px; text-align: center; font-size: 13px; }
+        .nav-item:hover { background: rgba(255,255,255,0.05); color: var(--text1); }
+        .nav-item.active { background: rgba(0,242,254,0.08); color: var(--accent); }
+        .nav-item.active i { color: var(--accent); }
+
+        .nav-badge {
+            margin-left: auto;
+            background: rgba(0,242,254,0.15);
+            color: var(--accent);
+            font-size: 10px;
+            font-weight: 700;
+            padding: 2px 7px;
+            border-radius: 10px;
+            min-width: 20px;
+            text-align: center;
+        }
+
+        .sidebar-bottom {
+            padding: 16px 12px;
+            border-top: 1px solid var(--border);
+        }
+
+        .admin-info {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 12px;
+            border-radius: 8px;
+            background: rgba(255,255,255,0.03);
+            margin-bottom: 8px;
+        }
+
+        .admin-avatar {
+            width: 32px; height: 32px;
+            background: linear-gradient(135deg, var(--accent), var(--purple));
+            border-radius: 8px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 14px; color: #000; font-weight: 700;
+        }
+
+        .admin-name { font-size: 12px; font-weight: 600; }
+        .admin-role { font-size: 10px; color: var(--text3); }
+
+        .btn-logout {
+            width: 100%;
+            padding: 9px;
+            background: rgba(255,75,75,0.08);
+            border: 1px solid rgba(255,75,75,0.15);
+            border-radius: 8px;
+            color: var(--red);
+            font-size: 12px;
+            font-weight: 600;
+            font-family: inherit;
+            cursor: pointer;
+            transition: all 0.15s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+        }
+        .btn-logout:hover { background: rgba(255,75,75,0.15); }
+
+        /* ── MAIN ── */
+        .main {
+            margin-left: 230px;
+            flex: 1;
+            padding: 28px 32px;
+            min-height: 100vh;
+        }
+
+        .page { display: none; }
+        .page.active { display: block; }
+
+        .page-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 28px;
+        }
+
+        .page-title {
+            font-family: 'Outfit', sans-serif;
+            font-size: 22px;
+            font-weight: 700;
+        }
+
+        .page-sub {
+            font-size: 13px;
+            color: var(--text2);
+            margin-top: 2px;
+        }
+
+        /* ── STAT CARDS ── */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-bottom: 28px;
+        }
+
+        .stat-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 20px 22px;
+            position: relative;
+            overflow: hidden;
+            transition: border-color 0.2s;
+        }
+
+        .stat-card:hover { border-color: rgba(255,255,255,0.12); }
+
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 2px;
+        }
+
+        .stat-card.cyan::before  { background: linear-gradient(90deg, transparent, var(--accent), transparent); }
+        .stat-card.purple::before { background: linear-gradient(90deg, transparent, var(--purple), transparent); }
+        .stat-card.green::before  { background: linear-gradient(90deg, transparent, var(--green), transparent); }
+        .stat-card.orange::before { background: linear-gradient(90deg, transparent, var(--orange), transparent); }
+
+        .stat-icon {
+            width: 40px; height: 40px;
+            border-radius: 10px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 16px;
+            margin-bottom: 14px;
+        }
+
+        .stat-icon.cyan   { background: rgba(0,242,254,0.1);  color: var(--accent); }
+        .stat-icon.purple { background: rgba(188,78,253,0.1); color: var(--purple); }
+        .stat-icon.green  { background: rgba(0,230,118,0.1);  color: var(--green); }
+        .stat-icon.orange { background: rgba(255,145,0,0.1);  color: var(--orange); }
+
+        .stat-value {
+            font-family: 'Outfit', sans-serif;
+            font-size: 28px;
+            font-weight: 700;
+            line-height: 1;
+            margin-bottom: 4px;
+        }
+
+        .stat-label {
+            font-size: 12px;
+            color: var(--text2);
+            font-weight: 500;
+        }
+
+        .stat-change {
+            font-size: 11px;
+            margin-top: 8px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .stat-change.up   { color: var(--green); }
+        .stat-change.down { color: var(--red); }
+
+        /* ── TABLE ── */
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            overflow: hidden;
+            margin-bottom: 20px;
+        }
+
+        .card-header {
+            padding: 18px 22px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        .card-title {
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .search-bar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 8px 12px;
+            min-width: 250px;
+        }
+
+        .search-bar i { color: var(--text3); font-size: 12px; }
+
+        .search-bar input {
+            background: none;
+            border: none;
+            outline: none;
+            color: var(--text1);
+            font-size: 13px;
+            font-family: inherit;
+            width: 100%;
+        }
+
+        .search-bar input::placeholder { color: var(--text3); }
+
+        .filter-tabs {
+            display: flex;
+            gap: 4px;
+        }
+
+        .filter-tab {
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            border: none;
+            background: none;
+            color: var(--text2);
+            font-family: inherit;
+            transition: all 0.15s;
+        }
+
+        .filter-tab.active {
+            background: rgba(0,242,254,0.1);
+            color: var(--accent);
+        }
+
+        .filter-tab:hover:not(.active) {
+            background: rgba(255,255,255,0.05);
+            color: var(--text1);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        thead th {
+            padding: 12px 18px;
+            text-align: left;
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--text3);
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            border-bottom: 1px solid var(--border);
+        }
+
+        tbody tr {
+            border-bottom: 1px solid rgba(255,255,255,0.03);
+            transition: background 0.1s;
+        }
+
+        tbody tr:last-child { border-bottom: none; }
+        tbody tr:hover { background: rgba(255,255,255,0.02); }
+
+        td {
+            padding: 13px 18px;
+            font-size: 13px;
+            vertical-align: middle;
+        }
+
+        .user-cell {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .user-avatar {
+            width: 32px; height: 32px;
+            border-radius: 8px;
+            background: linear-gradient(135deg, var(--surface2), var(--surface));
+            border: 1px solid var(--border);
+            display: flex; align-items: center; justify-content: center;
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--text2);
+            flex-shrink: 0;
+        }
+
+        .user-name  { font-weight: 600; font-size: 13px; }
+        .user-email { font-size: 11px; color: var(--text3); }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 3px 9px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 700;
+        }
+
+        .badge.premium { background: rgba(188,78,253,0.12); color: var(--purple); border: 1px solid rgba(188,78,253,0.2); }
+        .badge.free    { background: rgba(255,255,255,0.05); color: var(--text2); border: 1px solid var(--border); }
+        .badge.banned  { background: rgba(255,75,75,0.1);   color: var(--red);   border: 1px solid rgba(255,75,75,0.2); }
+        .badge.active  { background: rgba(0,230,118,0.1);   color: var(--green); border: 1px solid rgba(0,230,118,0.2); }
+
+        .action-btns {
+            display: flex;
+            gap: 6px;
+        }
+
+        .btn-sm {
+            padding: 5px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 600;
+            font-family: inherit;
+            cursor: pointer;
+            border: 1px solid var(--border);
+            background: rgba(255,255,255,0.04);
+            color: var(--text2);
+            transition: all 0.15s;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .btn-sm:hover { background: rgba(255,255,255,0.08); color: var(--text1); }
+        .btn-sm.primary { border-color: rgba(0,242,254,0.3); color: var(--accent); background: rgba(0,242,254,0.06); }
+        .btn-sm.primary:hover { background: rgba(0,242,254,0.12); }
+        .btn-sm.danger  { border-color: rgba(255,75,75,0.3); color: var(--red); background: rgba(255,75,75,0.06); }
+        .btn-sm.danger:hover { background: rgba(255,75,75,0.12); }
+        .btn-sm.success { border-color: rgba(0,230,118,0.3); color: var(--green); background: rgba(0,230,118,0.06); }
+
+        /* ── PAGINATION ── */
+        .pagination {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 18px;
+            border-top: 1px solid var(--border);
+        }
+
+        .page-info { font-size: 12px; color: var(--text2); }
+
+        .page-btns { display: flex; gap: 4px; }
+
+        .page-btn {
+            width: 32px; height: 32px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: none;
+            color: var(--text2);
+            font-size: 12px;
+            font-family: inherit;
+            cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
+            transition: all 0.15s;
+        }
+
+        .page-btn:hover { background: rgba(255,255,255,0.05); color: var(--text1); }
+        .page-btn.active { background: rgba(0,242,254,0.1); border-color: rgba(0,242,254,0.3); color: var(--accent); }
+        .page-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+        /* ── MODAL ── */
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.7);
+            backdrop-filter: blur(4px);
+            z-index: 1000;
+            display: none;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal-overlay.show { display: flex; }
+
+        .modal {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            width: 100%;
+            max-width: 500px;
+            max-height: 85vh;
+            overflow-y: auto;
+            box-shadow: 0 24px 80px rgba(0,0,0,0.6);
+        }
+
+        .modal::before {
+            content: '';
+            display: block;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, var(--accent), var(--purple), transparent);
+            border-radius: 16px 16px 0 0;
+        }
+
+        .modal-header {
+            padding: 22px 24px 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .modal-title { font-size: 16px; font-weight: 700; }
+
+        .modal-close {
+            background: none;
+            border: none;
+            color: var(--text3);
+            cursor: pointer;
+            font-size: 18px;
+            padding: 4px;
+            transition: color 0.15s;
+        }
+
+        .modal-close:hover { color: var(--text1); }
+
+        .modal-body { padding: 0 24px 24px; }
+
+        .detail-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.04);
+            font-size: 13px;
+        }
+
+        .detail-row:last-child { border-bottom: none; }
+        .detail-label { color: var(--text3); font-weight: 500; }
+        .detail-value { font-weight: 600; }
+
+        .modal-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 20px;
+        }
+
+        .btn-modal {
+            flex: 1;
+            padding: 10px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 600;
+            font-family: inherit;
+            cursor: pointer;
+            border: none;
+            transition: opacity 0.2s;
+        }
+
+        .btn-modal:hover { opacity: 0.85; }
+        .btn-modal.primary { background: linear-gradient(135deg, var(--accent), var(--purple)); color: #000; }
+        .btn-modal.danger  { background: rgba(255,75,75,0.15); color: var(--red); border: 1px solid rgba(255,75,75,0.2); }
+        .btn-modal.default { background: rgba(255,255,255,0.06); color: var(--text1); border: 1px solid var(--border); }
+
+        /* ── TOAST ── */
+        #toast {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .toast-item {
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 12px 16px;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+            animation: slideIn 0.2s ease;
+        }
+
+        .toast-item.success { border-color: rgba(0,230,118,0.2); }
+        .toast-item.success i { color: var(--green); }
+        .toast-item.error   { border-color: rgba(255,75,75,0.2); }
+        .toast-item.error i { color: var(--red); }
+
+        @keyframes slideIn {
+            from { transform: translateX(20px); opacity: 0; }
+            to   { transform: translateX(0); opacity: 1; }
+        }
+
+        /* ── LOADING ── */
+        .skeleton {
+            background: linear-gradient(90deg, var(--surface2) 25%, rgba(255,255,255,0.04) 50%, var(--surface2) 75%);
+            background-size: 200% 100%;
+            animation: shimmer 1.5s infinite;
+            border-radius: 6px;
+        }
+
+        @keyframes shimmer { to { background-position: -200% 0; } }
+
+        .mono { font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+
+        /* ── RESPONSIVE ── */
+        @media (max-width: 1100px) {
+            .stats-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+
+        @media (max-width: 768px) {
+            .sidebar { transform: translateX(-100%); transition: transform 0.25s; }
+            .sidebar.open { transform: none; }
+            .main { margin-left: 0; padding: 20px 16px; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- SIDEBAR -->
+<aside class="sidebar" id="sidebar">
+    <div class="sidebar-logo">
+        <span class="logo-text">ONE-BUNE</span>
+        <span class="logo-badge">ADMIN</span>
+    </div>
+
+    <nav class="nav">
+        <div class="nav-section">Genel</div>
+        <a class="nav-item active" data-page="dashboard" onclick="showPage('dashboard')">
+            <i class="fas fa-chart-line"></i> Dashboard
+        </a>
+
+        <div class="nav-section">Yönetim</div>
+        <a class="nav-item" data-page="users" onclick="showPage('users')">
+            <i class="fas fa-users"></i> Kullanıcılar
+            <span class="nav-badge" id="navUserCount">—</span>
+        </a>
+        <a class="nav-item" data-page="payments" onclick="showPage('payments')">
+            <i class="fas fa-credit-card"></i> Ödemeler
+        </a>
+
+        <div class="nav-section">Sistem</div>
+        <a class="nav-item" data-page="logs" onclick="showPage('logs')">
+            <i class="fas fa-list-alt"></i> Loglar
+        </a>
+    </nav>
+
+    <div class="sidebar-bottom">
+        <div class="admin-info">
+            <div class="admin-avatar">A</div>
+            <div>
+                <div class="admin-name">Admin</div>
+                <div class="admin-role">one-bune.com</div>
+            </div>
+        </div>
+        <button class="btn-logout" onclick="logout()">
+            <i class="fas fa-sign-out-alt"></i> Çıkış Yap
+        </button>
+    </div>
+</aside>
+
+<!-- MAIN -->
+<main class="main">
+
+    <!-- DASHBOARD PAGE -->
+    <div class="page active" id="page-dashboard">
+        <div class="page-header">
+            <div>
+                <div class="page-title">Dashboard</div>
+                <div class="page-sub" id="lastUpdated">Yükleniyor...</div>
+            </div>
+            <button class="btn-sm primary" onclick="loadStats()">
+                <i class="fas fa-sync-alt"></i> Yenile
+            </button>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card cyan">
+                <div class="stat-icon cyan"><i class="fas fa-users"></i></div>
+                <div class="stat-value" id="statTotal">—</div>
+                <div class="stat-label">Toplam Kullanıcı</div>
+                <div class="stat-change up" id="statTotalChange"></div>
+            </div>
+            <div class="stat-card purple">
+                <div class="stat-icon purple"><i class="fas fa-crown"></i></div>
+                <div class="stat-value" id="statPremium">—</div>
+                <div class="stat-label">Premium Üye</div>
+                <div class="stat-change up" id="statPremiumChange"></div>
+            </div>
+            <div class="stat-card green">
+                <div class="stat-icon green"><i class="fas fa-comments"></i></div>
+                <div class="stat-value" id="statMessages">—</div>
+                <div class="stat-label">Bugün Mesaj</div>
+                <div class="stat-change" id="statMsgChange"></div>
+            </div>
+            <div class="stat-card orange">
+                <div class="stat-icon orange"><i class="fas fa-lira-sign"></i></div>
+                <div class="stat-value" id="statRevenue">—</div>
+                <div class="stat-label">Bu Ay Gelir</div>
+                <div class="stat-change up" id="statRevenueChange"></div>
+            </div>
+        </div>
+
+        <!-- Son kayıtlar -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Son Kaydolan Kullanıcılar</span>
+                <button class="btn-sm" onclick="showPage('users')">Tümünü Gör <i class="fas fa-arrow-right"></i></button>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Kullanıcı</th>
+                        <th>Plan</th>
+                        <th>Mesaj</th>
+                        <th>Kayıt</th>
+                        <th>İşlem</th>
+                    </tr>
+                </thead>
+                <tbody id="recentUsers">
+                    <tr><td colspan="5" style="text-align:center;padding:24px;color:var(--text3)">
+                        <i class="fas fa-spinner fa-spin"></i> Yükleniyor...
+                    </td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- USERS PAGE -->
+    <div class="page" id="page-users">
+        <div class="page-header">
+            <div>
+                <div class="page-title">Kullanıcılar</div>
+                <div class="page-sub" id="userPageSub">Tüm kullanıcılar</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <div class="filter-tabs">
+                    <button class="filter-tab active" data-filter="" onclick="setFilter(this, '')">Tümü</button>
+                    <button class="filter-tab" data-filter="premium" onclick="setFilter(this, 'premium')">Premium</button>
+                    <button class="filter-tab" data-filter="free" onclick="setFilter(this, 'free')">Ücretsiz</button>
+                    <button class="filter-tab" data-filter="banned" onclick="setFilter(this, 'banned')">Banlı</button>
+                </div>
+                <div class="search-bar">
+                    <i class="fas fa-search"></i>
+                    <input type="text" id="userSearch" placeholder="İsim veya e-posta ara..." oninput="debounceSearch()">
+                </div>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Kullanıcı</th>
+                        <th>Plan</th>
+                        <th>Mesaj (Bugün / Toplam)</th>
+                        <th>Son Aktif</th>
+                        <th>Kayıt Tarihi</th>
+                        <th>İşlem</th>
+                    </tr>
+                </thead>
+                <tbody id="usersTable">
+                    <tr><td colspan="6" style="text-align:center;padding:32px;color:var(--text3)">
+                        <i class="fas fa-spinner fa-spin"></i> Yükleniyor...
+                    </td></tr>
+                </tbody>
+            </table>
+            <div class="pagination">
+                <span class="page-info" id="usersPageInfo">—</span>
+                <div class="page-btns" id="usersPagination"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- PAYMENTS PAGE -->
+    <div class="page" id="page-payments">
+        <div class="page-header">
+            <div>
+                <div class="page-title">Ödemeler</div>
+                <div class="page-sub">İyzico ödeme geçmişi</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Ödeme Geçmişi</span>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Kullanıcı</th>
+                        <th>Plan</th>
+                        <th>Tutar</th>
+                        <th>Durum</th>
+                        <th>Tarih</th>
+                        <th>İyzico ID</th>
+                    </tr>
+                </thead>
+                <tbody id="paymentsTable">
+                    <tr><td colspan="6" style="text-align:center;padding:32px;color:var(--text3)">
+                        <i class="fas fa-spinner fa-spin"></i> Yükleniyor...
+                    </td></tr>
+                </tbody>
+            </table>
+            <div class="pagination">
+                <span class="page-info" id="paymentsPageInfo">—</span>
+                <div class="page-btns" id="paymentsPagination"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- LOGS PAGE -->
+    <div class="page" id="page-logs">
+        <div class="page-header">
+            <div>
+                <div class="page-title">Sistem Logları</div>
+                <div class="page-sub">Son sistem aktiviteleri</div>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Loglar</span>
+                <div class="filter-tabs">
+                    <button class="filter-tab active" onclick="setLogFilter(this, '')">Tümü</button>
+                    <button class="filter-tab" onclick="setLogFilter(this, 'auth')">Auth</button>
+                    <button class="filter-tab" onclick="setLogFilter(this, 'payment')">Ödeme</button>
+                    <button class="filter-tab" onclick="setLogFilter(this, 'error')">Hata</button>
+                </div>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Zaman</th>
+                        <th>Tür</th>
+                        <th>Kullanıcı</th>
+                        <th>Açıklama</th>
+                        <th>IP</th>
+                    </tr>
+                </thead>
+                <tbody id="logsTable">
+                    <tr><td colspan="5" style="text-align:center;padding:32px;color:var(--text3)">
+                        <i class="fas fa-spinner fa-spin"></i> Yükleniyor...
+                    </td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+</main>
+
+<!-- USER DETAIL MODAL -->
+<div class="modal-overlay" id="userModal">
+    <div class="modal">
+        <div class="modal-header">
+            <span class="modal-title" id="modalUserName">Kullanıcı Detayı</span>
+            <button class="modal-close" onclick="closeModal()"><i class="fas fa-times"></i></button>
+        </div>
+        <div class="modal-body">
+            <div id="modalUserDetails"></div>
+            <div class="modal-actions" id="modalActions"></div>
+        </div>
+    </div>
+</div>
+
+<!-- TOAST -->
+<div id="toast"></div>
+
+<script>
+const API = 'admin.php';
+let currentPage = 'dashboard';
+let usersCurrentPage = 1;
+let usersFilter = '';
+let usersSearch = '';
+let searchTimeout = null;
+let logFilter = '';
+let currentUserId = null;
+let paymentsCurrentPage = 1;
+let csrfToken = '';
+
+// ── Auth kontrol ──────────────────────────────────────
+async function checkAuth() {
+    try {
+        const res  = await fetch(API, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'check_session' })
+        });
+        const data = await res.json();
+        if (data.status !== 'success') {
+            window.location.href = 'login.html';
+        } else {
+            csrfToken = data.csrf_token;
+        }
+    } catch(e) {
+        window.location.href = 'login.html';
+    }
+}
+
+async function logout() {
+    await fetch(API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'admin_logout' })
+    });
+    window.location.href = 'login.html';
+}
+
+// ── Sayfa geçişi ──────────────────────────────────────
+function showPage(name) {
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    document.getElementById('page-' + name).classList.add('active');
+    document.querySelector(`.nav-item[data-page="${name}"]`)?.classList.add('active');
+    currentPage = name;
+
+    if (name === 'users')    loadUsers();
+    if (name === 'payments') loadPayments();
+    if (name === 'logs')     loadLogs();
+}
+
+// ── Toast ─────────────────────────────────────────────
+function toast(msg, type = 'success') {
+    const wrap = document.getElementById('toast');
+    const el   = document.createElement('div');
+    el.className = `toast-item ${type}`;
+    el.innerHTML = `<i class="fas fa-${type === 'success' ? 'check-circle' : 'exclamation-circle'}"></i> ${msg}`;
+    wrap.appendChild(el);
+    setTimeout(() => el.remove(), 3000);
+}
+
+// ── Yardımcılar ───────────────────────────────────────
+function formatDate(s) {
+    if (!s) return '—';
+    const d = new Date(s);
+    return d.toLocaleDateString('tr-TR') + ' ' + d.toLocaleTimeString('tr-TR', {hour:'2-digit', minute:'2-digit'});
+}
+
+function timeAgo(s) {
+    if (!s) return '—';
+    const diff = Date.now() - new Date(s).getTime();
+    const m = Math.floor(diff / 60000);
+    if (m < 1)   return 'Az önce';
+    if (m < 60)  return `${m}dk önce`;
+    if (m < 1440) return `${Math.floor(m/60)}s önce`;
+    return `${Math.floor(m/1440)}g önce`;
+}
+
+function initials(name) {
+    if (!name) return '?';
+    return name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0,2);
+}
+
+function planBadge(user) {
+    if (user.is_banned) return '<span class="badge banned"><i class="fas fa-ban"></i> Banlı</span>';
+    // plan_id 'free' ise premium değil
+    const isPremiumSub = (user.sub_status === 'active' || user.sub_status === 'trialing')
+                         && user.plan_id && user.plan_id !== 'free';
+    if (user.is_premium || isPremiumSub)
+        return '<span class="badge premium"><i class="fas fa-crown"></i> Premium</span>';
+    return '<span class="badge free">Ücretsiz</span>';
+}
+
+// ── DASHBOARD ─────────────────────────────────────────
+async function loadStats() {
+    try {
+        const res  = await fetch(API, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'get_stats' })
+        });
+        const data = await res.json();
+
+        if (data.total_users   !== undefined) document.getElementById('statTotal').textContent   = data.total_users.toLocaleString('tr');
+        if (data.premium_users !== undefined) document.getElementById('statPremium').textContent  = data.premium_users.toLocaleString('tr');
+        if (data.messages_today !== undefined) document.getElementById('statMessages').textContent = data.messages_today.toLocaleString('tr');
+        if (data.revenue_this_month !== undefined) document.getElementById('statRevenue').textContent = '₺' + data.revenue_this_month.toLocaleString('tr');
+
+        document.getElementById('navUserCount').textContent = data.total_users?.toLocaleString('tr') || '—';
+
+        const now = new Date();
+        document.getElementById('lastUpdated').textContent =
+            'Son güncelleme: ' + now.toLocaleTimeString('tr-TR', {hour:'2-digit', minute:'2-digit'});
+
+        if (data.recent_users) renderRecentUsers(data.recent_users);
+
+    } catch(e) {
+        toast('İstatistikler yüklenemedi', 'error');
+    }
+}
+
+function renderRecentUsers(users) {
+    const tbody = document.getElementById('recentUsers');
+    if (!users?.length) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--text3)">Veri yok</td></tr>';
+        return;
+    }
+    tbody.innerHTML = users.map(u => `
+        <tr>
+            <td>
+                <div class="user-cell">
+                    <div class="user-avatar">${initials(u.name)}</div>
+                    <div>
+                        <div class="user-name">${escHtml(u.name || '—')}</div>
+                        <div class="user-email">${escHtml(u.email || '—')}</div>
+                    </div>
+                </div>
+            </td>
+            <td>${planBadge(u)}</td>
+            <td class="mono">${u.messages_today ?? 0} / ${u.total_messages ?? 0}</td>
+            <td style="color:var(--text3);font-size:12px">${formatDate(u.created_at)}</td>
+            <td>
+                <div class="action-btns">
+                    <button class="btn-sm primary" onclick="openUserModal(${u.id})"><i class="fas fa-eye"></i></button>
+                </div>
+            </td>
+        </tr>
+    `).join('');
+}
+
+// ── USERS ─────────────────────────────────────────────
+async function loadUsers(page = 1) {
+    usersCurrentPage = page;
+    const tbody = document.getElementById('usersTable');
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:32px;color:var(--text3)"><i class="fas fa-spinner fa-spin"></i> Yükleniyor...</td></tr>';
+
+    try {
+        const res  = await fetch(API, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                action: 'get_users',
+                page: page,
+                limit: 20,
+                search: usersSearch,
+                filter: usersFilter
+            })
+        });
+        const data = await res.json();
+
+        if (!data.users) {
+            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:32px;color:var(--text3)">Veri alınamadı</td></tr>';
+            return;
+        }
+
+        document.getElementById('userPageSub').textContent = `${data.total || 0} kullanıcı`;
+        document.getElementById('usersPageInfo').textContent =
+            `${(page-1)*20+1}–${Math.min(page*20, data.total||0)} / ${data.total||0}`;
+
+        if (!data.users.length) {
+            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:32px;color:var(--text3)">Sonuç bulunamadı</td></tr>';
+        } else {
+            tbody.innerHTML = data.users.map(u => `
+                <tr>
+                    <td>
+                        <div class="user-cell">
+                            <div class="user-avatar">${initials(u.name)}</div>
+                            <div>
+                                <div class="user-name">${escHtml(u.name || '—')}</div>
+                                <div class="user-email">${escHtml(u.email || '—')}</div>
+                            </div>
+                        </div>
+                    </td>
+                    <td>${planBadge(u)}</td>
+                    <td class="mono" style="color:var(--text2)">${u.messages_today ?? 0} / ${u.total_messages ?? 0}</td>
+                    <td style="color:var(--text3);font-size:12px">${timeAgo(u.last_active)}</td>
+                    <td style="color:var(--text3);font-size:12px">${formatDate(u.created_at)}</td>
+                    <td>
+                        <div class="action-btns">
+                            <button class="btn-sm primary" onclick="openUserModal(${u.id})" title="Detay">
+                                <i class="fas fa-eye"></i>
+                            </button>
+                            ${u.is_premium
+                                ? `<button class="btn-sm" onclick="togglePremium(${u.id}, false)" title="Premium Kaldır"><i class="fas fa-crown"></i></button>`
+                                : `<button class="btn-sm success" onclick="togglePremium(${u.id}, true)" title="Premium Yap"><i class="fas fa-crown"></i></button>`
+                            }
+                            ${u.is_admin
+                                ? `<button class="btn-sm" style="border-color:rgba(188,78,253,0.3);color:var(--purple);background:rgba(188,78,253,0.06)" onclick="toggleAdmin(${u.id}, false)" title="Admin Kaldır"><i class="fas fa-shield-alt"></i></button>`
+                                : `<button class="btn-sm" style="border-color:rgba(188,78,253,0.2);color:var(--text3)" onclick="toggleAdmin(${u.id}, true)" title="Admin Yap"><i class="fas fa-shield-alt"></i></button>`
+                            }
+                            ${u.is_banned
+                                ? `<button class="btn-sm success" onclick="banUser(${u.id}, false)" title="Banı Kaldır"><i class="fas fa-check"></i></button>`
+                                : `<button class="btn-sm danger"  onclick="banUser(${u.id}, true)"  title="Banla"><i class="fas fa-ban"></i></button>`
+                            }
+                        </div>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        renderPagination('usersPagination', page, data.total_pages || 1, loadUsers);
+
+    } catch(e) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:32px;color:var(--red)"><i class="fas fa-exclamation-circle"></i> Hata: ' + e.message + '</td></tr>';
+    }
+}
+
+function setFilter(btn, filter) {
+    document.querySelectorAll('#page-users .filter-tab').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    usersFilter = filter;
+    loadUsers(1);
+}
+
+function debounceSearch() {
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(() => {
+        usersSearch = document.getElementById('userSearch').value;
+        loadUsers(1);
+    }, 400);
+}
+
+// ── USER MODAL ────────────────────────────────────────
+async function openUserModal(userId) {
+    currentUserId = userId;
+    document.getElementById('userModal').classList.add('show');
+    document.getElementById('modalUserName').textContent = 'Yükleniyor...';
+    document.getElementById('modalUserDetails').innerHTML =
+        '<div style="padding:20px;text-align:center;color:var(--text3)"><i class="fas fa-spinner fa-spin"></i></div>';
+    document.getElementById('modalActions').innerHTML = '';
+
+    try {
+        const res  = await fetch(API, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'get_user', user_id: userId })
+        });
+        const u = await res.json();
+
+        document.getElementById('modalUserName').textContent = u.name || 'Kullanıcı';
+        document.getElementById('modalUserDetails').innerHTML = `
+            <div class="detail-row"><span class="detail-label">ID</span><span class="detail-value mono">${u.id}</span></div>
+            <div class="detail-row"><span class="detail-label">E-posta</span><span class="detail-value">${escHtml(u.email || '—')}</span></div>
+            <div class="detail-row"><span class="detail-label">Plan</span><span class="detail-value">${planBadge(u)}</span></div>
+            <div class="detail-row"><span class="detail-label">Bugün Mesaj</span><span class="detail-value mono">${u.messages_today ?? 0}</span></div>
+            <div class="detail-row"><span class="detail-label">Toplam Mesaj</span><span class="detail-value mono">${u.total_messages ?? 0}</span></div>
+            <div class="detail-row"><span class="detail-label">Son Aktif</span><span class="detail-value">${timeAgo(u.last_active)}</span></div>
+            <div class="detail-row"><span class="detail-label">Kayıt</span><span class="detail-value">${formatDate(u.created_at)}</span></div>
+            ${u.premium_expires_at ? `<div class="detail-row"><span class="detail-label">Premium Bitiş</span><span class="detail-value">${formatDate(u.premium_expires_at)}</span></div>` : ''}
+            ${u.ban_reason ? `<div class="detail-row"><span class="detail-label">Ban Sebebi</span><span class="detail-value" style="color:var(--red)">${escHtml(u.ban_reason)}</span></div>` : ''}
+        `;
+
+        const actions = document.getElementById('modalActions');
+        if (u.is_premium) {
+            actions.innerHTML += `<button class="btn-modal default" onclick="togglePremium(${u.id}, false); closeModal()"><i class="fas fa-crown"></i> Premium Kaldır</button>`;
+        } else {
+            actions.innerHTML += `<button class="btn-modal primary" onclick="togglePremium(${u.id}, true); closeModal()"><i class="fas fa-crown"></i> Premium Yap</button>`;
+        }
+
+        actions.innerHTML += `<button class="btn-modal default" onclick="resetUsage(${u.id}); closeModal()"><i class="fas fa-redo"></i> Limiti Sıfırla</button>`;
+
+        if (u.is_banned) {
+            actions.innerHTML += `<button class="btn-modal default" onclick="banUser(${u.id}, false); closeModal()"><i class="fas fa-check"></i> Banı Kaldır</button>`;
+        } else {
+            actions.innerHTML += `<button class="btn-modal danger" onclick="banUser(${u.id}, true); closeModal()"><i class="fas fa-ban"></i> Banla</button>`;
+        }
+
+    } catch(e) {
+        document.getElementById('modalUserDetails').innerHTML = '<p style="color:var(--red)">Veri alınamadı.</p>';
+    }
+}
+
+function closeModal() {
+    document.getElementById('userModal').classList.remove('show');
+}
+
+// ── USER ACTIONS ─────────────────────────────────────
+async function toggleAdmin(userId, makeAdmin) {
+    if (makeAdmin && !confirm('Bu kullanıcıyı admin yapmak istediğinizden emin misiniz?')) return;
+    if (!makeAdmin && !confirm('Bu kullanıcının admin yetkisini kaldırmak istediğinizden emin misiniz?')) return;
+    try {
+        const res  = await fetch(API, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'toggle_admin', user_id: userId, enable: makeAdmin })
+        });
+        const data = await res.json();
+        if (data.success || data.status === 'success') {
+            toast(makeAdmin ? '🛡️ Admin yetkisi verildi ✓' : 'Admin yetkisi kaldırıldı ✓', makeAdmin ? 'success' : 'success');
+            loadUsers(usersCurrentPage);
+        } else {
+            toast(data.message || 'İşlem başarısız', 'error');
+        }
+    } catch(e) {
+        toast('Bağlantı hatası', 'error');
+    }
+}
+
+async function togglePremium(userId, enable) {
+    try {
+        const res  = await fetch(API, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'toggle_premium', user_id: userId, enable })
+        });
+        const data = await res.json();
+        if (data.status === 'success' || data.success) {
+            toast(enable ? 'Premium aktifleştirildi ✓' : 'Premium kaldırıldı ✓');
+            loadUsers(usersCurrentPage);
+        } else {
+            toast(data.message || 'İşlem başarısız', 'error');
+        }
+    } catch(e) {
+        toast('Bağlantı hatası', 'error');
+    }
+}
+
+async function banUser(userId, ban) {
+    if (ban && !confirm('Bu kullanıcıyı banlamak istediğinizden emin misiniz?')) return;
+    try {
+        const res  = await fetch(API, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'ban_user', user_id: userId, ban })
+        });
+        const data = await res.json();
+        if (data.status === 'success' || data.success) {
+            toast(ban ? 'Kullanıcı banlandı' : 'Ban kaldırıldı ✓', ban ? 'error' : 'success');
+            loadUsers(usersCurrentPage);
+        } else {
+            toast(data.message || 'İşlem başarısız', 'error');
+        }
+    } catch(e) {
+        toast('Bağlantı hatası', 'error');
+    }
+}
+
+async function resetUsage(userId) {
+    try {
+        const res  = await fetch(API, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'reset_usage', user_id: userId })
+        });
+        const data = await res.json();
+        toast(data.status === 'success' || data.success ? 'Limit sıfırlandı ✓' : 'İşlem başarısız', data.status === 'success' ? 'success' : 'error');
+    } catch(e) {
+        toast('Bağlantı hatası', 'error');
+    }
+}
+
+// ── PAYMENTS ─────────────────────────────────────────
+async function loadPayments(page = 1) {
+    paymentsCurrentPage = page;
+    const tbody = document.getElementById('paymentsTable');
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:32px;color:var(--text3)"><i class="fas fa-spinner fa-spin"></i> Yükleniyor...</td></tr>';
+
+    try {
+        const res  = await fetch(API, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'get_payments', page, limit: 20 })
+        });
+        const data = await res.json();
+
+        if (!data.payments?.length) {
+            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:32px;color:var(--text3)">Ödeme kaydı bulunamadı</td></tr>';
+            return;
+        }
+
+        document.getElementById('paymentsPageInfo').textContent =
+            `${(page-1)*20+1}–${Math.min(page*20, data.total||0)} / ${data.total||0}`;
+
+        tbody.innerHTML = data.payments.map(p => `
+            <tr>
+                <td>
+                    <div class="user-cell">
+                        <div class="user-avatar">${initials(p.user_name)}</div>
+                        <div>
+                            <div class="user-name">${escHtml(p.user_name || '—')}</div>
+                            <div class="user-email">${escHtml(p.user_email || '—')}</div>
+                        </div>
+                    </div>
+                </td>
+                <td>${p.plan_name || '—'}</td>
+                <td style="font-weight:600;color:var(--green)">₺${p.amount?.toLocaleString('tr') || '—'}</td>
+                <td>${p.status === 'success'
+                    ? '<span class="badge active"><i class="fas fa-check"></i> Başarılı</span>'
+                    : '<span class="badge banned"><i class="fas fa-times"></i> Başarısız</span>'
+                }</td>
+                <td style="color:var(--text3);font-size:12px">${formatDate(p.created_at)}</td>
+                <td class="mono" style="color:var(--text3);font-size:11px">${p.iyzico_id || '—'}</td>
+            </tr>
+        `).join('');
+
+        renderPagination('paymentsPagination', page, data.total_pages || 1, loadPayments);
+
+    } catch(e) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:32px;color:var(--red)">Veri alınamadı</td></tr>';
+    }
+}
+
+// ── LOGS ──────────────────────────────────────────────
+async function loadLogs() {
+    const tbody = document.getElementById('logsTable');
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:32px;color:var(--text3)"><i class="fas fa-spinner fa-spin"></i> Yükleniyor...</td></tr>';
+
+    try {
+        const res  = await fetch(API, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'get_logs', limit: 50, type: logFilter })
+        });
+        const data = await res.json();
+
+        if (!data.logs?.length) {
+            tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:32px;color:var(--text3)">Log kaydı bulunamadı</td></tr>';
+            return;
+        }
+
+        const typeColors = {
+            auth: 'cyan', payment: 'purple', error: 'red', info: 'green'
+        };
+
+        tbody.innerHTML = data.logs.map(l => {
+            const color = typeColors[l.type] || 'cyan';
+            return `
+                <tr>
+                    <td class="mono" style="color:var(--text3);font-size:11px">${formatDate(l.created_at)}</td>
+                    <td><span class="badge" style="background:rgba(var(--${color}-rgb,0,242,254),0.1);color:var(--${color})">${l.type?.toUpperCase() || 'INFO'}</span></td>
+                    <td style="font-size:12px">${escHtml(l.user_email || '—')}</td>
+                    <td style="font-size:12px;color:var(--text2)">${escHtml(l.description || '—')}</td>
+                    <td class="mono" style="font-size:11px;color:var(--text3)">${l.ip || '—'}</td>
+                </tr>
+            `;
+        }).join('');
+
+    } catch(e) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:32px;color:var(--red)">Veri alınamadı</td></tr>';
+    }
+}
+
+function setLogFilter(btn, type) {
+    document.querySelectorAll('#page-logs .filter-tab').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    logFilter = type;
+    loadLogs();
+}
+
+// ── PAGINATION ────────────────────────────────────────
+function renderPagination(containerId, current, total, callback) {
+    const container = document.getElementById(containerId);
+    if (total <= 1) { container.innerHTML = ''; return; }
+
+    let html = `<button class="page-btn" onclick="${callback.name}(${current-1})" ${current===1?'disabled':''}>
+                    <i class="fas fa-chevron-left"></i></button>`;
+
+    const range = 2;
+    for (let i = Math.max(1, current-range); i <= Math.min(total, current+range); i++) {
+        html += `<button class="page-btn ${i===current?'active':''}" onclick="${callback.name}(${i})">${i}</button>`;
+    }
+
+    html += `<button class="page-btn" onclick="${callback.name}(${current+1})" ${current===total?'disabled':''}>
+                 <i class="fas fa-chevron-right"></i></button>`;
+    container.innerHTML = html;
+}
+
+// ── XSS koruması ──────────────────────────────────────
+function escHtml(str) {
+    if (!str) return '';
+    return str.toString()
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+// ── Modal dışına tıklama kapatır ──────────────────────
+document.getElementById('userModal').addEventListener('click', function(e) {
+    if (e.target === this) closeModal();
+});
+
+// ── INIT ──────────────────────────────────────────────
+(async function init() {
+    await checkAuth();
+    loadStats();
+    // Her 2 dakikada bir istatistik güncelle
+    setInterval(loadStats, 120000);
+})();
+</script>
+</body>
+</html>
