@@ -731,7 +731,7 @@ async def synthesize_with_llm(
     lang_rule = "YANITI TÜRKÇE yaz." if language == "tr" else "Respond in ENGLISH."
     ctx       = f"\nBağlam: {context_hint}" if context_hint else ""
 
-    prompt = f"""Kullanıcı: "{query}"{ctx}
+    prompt = f"""Kullanıcı sorusu: "{query}"{ctx}
 
 ARAMA SONUÇLARI:
 {search_txt}
@@ -739,13 +739,22 @@ ARAMA SONUÇLARI:
 SAYFA İÇERİKLERİ:
 {page_txt if page_txt else "(sayfa içeriği alınamadı — özet kullanılıyor)"}
 
-Kurallar:
+GÖREV: Yukarıdaki web kaynaklarını sentezle ve soruyu doğrudan yanıtla.
+
+ZORUNLU KURALLAR:
 1. {lang_rule}
-2. Doğrudan başla, giriş cümlesi yok
-3. Gerçek veriler: tarih, sayı, isim varsa ekle
-4. Kaynak belirt: "X'e göre..." veya "(Kaynak: Y)"
-5. Maksimum 350 kelime
-6. SADECE verilen web verilerini kullan"""
+2. Doğrudan başla — giriş, teşekkür, "tabii ki" yok
+3. Sayısal değerleri (TL, %, tarih) KAYNAĞA BAĞLA — hangi değer hangi kaynaktan geldiğini belirt
+4. Çelişen bilgi varsa: en güncel kaynağı seç, hangisinin daha yeni olduğunu belirt
+5. Emin olmadığın bir değeri YAZMA — yazmak yerine "kaynaklarda net bilgi yok" de
+6. Kaynak belirt: "X'e göre..." veya "(Kaynak: Y, Tarih: Z)"
+7. Maksimum 300 kelime — özlü ol
+8. SADECE verilen kaynaklardaki bilgiyi kullan, eğitim verisinden tahminde bulunma
+
+YANLIŞ YAPMA — BUNLARI ASLA YAPMA:
+- Farklı şirket türlerine ait rakamları karıştırma (örn: limited şirket ile anonim şirket)
+- Eski mevzuatı güncelmiş gibi sunma
+- Kaynak belirtmeden kesin rakam verme"""
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -757,10 +766,15 @@ Kurallar:
                     "model": SYNTHESIS_MODEL,
                     "messages": [
                         {"role": "system",
-                         "content": "Web arama sonuçlarını analiz eden, net ve kaynaklı yanıtlar sunan asistansın."},
+                         "content": (
+                             "Web arama sonuçlarını analiz eden, doğruluk odaklı bir araştırma asistanısın. "
+                             "Sayısal değerleri (para, oran, tarih) her zaman kaynağa bağlarsın. "
+                             "Farklı kategorilere ait rakamları (örn: şirket türleri, vergi dilimleri) "
+                             "asla karıştırmazsın. Emin olmadığın bilgiyi yazmak yerine belirtirsin."
+                         )},
                         {"role": "user", "content": prompt},
                     ],
-                    "max_tokens": 800, "temperature": 0.2, "stream": False,
+                    "max_tokens": 800, "temperature": 0.1, "stream": False,
                 })
             content = resp.json().get("choices",[{}])[0].get("message",{}).get("content","")
             if content:
