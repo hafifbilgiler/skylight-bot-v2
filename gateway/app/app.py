@@ -31,23 +31,36 @@ import smtplib
 import datetime
 import threading
 import json
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from typing import Optional, List, Dict, Any, Tuple
 from contextlib import asynccontextmanager
+from typing import Optional, List, Dict, Any, Tuple
 
-import jwt
-import httpx
-import clamd
-import psycopg2
-import psycopg2.pool
-from fastapi import FastAPI
-import aiosmtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText, HTTPException, Header, Request, BackgroundTasks, File, UploadFile, Body
+# --- Web Framework (FastAPI & Uvicorn) ---
+from fastapi import FastAPI, HTTPException, Request, BackgroundTasks, File, UploadFile, Body
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, EmailStr
+
+# --- Güvenlik & Kimlik Doğrulama (JWT & Crypto) ---
+import jwt
+from passlib.context import CryptContext
+
+# --- Veritabanı ---
+import psycopg2
+import psycopg2.pool
+
+# --- E-posta İşlemleri ---
+import aiosmtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.header import Header
+
+# --- Dosya Analizi & Yardımcılar ---
+import httpx
+import clamd
+from dotenv import load_dotenv
+
+# --- Doküman İşleme ---
+# Not: Bunları kullanabilmek için pip install pypdf python-docx yapmalısın
 
 # ═══════════════════════════════════════════════════════════════
 # CONFIGURATION
