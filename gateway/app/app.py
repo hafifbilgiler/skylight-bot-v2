@@ -41,7 +41,10 @@ import httpx
 import clamd
 import psycopg2
 import psycopg2.pool
-from fastapi import FastAPI, HTTPException, Header, Request, BackgroundTasks, File, UploadFile, Body
+from fastapi import FastAPI
+import aiosmtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText, HTTPException, Header, Request, BackgroundTasks, File, UploadFile, Body
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, EmailStr
@@ -51,6 +54,14 @@ from pydantic import BaseModel, Field, EmailStr
 # ═══════════════════════════════════════════════════════════════
 
 CHAT_SERVICE_URL = os.getenv("CHAT_SERVICE_URL", "http://skylight-chat:8082")
+
+# ── SMTP — Destek maili için ──────────────────────────────────
+SMTP_SERVER      = os.getenv("SMTP_SERVER", "").strip()
+SMTP_PORT        = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER        = os.getenv("SMTP_USER", "").strip()
+SMTP_PASS        = os.getenv("SMTP_PASS", "").strip()
+SMTP_FROM        = os.getenv("SMTP_FROM", SMTP_USER).strip()
+SUPPORT_EMAIL    = os.getenv("SUPPORT_EMAIL", "destek@one-bune.com").strip()
 RAG_SERVICE_URL = os.getenv("RAG_SERVICE_URL", "http://skylight-rag:8084")
 IMAGE_GEN_SERVICE_URL = os.getenv("IMAGE_GEN_SERVICE_URL", "http://skylight-image-gen:8083")
 IMAGE_ANALYSIS_SERVICE_URL = os.getenv("IMAGE_ANALYSIS_SERVICE_URL", "http://skylight-image-analysis:8002")
@@ -1856,6 +1867,108 @@ async def clear_topics(authorization: str = Header(None)):
 # FEEDBACK
 # ═══════════════════════════════════════════════════════════════
 
+async def _send_support_email(
+    to_user: str,
+    user_name: str,
+    support_type: str,
+    message: str,
+) -> None:
+    """Destekçiye bildirim + kullanıcıya otomatik yanıt gönder."""
+    if not SMTP_SERVER or not SMTP_USER:
+        print("[SUPPORT EMAIL] SMTP yapılandırılmamış, email atlanıyor")
+        return
+
+    type_labels = {"bug": "🐛 Hata Bildirimi", "idea": "💡 Öneri/Fikir", "general": "💬 Genel Geri Bildirim"}
+    type_label  = type_labels.get(support_type, "📩 Geri Bildirim")
+
+    # ── 1. Ekibe bildirim ────────────────────────────────────
+    team_html = f"""
+<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#0f0f14;color:#e0e0e0;border-radius:12px;overflow:hidden;">
+  <div style="background:linear-gradient(135deg,#00f2fe,#a78bfa);padding:20px 24px;">
+    <h2 style="margin:0;color:#000;font-size:18px;">{type_label}</h2>
+    <p style="margin:4px 0 0;color:rgba(0,0,0,0.6);font-size:13px;">Skylight Destek Sistemi</p>
+  </div>
+  <div style="padding:24px;">
+    <table style="width:100%;border-collapse:collapse;">
+      <tr><td style="padding:8px 0;color:#888;width:120px;">Kullanıcı</td><td style="padding:8px 0;font-weight:600;">{user_name}</td></tr>
+      <tr><td style="padding:8px 0;color:#888;">E-posta</td><td style="padding:8px 0;">{to_user}</td></tr>
+      <tr><td style="padding:8px 0;color:#888;">Tür</td><td style="padding:8px 0;">{type_label}</td></tr>
+    </table>
+    <div style="background:#1a1a24;border-radius:8px;padding:16px;margin-top:16px;border-left:3px solid #00f2fe;">
+      <p style="margin:0 0 6px;color:#888;font-size:12px;">MESAJ</p>
+      <p style="margin:0;white-space:pre-wrap;line-height:1.6;">{message}</p>
+    </div>
+  </div>
+</div>"""
+
+    team_plain = f"{type_label}\nKullanıcı: {user_name} <{to_user}>\n\n{message}"
+
+    # ── 2. Kullanıcıya otomatik yanıt ───────────────────────
+    user_html = f"""
+<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#0f0f14;color:#e0e0e0;border-radius:12px;overflow:hidden;">
+  <div style="background:linear-gradient(135deg,#00f2fe,#a78bfa);padding:20px 24px;">
+    <h2 style="margin:0;color:#000;font-size:18px;">Mesajınızı aldık! ✓</h2>
+    <p style="margin:4px 0 0;color:rgba(0,0,0,0.6);font-size:13px;">ONE-BUNE Destek Ekibi</p>
+  </div>
+  <div style="padding:24px;">
+    <p>Merhaba <strong>{user_name}</strong>,</p>
+    <p>Geri bildiriminiz için teşekkür ederiz. Mesajınız destek ekibimize iletildi.</p>
+    <div style="background:#1a1a24;border-radius:8px;padding:16px;margin:16px 0;border-left:3px solid #a78bfa;">
+      <p style="margin:0 0 6px;color:#888;font-size:12px;">GÖNDERDİĞİNİZ MESAJ</p>
+      <p style="margin:0;white-space:pre-wrap;line-height:1.6;font-size:13px;">{message[:300]}{'...' if len(message) > 300 else ''}</p>
+    </div>
+    <p>En kısa sürede size geri döneceğiz. Genellikle 24 saat içinde yanıt veriyoruz.</p>
+    <p style="margin-top:20px;color:#888;font-size:12px;">
+      Bu e-posta otomatik olarak gönderilmiştir. Yanıtlamak için doğrudan
+      <a href="mailto:{SUPPORT_EMAIL}" style="color:#00f2fe;">{SUPPORT_EMAIL}</a> adresine yazabilirsiniz.
+    </p>
+  </div>
+  <div style="background:#0a0a12;padding:16px 24px;text-align:center;">
+    <p style="margin:0;color:#444;font-size:11px;">© ONE-BUNE by Skymerge Technology</p>
+  </div>
+</div>"""
+
+    user_plain = f"""Merhaba {user_name},
+
+Geri bildiriminiz için teşekkür ederiz. Mesajınız destek ekibimize iletildi.
+En kısa sürede size geri döneceğiz (genellikle 24 saat içinde).
+
+Doğrudan iletişim: {SUPPORT_EMAIL}
+
+ONE-BUNE Destek Ekibi"""
+
+    try:
+        # Ekibe bildirim
+        msg1 = MIMEMultipart("alternative")
+        msg1["From"]    = f"ONE-BUNE Destek <{SMTP_FROM}>"
+        msg1["To"]      = SUPPORT_EMAIL
+        msg1["Subject"] = f"{type_label} — {user_name}"
+        msg1["Reply-To"] = to_user
+        msg1.attach(MIMEText(team_plain, "plain", "utf-8"))
+        msg1.attach(MIMEText(team_html,  "html",  "utf-8"))
+        await aiosmtplib.send(
+            msg1, hostname=SMTP_SERVER, port=SMTP_PORT,
+            username=SMTP_USER, password=SMTP_PASS, start_tls=True,
+        )
+        print(f"[SUPPORT EMAIL] Ekip bildirimi gönderildi → {SUPPORT_EMAIL}")
+
+        # Kullanıcıya otomatik yanıt
+        msg2 = MIMEMultipart("alternative")
+        msg2["From"]    = f"ONE-BUNE Destek <{SMTP_FROM}>"
+        msg2["To"]      = to_user
+        msg2["Subject"] = "Mesajınızı aldık — ONE-BUNE Destek"
+        msg2.attach(MIMEText(user_plain, "plain", "utf-8"))
+        msg2.attach(MIMEText(user_html,  "html",  "utf-8"))
+        await aiosmtplib.send(
+            msg2, hostname=SMTP_SERVER, port=SMTP_PORT,
+            username=SMTP_USER, password=SMTP_PASS, start_tls=True,
+        )
+        print(f"[SUPPORT EMAIL] Kullanıcı yanıtı gönderildi → {to_user}")
+
+    except Exception as e:
+        print(f"[SUPPORT EMAIL ERROR] {e}")
+
+
 @app.post("/feedback")
 async def submit_feedback(data: FeedbackRequest, authorization: str = Header(None)):
     user_id = None
@@ -1875,6 +1988,36 @@ async def submit_feedback(data: FeedbackRequest, authorization: str = Header(Non
                 VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
             """, (user_id, data.conversation_id or "", data.user_query, data.assistant_response, data.rating, data.comment or ""))
             feedback_id = cur.fetchone()[0]; conn.commit()
+
+            # Destek tipi tespit et — "[DESTEK - BUG]" formatından
+            support_type = "general"
+            comment_lower = (data.comment or "").lower()
+            if "[bug]" in comment_lower:
+                support_type = "bug"
+            elif "[idea]" in comment_lower:
+                support_type = "idea"
+
+            # Sadece destek mesajlarında mail at (like/dislike'da değil)
+            is_support = data.user_query and "[DESTEK" in data.user_query
+            if is_support:
+                # Kullanıcı emailini DB'den al
+                try:
+                    cur.execute("SELECT email, name FROM users WHERE id=%s", (user_id,))
+                    row = cur.fetchone()
+                    if row:
+                        user_email, user_name = row[0], row[1] or "Kullanıcı"
+                        # Background task olarak mail gönder — response'u bekleme
+                        import asyncio as _asyncio
+                        support_msg = (data.comment or "").replace(f"[{support_type}]", "").strip()
+                        _asyncio.create_task(_send_support_email(
+                            to_user=user_email,
+                            user_name=user_name,
+                            support_type=support_type,
+                            message=support_msg,
+                        ))
+                except Exception as mail_err:
+                    print(f"[SUPPORT EMAIL TASK ERROR] {mail_err}")
+
             return {"status": "success", "feedback_id": feedback_id}
         finally:
             pool.putconn(conn)
