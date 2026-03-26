@@ -238,7 +238,7 @@ def extract_text_from_file(filename: str, content: bytes) -> Tuple[str, str]:
                         break
                     txt = page.extract_text() or ""
                     if txt.strip():
-                        pages.append(f"[Sayfa {i+1}]\n{txt}")
+                        pages.append(f"--- Sayfa {i+1} ---\n{txt}")
                 text = "\n\n".join(pages)
                 if not text.strip():
                     return "[PDF boş veya taranmış görsel — metin çıkarılamadı]", "pdf_empty"
@@ -255,7 +255,7 @@ def extract_text_from_file(filename: str, content: bytes) -> Tuple[str, str]:
                             break
                         txt = page.extract_text() or ""
                         if txt.strip():
-                            pages.append(f"[Sayfa {i+1}]\n{txt}")
+                            pages.append(f"--- Sayfa {i+1} ---\n{txt}")
                 text = "\n\n".join(pages)
                 return text[:MAX_EXTRACTED_CHARS] if text.strip() else "[PDF metin içermiyor]", "pdf"
             except ImportError:
@@ -280,7 +280,7 @@ def extract_text_from_file(filename: str, content: bytes) -> Tuple[str, str]:
                         parts.append(para.text)
             # Tablolar
             for i, table in enumerate(doc.tables):
-                parts.append(f"\n[Tablo {i+1}]")
+                parts.append(f"\n=== Tablo {i+1} ===")
                 for row in table.rows:
                     cells = [c.text.strip() for c in row.cells if c.text.strip()]
                     if cells:
