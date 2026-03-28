@@ -37,7 +37,7 @@ import asyncio
 import re
 from datetime import datetime
 
-from intent_classifier import build_reasoning_hint, get_intent_thinking_steps, Intent
+from intent_classifier import build_reasoning_hint, get_intent_thinking_steps, Intent, classify_intent
 from conversation_state import (
     build_state_context, extract_and_update_state,
     get_workspace, get_version, set_task,
