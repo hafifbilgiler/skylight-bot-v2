@@ -171,8 +171,9 @@ class ThinkingStep(BaseModel):
 
 # ── Anlık API sinyalleri — smart tools /unified'a gider ────────
 _CURRENCY_KW  = ("dolar","euro","eur","usd","gbp","sterlin","pound","jpy","yen","chf",
-                 "kur","döviz","doviz","exchange rate","kaç tl","kac tl","tl kaç",
-                 "dolar kaç","euro kaç","kur nedir")
+                 "döviz","doviz","exchange rate","kaç tl","kac tl","tl kaç",
+                 "dolar kaç","euro kaç","döviz kuru","kur nedir","dolar kuru","euro kuru")
+                 # "kur" KALDIRILDI — "kurulur","kurulum" gibi kelimelerde false positive veriyordu
 _WEATHER_KW   = ("hava durumu","havadurumu","hava nasıl","havalar nasıl",
                  "hava kaç derece","sıcaklık","sicaklik","yağmur yağıyor",
                  "kar yağıyor","weather","forecast","bugün hava","yarın hava","derece")
@@ -1039,7 +1040,12 @@ async def build_messages(
     if context:
         print(f"[CHAT] Web context received ({len(context)} chars), synthesizing...")
         synthesized = await synthesize_web_results(context, user_prompt, config)
-        system_content += f"\n\n[Web Search Results]\n{synthesized}\n[/Web Search Results]"
+        # ÖNEMLİ: Synthesis'i başa ekle — LLM eğitim verisinden önce bunu görsün
+        system_content = (
+            f"[GÜNCEL BİLGİ — BUNU KULLAN, EĞİTİM VERİSİNİ DEĞİL]\n"
+            f"{synthesized}\n"
+            f"[/GÜNCEL BİLGİ]\n\n"
+        ) + system_content
 
     # 6. SESSION SUMMARY (legacy)
     if session_summary:

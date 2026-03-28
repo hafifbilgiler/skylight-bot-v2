@@ -15,6 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Application code
 COPY app/app.py .
+COPY app/smart_router.py .
 
 # Run
 EXPOSE 8000

@@ -55,6 +55,15 @@ from pydantic import BaseModel, Field, EmailStr
 
 CHAT_SERVICE_URL = os.getenv("CHAT_SERVICE_URL", "http://skylight-chat:8082")
 
+# Smart Router — LLM tabanlı mesaj sınıflandırıcı
+try:
+    from smart_router import route_message, router_to_gateway_mode
+    SMART_ROUTER_ENABLED = True
+    print("[ROUTER] Smart Router yüklendi ✅")
+except ImportError:
+    SMART_ROUTER_ENABLED = False
+    print("[ROUTER] Smart Router yok — keyword fallback aktif")
+
 # ── SMTP — Destek maili için ──────────────────────────────────
 SMTP_SERVER      = os.getenv("SMTP_SERVER", "").strip()
 SMTP_PORT        = int(os.getenv("SMTP_PORT", "587"))
@@ -2472,45 +2481,58 @@ async def chat_endpoint(
         [{"role": m.role, "content": m.content} for m in (request_body.history or [])]
     )
 
-    # ── OTOMATİK İNTENT ROUTING ─────────────────────────────
-    # Frontend "assistant" gönderir → gateway intent'e bakarak modu seçer
+    # ── SMART ROUTER — LLM tabanlı mesaj sınıflandırma ─────────
+    # Llama-3.1-8B her mesajı önceden analiz eder → doğru mode
+    # "kur" gibi false positive'ler artık olmaz
     prompt = request_body.prompt
     mode   = request_body.mode or conv_ctx.get("last_mode", "assistant")
-    prompt_lower = (prompt or "").lower()
 
-    # Kod intent sinyalleri
-    _CODE_SIGNALS = (
-        "kod yaz","kodu","yaz bana","function","class","def ","import ","return ",
-        "bug","hata","error","exception","traceback","fix","düzelt","refactor",
-        "optimize","test yaz","debug","deploy","dockerfile","kubernetes yaml",
-        "sql sorgu","api yaz","endpoint","script","migration","webhook",
-        "python","javascript","typescript","golang","rust","bash script",
-        "react","fastapi","django","express","next.js","flutter","kotlin",
-    )
-    _IT_SIGNALS = (
-        "kubernetes","kubectl","docker","nginx","pod","namespace","deployment",
-        "terraform","ansible","ci/cd","github actions","jenkins","pipeline",
-        "prometheus","grafana","loki","elk stack","ssl sertifika","dns",
-        "load balancer","vpn","firewall","sunucu kurulum","server config",
-        "arduino","esp32","plc","scada","modbus","pcb tasarım","gpio",
-        "postgresql replikasyon","redis cluster","mongodb sharding",
-    )
-
-    if mode == "assistant":
-        if any(sig in prompt_lower for sig in _CODE_SIGNALS):
-            mode = "code"
-            print(f"[AUTO ROUTING] '{prompt_lower[:40]}' → code")
-        elif any(sig in prompt_lower for sig in _IT_SIGNALS):
-            mode = "it_expert"
-            print(f"[AUTO ROUTING] '{prompt_lower[:40]}' → it_expert")
-        elif conv_ctx.get("had_code") and any(
-            w in prompt_lower for w in [
-                "devam","düzelt","değiştir","ekle","çıkar","o kısım",
-                "o fonksiyon","o satır","önceki","continue","modify","fix that",
+    if SMART_ROUTER_ENABLED and mode == "assistant":
+        try:
+            history_for_router = [
+                {"role": m.role, "content": m.content}
+                for m in (request_body.history or [])[-4:]  # son 4 mesaj yeterli
             ]
-        ):
+            decision = await route_message(prompt, history_for_router)
+            routed_mode = router_to_gateway_mode(decision)
+
+            if routed_mode != "assistant":
+                mode = routed_mode
+                print(f"[SMART ROUTER] '{prompt[:40]}' → {mode} "
+                      f"(intent={decision.get('intent')}, "
+                      f"realtime={decision.get('needs_realtime')})")
+
+            # Live data kararını gateway'in veri çekme sistemine aktar
+            if decision.get("needs_realtime") and decision.get("tool") != "none":
+                print(f"[SMART ROUTER] Realtime gerekli → tool={decision.get('tool')}")
+
+        except Exception as e:
+            print(f"[SMART ROUTER] Hata: {e} — keyword fallback")
+            # Keyword fallback — eski davranış
+            prompt_lower = (prompt or "").lower()
+            _CODE_SIG = ("yaz bana","kod yaz","fonksiyon yaz","implement et","kodla",
+                         "class yaz","script yaz","test yaz","migration yaz")
+            _IT_SIG   = ("kubernetes","kubectl","docker","nginx","pod","terraform",
+                         "ansible","ci/cd","prometheus","grafana")
+            if any(s in prompt_lower for s in _CODE_SIG):
+                mode = "code"
+            elif any(s in prompt_lower for s in _IT_SIG):
+                mode = "it_expert"
+            elif conv_ctx.get("had_code") and any(
+                w in prompt_lower for w in ["devam","düzelt","değiştir","ekle"]
+            ):
+                mode = "code"
+    elif not SMART_ROUTER_ENABLED:
+        # Router yok — eski keyword mantığı
+        prompt_lower = (prompt or "").lower()
+        _CODE_SIG = ("yaz bana","kod yaz","fonksiyon yaz","implement et","kodla",
+                     "class yaz","script yaz","test yaz","migration yaz",
+                     "connection pool yaz","async def")
+        _IT_SIG   = ("kubernetes","kubectl","docker","nginx","pod","terraform")
+        if any(s in prompt_lower for s in _CODE_SIG):
             mode = "code"
-            print(f"[AUTO ROUTING] Follow-up + kod geçmişi → code")
+        elif any(s in prompt_lower for s in _IT_SIG):
+            mode = "it_expert"
 
     # ── KOD CANAVARI MODU ────────────────────────────────────
     if mode == "code" or (
