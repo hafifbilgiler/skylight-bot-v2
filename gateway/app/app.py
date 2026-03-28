@@ -31,36 +31,23 @@ import smtplib
 import datetime
 import threading
 import json
-from contextlib import asynccontextmanager
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from typing import Optional, List, Dict, Any, Tuple
+from contextlib import asynccontextmanager
 
-# --- Web Framework (FastAPI & Uvicorn) ---
-from fastapi import FastAPI, HTTPException, Request, BackgroundTasks, File, UploadFile, Body
+import jwt
+import httpx
+import clamd
+import psycopg2
+import psycopg2.pool
+from fastapi import FastAPI
+import aiosmtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText, HTTPException, Header, Request, BackgroundTasks, File, UploadFile, Body
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, EmailStr
-
-# --- Güvenlik & Kimlik Doğrulama (JWT & Crypto) ---
-import jwt
-from passlib.context import CryptContext
-
-# --- Veritabanı ---
-import psycopg2
-import psycopg2.pool
-
-# --- E-posta İşlemleri ---
-import aiosmtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from email.header import Header
-
-# --- Dosya Analizi & Yardımcılar ---
-import httpx
-import clamd
-from dotenv import load_dotenv
-
-# --- Doküman İşleme ---
-# Not: Bunları kullanabilmek için pip install pypdf python-docx yapmalısın
 
 # ═══════════════════════════════════════════════════════════════
 # CONFIGURATION
@@ -2485,14 +2472,50 @@ async def chat_endpoint(
         [{"role": m.role, "content": m.content} for m in (request_body.history or [])]
     )
 
-    # ── KOD CANAVARI MODU ───────────────────────────────────
-    # Code modu veya "devam et" isteğinde prompt'u zenginleştir
+    # ── OTOMATİK İNTENT ROUTING ─────────────────────────────
+    # Frontend "assistant" gönderir → gateway intent'e bakarak modu seçer
     prompt = request_body.prompt
     mode   = request_body.mode or conv_ctx.get("last_mode", "assistant")
+    prompt_lower = (prompt or "").lower()
 
+    # Kod intent sinyalleri
+    _CODE_SIGNALS = (
+        "kod yaz","kodu","yaz bana","function","class","def ","import ","return ",
+        "bug","hata","error","exception","traceback","fix","düzelt","refactor",
+        "optimize","test yaz","debug","deploy","dockerfile","kubernetes yaml",
+        "sql sorgu","api yaz","endpoint","script","migration","webhook",
+        "python","javascript","typescript","golang","rust","bash script",
+        "react","fastapi","django","express","next.js","flutter","kotlin",
+    )
+    _IT_SIGNALS = (
+        "kubernetes","kubectl","docker","nginx","pod","namespace","deployment",
+        "terraform","ansible","ci/cd","github actions","jenkins","pipeline",
+        "prometheus","grafana","loki","elk stack","ssl sertifika","dns",
+        "load balancer","vpn","firewall","sunucu kurulum","server config",
+        "arduino","esp32","plc","scada","modbus","pcb tasarım","gpio",
+        "postgresql replikasyon","redis cluster","mongodb sharding",
+    )
+
+    if mode == "assistant":
+        if any(sig in prompt_lower for sig in _CODE_SIGNALS):
+            mode = "code"
+            print(f"[AUTO ROUTING] '{prompt_lower[:40]}' → code")
+        elif any(sig in prompt_lower for sig in _IT_SIGNALS):
+            mode = "it_expert"
+            print(f"[AUTO ROUTING] '{prompt_lower[:40]}' → it_expert")
+        elif conv_ctx.get("had_code") and any(
+            w in prompt_lower for w in [
+                "devam","düzelt","değiştir","ekle","çıkar","o kısım",
+                "o fonksiyon","o satır","önceki","continue","modify","fix that",
+            ]
+        ):
+            mode = "code"
+            print(f"[AUTO ROUTING] Follow-up + kod geçmişi → code")
+
+    # ── KOD CANAVARI MODU ────────────────────────────────────
     if mode == "code" or (
         conv_ctx.get("had_code") and
-        any(s in prompt.lower() for s in ["devam et", "continue", "tamamla", "complete", "bitir", "devam"])
+        any(s in prompt_lower for s in ["devam et", "continue", "tamamla", "complete", "bitir", "devam"])
     ):
         # "devam et" ise son kod snippet'ini ekle
         if conv_ctx.get("last_code_snippet") and any(
