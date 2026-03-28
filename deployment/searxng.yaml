@@ -9,7 +9,7 @@
 #   ✅ forwarded_allow_ips: "*" — X-Forwarded-For uyarısı gider
 #   ✅ Ahmia, Torch disabled — zaten fail oluyordu
 # ═══════════════════════════════════════════════════════════════
-
+ 
 ---
 apiVersion: v1
 kind: Secret
@@ -21,7 +21,7 @@ metadata:
 type: Opaque
 stringData:
   secret_key: "b597efad30dc58c0ade6a43a5aac2f1a36ead2628638b99cb3c50ab273c26f29"
-
+ 
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -33,12 +33,12 @@ metadata:
 data:
   settings.yml: |
     use_default_settings: true
-
+ 
     general:
       debug: false
       instance_name: "Skylight Search"
       enable_metrics: false
-
+ 
     search:
       safe_search: 1
       default_lang: "tr"
@@ -48,7 +48,7 @@ data:
       formats:
         - html
         - json
-
+ 
     server:
       secret_key: "${SEARXNG_SECRET_KEY}"
       bind_address: "0.0.0.0"
@@ -57,16 +57,16 @@ data:
       image_proxy: false
       method: "GET"
       forwarded_allow_ips: "*"
-
+ 
     botdetection:
       enabled: false
-
+ 
     ui:
       static_use_hash: true
       default_locale: "tr"
       theme_args:
         simple_style: "dark"
-
+ 
     engines:
       - name: bing
         engine: bing
@@ -75,7 +75,7 @@ data:
         categories: general
         disabled: false
         timeout: 8.0
-
+ 
       - name: google
         engine: google
         shortcut: g
@@ -83,7 +83,7 @@ data:
         categories: general
         disabled: false
         timeout: 10.0
-
+ 
       - name: startpage
         engine: startpage
         shortcut: sp
@@ -91,7 +91,7 @@ data:
         categories: general
         disabled: false
         timeout: 8.0
-
+ 
       - name: wikipedia
         engine: wikipedia
         shortcut: w
@@ -100,7 +100,7 @@ data:
         disabled: false
         timeout: 5.0
         language: tr
-
+ 
       - name: bing news
         engine: bing_news
         shortcut: bn
@@ -108,26 +108,31 @@ data:
         weight: 1.0
         disabled: false
         timeout: 8.0
-
+ 
       - name: duckduckgo
         engine: duckduckgo
         shortcut: d
         disabled: true
-
+ 
       - name: ahmia
         engine: ahmia
         shortcut: ah
         disabled: true
-
+ 
+      - name: torch
+        engine: torch
+        shortcut: to
+        disabled: true
+ 
     limiter:
       enabled: false
-
+ 
     redis_url: "redis://skylight-redis:6379/1"
-
+ 
   limiter.toml: |
     [botdetection.ip_limit]
     link_token = false
-
+ 
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -153,7 +158,7 @@ spec:
         runAsUser: 977
         runAsGroup: 977
         fsGroup: 977
-
+ 
       # initContainer: ConfigMap dosyalarını kopyalayıp sahipliği düzelt
       initContainers:
         - name: fix-ownership
@@ -177,7 +182,7 @@ spec:
               readOnly: true
             - name: searxng-config-writable
               mountPath: /searxng-config
-
+ 
       containers:
         - name: searxng
           image: searxng/searxng:2026.3.20-6c7e9c197
@@ -185,7 +190,7 @@ spec:
           ports:
             - containerPort: 8080
               name: http
-
+ 
           env:
             - name: SEARXNG_SECRET_KEY
               valueFrom:
@@ -196,11 +201,11 @@ spec:
               value: "http://searxng.skylight-bot-v2.svc.cluster.local:8080"
             - name: INSTANCE_NAME
               value: "Skylight Search"
-
+ 
           volumeMounts:
             - name: searxng-config-writable
               mountPath: /etc/searxng
-
+ 
           resources:
             requests:
               memory: "256Mi"
@@ -208,7 +213,7 @@ spec:
             limits:
               memory: "512Mi"
               cpu: "500m"
-
+ 
           livenessProbe:
             httpGet:
               path: /healthz
@@ -217,7 +222,7 @@ spec:
             periodSeconds: 30
             timeoutSeconds: 5
             failureThreshold: 3
-
+ 
           readinessProbe:
             httpGet:
               path: /healthz
@@ -226,13 +231,13 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
-
+ 
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
               drop:
                 - ALL
-
+ 
       volumes:
         - name: searxng-config-source
           configMap:
@@ -242,10 +247,10 @@ spec:
                 path: settings.yml
               - key: limiter.toml
                 path: limiter.toml
-
+ 
         - name: searxng-config-writable
           emptyDir: {}
-
+ 
 ---
 apiVersion: v1
 kind: Service
