@@ -1,5 +1,13 @@
 # ═══════════════════════════════════════════════════════════════
-# SEARXNG — Fixed (no root, no PVC permission issue)
+# SEARXNG — Production Ready
+# ═══════════════════════════════════════════════════════════════
+#
+# Düzeltmeler:
+#   ✅ settings.yml ownership: initContainer ile searxng:searxng yapılır
+#   ✅ DuckDuckGo devre dışı — parser hatası (list index out of range)
+#   ✅ limiter.toml ConfigMap'e eklendi — missing config uyarısı gider
+#   ✅ forwarded_allow_ips: "*" — X-Forwarded-For uyarısı gider
+#   ✅ Ahmia, Torch disabled — zaten fail oluyordu
 # ═══════════════════════════════════════════════════════════════
 
 ---
@@ -48,6 +56,7 @@ data:
       base_url: false
       image_proxy: false
       method: "GET"
+      forwarded_allow_ips: "*"
 
     botdetection:
       enabled: false
@@ -62,14 +71,22 @@ data:
       - name: bing
         engine: bing
         shortcut: b
-        weight: 1.0
+        weight: 1.2
         categories: general
         disabled: false
         timeout: 8.0
 
-      - name: duckduckgo
-        engine: duckduckgo
-        shortcut: d
+      - name: google
+        engine: google
+        shortcut: g
+        weight: 1.5
+        categories: general
+        disabled: false
+        timeout: 10.0
+
+      - name: startpage
+        engine: startpage
+        shortcut: sp
         weight: 1.0
         categories: general
         disabled: false
@@ -84,22 +101,6 @@ data:
         timeout: 5.0
         language: tr
 
-      - name: google
-        engine: google
-        shortcut: g
-        weight: 1.2
-        categories: general
-        disabled: false
-        timeout: 10.0
-
-      - name: startpage
-        engine: startpage
-        shortcut: sp
-        weight: 0.9
-        categories: general
-        disabled: false
-        timeout: 8.0
-
       - name: bing news
         engine: bing_news
         shortcut: bn
@@ -108,15 +109,24 @@ data:
         disabled: false
         timeout: 8.0
 
+      - name: duckduckgo
+        engine: duckduckgo
+        shortcut: d
+        disabled: true
+
+      - name: ahmia
+        engine: ahmia
+        shortcut: ah
+        disabled: true
+
     limiter:
       enabled: false
 
     redis_url: "redis://skylight-redis:6379/1"
 
----
-# PVC kaldırıldı — ConfigMap volume kullanıyoruz
-# settings.yml her seferinde ConfigMap'ten gelir
-# Pod restart'ta ayarlar kaybolmaz çünkü ConfigMap'te saklı
+  limiter.toml: |
+    [botdetection.ip_limit]
+    link_token = false
 
 ---
 apiVersion: apps/v1
@@ -138,17 +148,35 @@ spec:
       labels:
         app: searxng
     spec:
-      # ── Düzeltme 1: Tüm pod non-root ──────────────────────
       securityContext:
         runAsNonRoot: true
         runAsUser: 977
         runAsGroup: 977
         fsGroup: 977
 
-      # ── Düzeltme 2: Init container kaldırıldı ─────────────
-      # Root gerektiriyordu, cluster policy izin vermiyor
-      # settings.yml direkt ConfigMap'ten mount ediliyor
-      # initContainers: YOK
+      # initContainer: ConfigMap dosyalarını kopyalayıp sahipliği düzelt
+      initContainers:
+        - name: fix-ownership
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              cp /config/settings.yml /searxng-config/settings.yml
+              cp /config/limiter.toml /searxng-config/limiter.toml
+              chown 977:977 /searxng-config/settings.yml /searxng-config/limiter.toml
+              chmod 640 /searxng-config/settings.yml /searxng-config/limiter.toml
+              echo "Done: $(ls -la /searxng-config/)"
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: searxng-config-source
+              mountPath: /config
+              readOnly: true
+            - name: searxng-config-writable
+              mountPath: /searxng-config
 
       containers:
         - name: searxng
@@ -170,11 +198,8 @@ spec:
               value: "Skylight Search"
 
           volumeMounts:
-            # ── Düzeltme 3: settings.yml doğrudan ConfigMap'ten ──
-            - name: searxng-settings
-              mountPath: /etc/searxng/settings.yml
-              subPath: settings.yml
-              readOnly: true
+            - name: searxng-config-writable
+              mountPath: /etc/searxng
 
           resources:
             requests:
@@ -209,12 +234,17 @@ spec:
                 - ALL
 
       volumes:
-        - name: searxng-settings
+        - name: searxng-config-source
           configMap:
             name: searxng-config
             items:
               - key: settings.yml
                 path: settings.yml
+              - key: limiter.toml
+                path: limiter.toml
+
+        - name: searxng-config-writable
+          emptyDir: {}
 
 ---
 apiVersion: v1
@@ -256,3 +286,9 @@ type: Opaque
 stringData:
   DEEPINFRA_API_KEY: "4hcNLCkZvisyP6wuD2sdY5NPFU2GjBSn"
   BRAVE_API_KEY: ""
+
+
+
+
+
+  
