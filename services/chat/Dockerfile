@@ -21,7 +21,8 @@ COPY prompts/production.py ./prompts_production.py
 
 # Intent Classifier & Reasoning Layer
 COPY app/intent_classifier.py .
-
+COPY app/conversation_state.py .
+COPY app/task_builder.py .
 # Run
 EXPOSE 8082
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8082", "--workers", "2"]
