@@ -363,9 +363,71 @@ def _extract_target(prompt: str, history: List[Dict]) -> Optional[str]:
     return None
 
 
+def _extract_last_topic(history: List[Dict]) -> str:
+    """
+    Son asistan cevabından konuyu çıkar.
+    Kısa follow-up'larda reasoning hint'e inject edilir.
+    "kendim nasıl yaparım hesabı" → "namaz vakti hesaplama" bağlamı korunur.
+    """
+    for msg in reversed(history[-6:]):
+        if msg.get("role") == "assistant":
+            content = msg.get("content", "").strip()
+            # İlk anlamlı satırı al
+            for line in content.split("\n"):
+                line = line.strip()
+                if len(line) > 20 and not line.startswith("#"):
+                    return line[:120]
+    return ""
+
+
+def _is_short_followup(prompt: str, history: List[Dict]) -> bool:
+    """
+    Kısa mesaj (≤7 kelime) + geçmişte asistan cevabı varsa → follow-up say.
+
+    PROBLEM: "kendim nasıl yaparım hesabı" (5 kelime) → CHAT intent düşüyor
+             Kelime overlap düşük → _is_new_topic True dönüyor
+    FIX:     Kısa mesaj + geçmiş varsa → her zaman önceki konunun devamı.
+
+    İstisnalar (follow-up SAYILMAZ):
+    - Selamlama
+    - Açıkça yeni konu başlatan kelimeler
+    """
+    words = prompt.strip().split()
+    if len(words) > 7:
+        return False
+    if not history:
+        return False
+
+    p = prompt.lower().strip()
+
+    # Selamlama ise follow-up değil
+    _GREETINGS_SET = {
+        "selam", "merhaba", "hey", "hi", "hello", "naber",
+        "nasılsın", "günaydın", "iyi günler", "slm", "mrb"
+    }
+    if any(p == g or p.startswith(g) for g in _GREETINGS_SET):
+        return False
+
+    # Açıkça yeni konu sinyali
+    _NEW_TOPIC_SIGNALS = (
+        "başka bir şey", "farklı bir konu", "yeni soru",
+        "bir de şunu", "şimdi şunu", "another thing", "new question",
+    )
+    if any(sig in p for sig in _NEW_TOPIC_SIGNALS):
+        return False
+
+    # Son mesajlar arasında asistan cevabı var mı?
+    return any(m.get("role") == "assistant" for m in history[-4:])
+
+
 def _is_new_topic(prompt: str, history: List[Dict]) -> bool:
     if not history:
         return True
+
+    # Kısa mesaj asla yeni konu sayılmaz — _is_short_followup halleder
+    if len(prompt.split()) <= 7:
+        return False
+
     p_words = set(prompt.lower().split())
     prev_words = set()
     for msg in history[-3:]:
@@ -872,6 +934,28 @@ def classify_intent(
                 "Tüm detayları bir seferde dökme — katmanlı öğret."
             ),
             "confidence": "medium",
+        }
+
+    # ══════════════════════════════════════════════════════════
+    # 23b. KISA MESAJ + GEÇMİŞ → FOLLOW-UP
+    # ══════════════════════════════════════════════════════════
+    # "kendim nasıl yaparım hesabı", "peki nasıl", "kod göster"
+    # gibi kısa mesajlar önceki konunun devamıdır.
+    # Kelime overlap düşük olsa bile bağlamı koru.
+    # ══════════════════════════════════════════════════════════
+    if _is_short_followup(prompt, history):
+        last_topic = _extract_last_topic(history)
+        return {
+            "intent": Intent.FOLLOW_UP_SPECIFIC,
+            "target": last_topic[:60] if last_topic else None,
+            "has_prior_context": True,
+            "response_strategy": (
+                f"Kısa takip sorusu. Önceki konu: '{last_topic[:80] if last_topic else 'önceki konu'}'. "
+                "Kullanıcı o konunun devamını soruyor — önceki bağlamı kullan. "
+                "Soruyu önceki konuyla ilişkilendirerek cevapla. "
+                "Yeni bir konuymuş gibi davranma."
+            ),
+            "confidence": "high",
         }
 
     # ══════════════════════════════════════════════════════════

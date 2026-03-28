@@ -42,6 +42,7 @@ from conversation_state import (
     build_state_context, extract_and_update_state,
     get_workspace, get_version, set_task,
 )
+from task_builder import build_task, task_to_prompt_hint
 from prompts_production import (
     ASSISTANT_SYSTEM_PROMPT,
     CODE_SYSTEM_PROMPT,
@@ -694,6 +695,18 @@ async def build_code_messages(
     reasoning_hint = build_reasoning_hint(user_prompt, history or [], "code")
     system_content = reasoning_hint + "\n\n" + system_content
     print(f"[INTENT/CODE] {reasoning_hint.split(chr(10))[0]}")
+    # ─────────────────────────────────────────────────────────────
+
+    # ── TASK OBJECT — Kod cevabından önce görev tespiti ──────────
+    workspace    = await get_workspace(conversation_id or "")
+    intent_str   = classify_intent(user_prompt, history or [], "code").get("intent", "")
+    task         = build_task(user_prompt, intent_str, workspace, history or [])
+    task_hint    = task_to_prompt_hint(task)
+    system_content = task_hint + "\n\n" + system_content
+    # Task'ı Redis'e kaydet — follow-up'larda bağlam korunur
+    if conversation_id:
+        asyncio.create_task(set_task(conversation_id, task))
+    print(f"[TASK] {task['task_type']} → {task['response_style']} | target={task.get('target','?')}")
     # ─────────────────────────────────────────────────────────────
 
     # Memory
