@@ -1109,6 +1109,9 @@ async def chat(request: ChatRequest):
                     yield f"{step.emoji} {step.message}\n"
                 yield "\n"
 
+            # Model log — hangi model cevaplıyor
+            print(f"[MODEL] mode={request.mode} | model={config['model']} | max_tokens={config['max_tokens']}")
+
             # Streaming response
             async for chunk in stream_deepinfra_completion(
                 messages=messages,
