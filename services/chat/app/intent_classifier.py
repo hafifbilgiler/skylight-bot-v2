@@ -230,8 +230,14 @@ _CONCEPT_LEARN_SIGNALS = (
 )
 
 _HOW_TO_SIGNALS = (
-    "nasıl yapılır", "nasıl yapabilirim", "how to",
-    "how do i", "how can i",
+    "nasıl yapılır", "nasıl yapabilirim", "nasıl yaparım",
+    "nasıl yapsam", "nasıl oluşturabilirim", "nasıl kurabilirim",
+    "nasıl çalışır", "nasıl entegre", "nasıl implement",
+    "nasıl hesaplanır", "nasıl hesaplanır", "hesabı nasıl",
+    "kendim nasıl", "kendim yapabilir miyim", "kendim yapmak",
+    "how to", "how do i", "how can i", "how would i",
+    "ne yapmalıyım", "hangi adımlar", "ne gerekiyor",
+    "nasıl kullanılır", "nasıl bağlanır", "nasıl eklenir",
 )
 
 _STEP_BY_STEP_SIGNALS = (
@@ -852,6 +858,29 @@ def classify_intent(
         }
 
     # ══════════════════════════════════════════════════════════
+    # 18b. HOW-TO — "nasıl yapılır/yaparım" → açıkla, kod yazma
+    # ══════════════════════════════════════════════════════════
+    # NOT: "yap" sinyali hem HOW_TO hem CODE_GENERATE'de var.
+    # HOW_TO burada kazanır — kullanıcı açıkça "yaz/kodla" demedi.
+    # ══════════════════════════════════════════════════════════
+    if any(sig in p for sig in _HOW_TO_SIGNALS):
+        target = _extract_target(prompt, history)
+        last_topic = _extract_last_topic(history)
+        return {
+            "intent": Intent.HOW_TO,
+            "target": target or (last_topic[:60] if last_topic else None),
+            "has_prior_context": has_history,
+            "response_strategy": (
+                f"Kullanıcı '{last_topic[:60] if last_topic else 'konu'}' hakkında "
+                "NASIL YAPILACAĞINI soruyor — KOD YAZMA. "
+                "Yaklaşımı adım adım açıkla (3-5 adım, kısa). "
+                "Sonunda 'Kod örneği ister misin?' diye sor. "
+                "Kullanıcı 'evet/yaz/göster' diyene kadar kesinlikle kod yazma."
+            ),
+            "confidence": "high",
+        }
+
+    # ══════════════════════════════════════════════════════════
     # 19. YENİ KOD YAZMA
     # ══════════════════════════════════════════════════════════
     if any(sig in p for sig in _CODE_GENERATE_SIGNALS) and mode in ("code", "it_expert", "assistant"):
@@ -863,6 +892,27 @@ def classify_intent(
                 "Kullanıcı yeni kod yazmanı istiyor. "
                 "Tam, eksiksiz, production-ready kod yaz. "
                 "ASLA truncate etme — 500+ satır gerekiyorsa yaz."
+            ),
+            "confidence": "high",
+        }
+
+    # ══════════════════════════════════════════════════════════
+    # 19b. HOW-TO — nasıl yapılır (kod isteği değil, açıklama)
+    # ══════════════════════════════════════════════════════════
+    # "nasıl yaparım", "nasıl yapılır" → önce açıkla
+    # Kullanıcı açıkça "yaz/oluştur/implement et" demediyse kod yazma
+    # ══════════════════════════════════════════════════════════
+    if any(sig in p for sig in _HOW_TO_SIGNALS):
+        target = _extract_target(prompt, history)
+        return {
+            "intent": Intent.HOW_TO,
+            "target": target,
+            "has_prior_context": has_history,
+            "response_strategy": (
+                "Kullanıcı NASIL YAPILACAĞINI soruyor — KOD İSTEMİYOR. "
+                "Önce yaklaşımı adım adım açıkla (madde madde). "
+                "Kod SADECE kullanıcı açıkça 'yaz', 'göster', 'örnek ver' derse yazılır. "
+                "Bu mesajda açıklama yap, sonra 'kod örneği ister misin?' diye sor."
             ),
             "confidence": "high",
         }
@@ -934,6 +984,29 @@ def classify_intent(
                 "Tüm detayları bir seferde dökme — katmanlı öğret."
             ),
             "confidence": "medium",
+        }
+
+    # ══════════════════════════════════════════════════════════
+    # 23a. HOW-TO — kısa mesajda bile "nasıl yapılır" önce kontrol
+    # ══════════════════════════════════════════════════════════
+    # "kendim nasıl yaparım", "nasıl yapılır" gibi kısa how-to
+    # soruları kod isteği değil — açıklama isteği.
+    # ══════════════════════════════════════════════════════════
+    if any(sig in p for sig in _HOW_TO_SIGNALS) and has_history:
+        target = _extract_target(prompt, history)
+        last_topic = _extract_last_topic(history)
+        return {
+            "intent": Intent.HOW_TO,
+            "target": target or last_topic[:60] if last_topic else target,
+            "has_prior_context": True,
+            "response_strategy": (
+                f"Kullanıcı '{last_topic[:60] if last_topic else 'önceki konu'}' hakkında "
+                "NASIL YAPILACAĞINI soruyor — direkt KOD YAZMA. "
+                "Yaklaşımı adım adım açıkla (3-5 adım). "
+                "Sonunda 'Kod örneği ister misin?' diye sor. "
+                "Kullanıcı onaylayana kadar kod yok."
+            ),
+            "confidence": "high",
         }
 
     # ══════════════════════════════════════════════════════════
@@ -1032,6 +1105,7 @@ def build_reasoning_hint(
         Intent.USER_PREFERENCE:     "⚙️  KULLANICI TERCİHİ",
         Intent.EMOTIONAL:           "💛 DUYGUSAL",
         Intent.FRUSTRATION:         "😤 HAYAL KIRIKLIGI",
+        Intent.HOW_TO:              "❓ NASIL YAPILIR",
         Intent.NEW_TOPIC:           "🆕 YENİ KONU",
         Intent.CHAT:                "💬 SOHBET",
     }
