@@ -44,7 +44,8 @@ import psycopg2.pool
 from fastapi import FastAPI
 import aiosmtplib
 from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText, HTTPException, Header, Request, BackgroundTasks, File, UploadFile, Body
+from email.mime.text import MIMEText
+from fastapi import HTTPException, Header, Request, BackgroundTasks, File, UploadFile, Body
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, EmailStr
