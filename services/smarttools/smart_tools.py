@@ -744,17 +744,17 @@ GÖREV: Yukarıdaki web kaynaklarını sentezle ve soruyu doğrudan yanıtla.
 ZORUNLU KURALLAR:
 1. {lang_rule}
 2. Doğrudan başla — giriş, teşekkür, "tabii ki" yok
-3. Sayısal değerleri (TL, %, tarih) KAYNAĞA BAĞLA — hangi değer hangi kaynaktan geldiğini belirt
-4. Çelişen bilgi varsa: en güncel kaynağı seç, hangisinin daha yeni olduğunu belirt
-5. Emin olmadığın bir değeri YAZMA — yazmak yerine "kaynaklarda net bilgi yok" de
-6. Kaynak belirt: "X'e göre..." veya "(Kaynak: Y, Tarih: Z)"
-7. Maksimum 300 kelime — özlü ol
-8. SADECE verilen kaynaklardaki bilgiyi kullan, eğitim verisinden tahminde bulunma
+3. Sayısal değerleri (TL, %, tarih) KAYNAĞA BAĞLA
+4. Çelişen bilgi varsa: en güncel kaynağı seç
+5. Kaynak belirt: "X'e göre..." veya "(Kaynak: Y)"
+6. Maksimum 300 kelime — özlü ol
+7. Kaynaklarda bilgi varsa MUTLAKA yaz — "bilgi yok" deme, mevcut bilgiyi özetle
+8. Güncel haber/olay sorularında: kaynaktan gelen bilgiyi direkt aktar
 
-YANLIŞ YAPMA — BUNLARI ASLA YAPMA:
-- Farklı şirket türlerine ait rakamları karıştırma (örn: limited şirket ile anonim şirket)
+YANLIŞ YAPMA:
+- Farklı şirket türlerine ait rakamları karıştırma
 - Eski mevzuatı güncelmiş gibi sunma
-- Kaynak belirtmeden kesin rakam verme"""
+- Kaynaklarda bilgi varken "bilgi bulunamadı" deme"""
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
