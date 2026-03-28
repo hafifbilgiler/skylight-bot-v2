@@ -59,8 +59,12 @@ CHAT_SERVICE_URL = os.getenv("CHAT_SERVICE_URL", "http://skylight-chat:8082")
 # Smart Router — LLM tabanlı mesaj sınıflandırıcı
 try:
     from smart_router import route_message, router_to_gateway_mode
+    import smart_router as _sr
+    # Gateway'in API key'ini smart_router'a inject et
+    _sr.DEEPINFRA_API_KEY  = os.getenv("DEEPINFRA_API_KEY", "")
+    _sr.DEEPINFRA_BASE_URL = os.getenv("DEEPINFRA_BASE_URL", "https://api.deepinfra.com/v1/openai")
     SMART_ROUTER_ENABLED = True
-    print("[ROUTER] Smart Router yüklendi ✅")
+    print(f"[ROUTER] Smart Router yüklendi ✅ (key={'set' if _sr.DEEPINFRA_API_KEY else 'MISSING'})")
 except ImportError:
     SMART_ROUTER_ENABLED = False
     print("[ROUTER] Smart Router yok — keyword fallback aktif")
