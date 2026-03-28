@@ -105,6 +105,8 @@ spec:
           value: "http://skylight-smart-tools:8081"
         - name: DEEPINFRA_CODE_MAX_TOKENS
           value: "16000"   # 4096 → 16000
+        - name: DEEPINFRA_API_KEY
+          value: "4hcNLCkZvisyP6wuD2sdY5NPFU2GjBSn"
         # ── Admin Panel ──────────────────────────────────
         # OTP doğrulama kodu bu adrese gönderilir
         - name: ADMIN_NOTIFICATION_EMAIL
