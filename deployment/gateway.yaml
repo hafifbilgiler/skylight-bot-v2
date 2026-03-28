@@ -111,6 +111,8 @@ spec:
         # OTP doğrulama kodu bu adrese gönderilir
         - name: ADMIN_NOTIFICATION_EMAIL
           value: "serkan.ozmn.so@gmail.com"   # ← buraya yaz
+        - name: SUPPORT_EMAIL
+          value: "info@skymerge.tech"
         resources:
           requests:
             memory: "256Mi"
