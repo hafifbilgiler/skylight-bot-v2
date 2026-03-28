@@ -20,3 +20,4 @@ python-dotenv==1.0.0
 
 # Optional (if using)
 aiofiles==23.2.1
+redis>=5.0.0

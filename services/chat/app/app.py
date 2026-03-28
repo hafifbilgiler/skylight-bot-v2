@@ -38,6 +38,10 @@ import re
 from datetime import datetime
 
 from intent_classifier import build_reasoning_hint, get_intent_thinking_steps, Intent
+from conversation_state import (
+    build_state_context, extract_and_update_state,
+    get_workspace, get_version, set_task,
+)
 from prompts_production import (
     ASSISTANT_SYSTEM_PROMPT,
     CODE_SYSTEM_PROMPT,
@@ -129,6 +133,8 @@ async def shutdown_db():
     global db_pool
     if db_pool:
         await db_pool.close()
+    from conversation_state import close_redis
+    await close_redis()
 
 # ═══════════════════════════════════════════════════════════════
 # MODELS
@@ -147,6 +153,7 @@ class ChatRequest(BaseModel):
     rag_context:     Optional[str]        = None
     context:         Optional[str]        = None
     session_summary: Optional[str]        = None
+    file_id:         Optional[str]        = None
 
 class ThinkingStep(BaseModel):
     emoji:   str
@@ -996,6 +1003,14 @@ async def build_messages(
     if conv_summary:
         system_content += f"\n\n{conv_summary}"
 
+    # 2b. CONVERSATION STATE — Redis'ten bağlam
+    state_context = await build_state_context(
+        conversation_id or "", user_id, user_prompt, mode
+    )
+    if state_context:
+        system_content += f"\n\n{state_context}"
+        print(f"[CHAT] State context injected: {len(state_context)} chars")
+
     # 3. LIVE DATA — smart_tools /classify + /live
     #    Artık keyword listesi yok. Tek çağrı, tek karar.
     live_context = await get_live_data(user_prompt, mode=mode)
@@ -1071,7 +1086,8 @@ async def chat(request: ChatRequest):
 
     async def response_generator():
         try:
-            buffer = ""
+            buffer    = ""
+            full_text = ""  # State update için tam cevabı topla
 
             # Thinking display
             if show_thinking:
@@ -1086,17 +1102,30 @@ async def chat(request: ChatRequest):
                 model=config["model"], max_tokens=config["max_tokens"],
                 temperature=config["temperature"], top_p=config["top_p"],
             ):
-                buffer += chunk
+                buffer    += chunk
+                full_text += chunk
                 if any(c in buffer for c in [' ','.','!','?','\n',',']) or len(buffer) > 10:
                     yield buffer
                     buffer = ""
             if buffer:
+                full_text += buffer
                 yield buffer
 
             # Periodic summary (background)
             if request.conversation_id:
                 asyncio.create_task(check_and_create_summary_async(
                     request.user_id, request.conversation_id, config))
+
+            # State güncelle (background — response'u bloklamaz)
+            if request.conversation_id:
+                asyncio.create_task(extract_and_update_state(
+                    conversation_id=request.conversation_id,
+                    user_id=request.user_id,
+                    prompt=request.prompt,
+                    response=full_text,
+                    intent=request.mode,   # gateway'den gelen mode intent proxy
+                    mode=request.mode,
+                ))
 
         except Exception as e:
             yield f"\n\n⚠️ Bir hata oluştu: {str(e)}"

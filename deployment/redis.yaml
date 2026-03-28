@@ -1,26 +1,57 @@
+# ═══════════════════════════════════════════════════════════════
+# SKYLIGHT REDIS — PVC + Deployment + Service
+# ═══════════════════════════════════════════════════════════════
+#
+# Değişiklikler (senin YAML'ından):
+#   ✅ --save "60 100" → "60" ve "100" ayrı args (Redis parse sorunu fix)
+#   ✅ PVC bağlandı (restart'ta data korunur)
+#   ✅ AOF + RDB persistence ikisi birden aktif
+#
+# İleride büyütmek için:
+#   - storage: 1Gi → istediğin değere çek (online resize, pod restart gerekmez)
+#   - Sentinel eklemek istersen sadece _get_redis() wrapper'ı değişir
+#
+# DB kullanımı:
+#   DB 0 → Image Analysis
+#   DB 1 → SearXNG cache
+#   DB 2 → Smart Tools cache
+#   DB 3 → Conversation State  (conversation_state.py)
+#   DB 4 → Workspace Memory    (conversation_state.py)
+# ═══════════════════════════════════════════════════════════════
+
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: skylight-redis-pvc
   namespace: skylight-bot-v2
+  labels:
+    app: skylight-redis
 spec:
   accessModes:
     - ReadWriteOnce
   resources:
     requests:
-      storage: 1Gi
+      storage: 2Gi
+  # storageClassName belirtmezsen cluster default'u kullanır
+  # İleride büyütmek için sadece bu değeri artır:
+  # storage: 5Gi  → kubectl apply et, online resize olur
+
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: skylight-redis
   namespace: skylight-bot-v2
+  labels:
+    app: skylight-redis
 spec:
   replicas: 1
   selector:
     matchLabels:
       app: skylight-redis
+  strategy:
+    type: Recreate   # PVC ile çalışırken RollingUpdate değil Recreate kullan
   template:
     metadata:
       labels:
@@ -35,10 +66,19 @@ spec:
             - "256mb"
             - "--maxmemory-policy"
             - "allkeys-lru"
+            # RDB snapshot — her 60 saniyede 100+ değişiklik olursa yaz
+            # FIX: "60 100" tek string değil, ayrı argümanlar olmalı
             - "--save"
-            - "60 100"             # Her 60 saniyede 100 değişiklik → disk'e yaz
+            - "60"
+            - "100"
+            # AOF persistence — her yazma işlemi loglanır, en güvenli
             - "--appendonly"
-            - "yes"                # AOF persistence
+            - "yes"
+            - "--appendfsync"
+            - "everysec"    # saniyede bir flush (performans/güvenlik dengesi)
+            # Data dizini — PVC mount noktası
+            - "--dir"
+            - "/data"
           ports:
             - containerPort: 6379
           resources:
@@ -56,24 +96,31 @@ spec:
               command: ["redis-cli", "ping"]
             initialDelaySeconds: 5
             periodSeconds: 10
+            failureThreshold: 3
           readinessProbe:
             exec:
               command: ["redis-cli", "ping"]
             initialDelaySeconds: 3
             periodSeconds: 5
+            failureThreshold: 3
       volumes:
         - name: redis-data
           persistentVolumeClaim:
             claimName: skylight-redis-pvc
+
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: skylight-redis
   namespace: skylight-bot-v2
+  labels:
+    app: skylight-redis
 spec:
+  type: ClusterIP
   selector:
     app: skylight-redis
   ports:
     - port: 6379
       targetPort: 6379
+      protocol: TCP
