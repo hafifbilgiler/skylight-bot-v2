@@ -3015,7 +3015,8 @@ async def admin_get_user(
                             WHERE user_id = u.id), 0
                        ) AS total_messages,
                        us.plan_id, us.status AS sub_status,
-                       us.current_period_end
+                       us.current_period_end,
+                       u.phone, u.identity_no, u.address, u.city, u.zip_code
                 FROM users u
                 LEFT JOIN usage_tracking ut
                     ON ut.user_id = u.id AND ut.usage_date = CURRENT_DATE
@@ -3030,7 +3031,8 @@ async def admin_get_user(
             cols = ["id","name","email","is_premium","is_banned","is_admin",
                     "ban_reason","banned_at","created_at","last_active",
                     "messages_today","total_messages",
-                    "plan_id","sub_status","premium_expires_at"]
+                    "plan_id","sub_status","premium_expires_at",
+                    "phone","identity_no","address","city","zip_code"]
             u = dict(zip(cols, row))
             for k in ["banned_at","created_at","last_active","premium_expires_at"]:
                 if u.get(k):
