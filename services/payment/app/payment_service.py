@@ -59,7 +59,7 @@ SMTP_SERVER = os.getenv("SMTP_SERVER", "").strip()
 SMTP_PORT   = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER   = os.getenv("SMTP_USER", "").strip()
 SMTP_PASS   = os.getenv("SMTP_PASS", "").strip()
-SMTP_FROM   = os.getenv("SMTP_FROM", os.getenv("FROM_EMAIL", SMTP_USER)).strip()
+SMTP_FROM   = os.getenv("SMTP_FROM", os.getenv("FROM_EMAIL", "info@skymerge.tech")).strip()
 
 db_pool = None
 
@@ -363,6 +363,105 @@ ONE-BUNE AI / SKYMERGE TECHNOLOGY
     return html, plain
 
 
+def _build_invoice_email(user: dict, invoice_no: str, paid_at: str, period_end: str) -> tuple[str, str]:
+    """Ödeme sonrası otomatik fatura emaili"""
+    name    = user.get("name", "Kullanıcı")
+    email   = user.get("email", "")
+    tc      = user.get("identity_no") or "—"
+    phone   = user.get("phone") or "—"
+    city    = user.get("city") or "—"
+    address = user.get("address") or "—"
+
+    html = f"""<!DOCTYPE html>
+<html lang="tr"><head><meta charset="UTF-8"><title>Fatura {invoice_no}</title></head>
+<body style="margin:0;padding:0;background:#f4f4f5;font-family:Arial,sans-serif;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f5;padding:40px 20px;">
+<tr><td align="center">
+<table width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#fff;border-radius:16px;overflow:hidden;">
+  <tr><td style="background:#0a0a0f;padding:28px 32px;">
+    <table width="100%" cellpadding="0" cellspacing="0"><tr>
+      <td>
+        <div style="font-size:22px;font-weight:800;color:#fff;">ONE-BUNE</div>
+        <div style="font-size:11px;color:#666;margin-top:2px;">Skymerge Technology</div>
+        <div style="font-size:11px;color:#555;">info@skymerge.tech | one-bune.com</div>
+      </td>
+      <td align="right">
+        <div style="font-size:18px;font-weight:700;color:#00e5ff;">{invoice_no}</div>
+        <div style="font-size:12px;color:#666;margin-top:4px;">Tarih: {paid_at}</div>
+        <div style="margin-top:6px;background:#00e5ff;color:#0a0a0f;font-size:10px;font-weight:700;padding:3px 10px;border-radius:100px;display:inline-block;">ÖDEME ALINDI</div>
+      </td>
+    </tr></table>
+  </td></tr>
+  <tr><td style="padding:28px 32px;">
+    <div style="font-size:10px;text-transform:uppercase;letter-spacing:1.5px;font-weight:700;color:#999;margin-bottom:12px;">Müşteri Bilgileri</div>
+    <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #eee;border-radius:10px;overflow:hidden;margin-bottom:24px;">
+      <tr style="background:#f9f9f9;">
+        <td style="padding:10px 14px;font-size:12px;color:#999;width:130px;">Ad Soyad</td>
+        <td style="padding:10px 14px;font-size:13px;font-weight:600;">{name}</td>
+        <td style="padding:10px 14px;font-size:12px;color:#999;width:100px;">E-posta</td>
+        <td style="padding:10px 14px;font-size:13px;">{email}</td>
+      </tr>
+      <tr>
+        <td style="padding:10px 14px;font-size:12px;color:#999;border-top:1px solid #eee;">TC Kimlik No</td>
+        <td style="padding:10px 14px;font-size:13px;font-weight:600;border-top:1px solid #eee;">{tc}</td>
+        <td style="padding:10px 14px;font-size:12px;color:#999;border-top:1px solid #eee;">Telefon</td>
+        <td style="padding:10px 14px;font-size:13px;border-top:1px solid #eee;">{phone}</td>
+      </tr>
+      <tr style="background:#f9f9f9;">
+        <td style="padding:10px 14px;font-size:12px;color:#999;border-top:1px solid #eee;">Şehir</td>
+        <td style="padding:10px 14px;font-size:13px;border-top:1px solid #eee;">{city}</td>
+        <td style="padding:10px 14px;font-size:12px;color:#999;border-top:1px solid #eee;">Adres</td>
+        <td style="padding:10px 14px;font-size:13px;border-top:1px solid #eee;">{address}</td>
+      </tr>
+    </table>
+    <div style="font-size:10px;text-transform:uppercase;letter-spacing:1.5px;font-weight:700;color:#999;margin-bottom:12px;">Hizmet Detayı</div>
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+      <thead><tr style="background:#0a0a0f;">
+        <th style="padding:10px 14px;text-align:left;font-size:11px;color:#fff;">Hizmet</th>
+        <th style="padding:10px 14px;text-align:left;font-size:11px;color:#fff;">Dönem</th>
+        <th style="padding:10px 14px;text-align:right;font-size:11px;color:#fff;">Tutar</th>
+      </tr></thead>
+      <tbody>
+        <tr style="border-bottom:1px solid #eee;">
+          <td style="padding:12px 14px;font-size:13px;">ONE-BUNE Premium Abonelik</td>
+          <td style="padding:12px 14px;font-size:12px;color:#666;">{paid_at} – {period_end}</td>
+          <td style="padding:12px 14px;font-size:13px;font-weight:700;text-align:right;">₺64,00</td>
+        </tr>
+        <tr style="background:#f5f5f5;">
+          <td colspan="2" style="padding:12px 14px;text-align:right;font-size:13px;font-weight:700;">TOPLAM (KDV Dahil)</td>
+          <td style="padding:12px 14px;font-size:16px;font-weight:800;text-align:right;">₺64,00</td>
+        </tr>
+      </tbody>
+    </table>
+  </td></tr>
+  <tr><td style="background:#f9f9f9;padding:20px 32px;border-top:1px solid #eee;text-align:center;">
+    <p style="font-size:11px;color:#999;margin:0;line-height:1.6;">
+      Skymerge Technology tarafından düzenlenmiştir. VUK 230. madde kapsamındadır.<br>
+      Sorularınız: <a href="mailto:info@skymerge.tech" style="color:#0066cc;">info@skymerge.tech</a>
+    </p>
+  </td></tr>
+</table>
+</td></tr>
+</table>
+</body></html>"""
+
+    plain = f"""FATURA {invoice_no}
+Tarih: {paid_at}
+
+Ad Soyad: {name} | E-posta: {email}
+TC Kimlik: {tc} | Telefon: {phone}
+Şehir: {city} | Adres: {address}
+
+Hizmet: ONE-BUNE Premium Abonelik
+Dönem: {paid_at} – {period_end}
+Tutar: ₺64,00 (KDV Dahil)
+
+Skymerge Technology | info@skymerge.tech
+VUK 230. madde kapsamında düzenlenmiştir.
+"""
+    return html, plain
+
+
 def _build_cancel_email(first_name: str, period_end, immediate: bool) -> tuple[str, str]:
     """İptal email içeriği döner: (html, plain)"""
     period_str = period_end.strftime("%d.%m.%Y") if period_end else ""
@@ -495,9 +594,30 @@ async def activate_subscription(user_id: int, subscription_ref: str, plan_code: 
         # Async email — event loop bloklanmaz
         if row and SMTP_SERVER and SMTP_USER:
             first_name = (row["name"] or "Kullanici").split()[0]
-            html, plain = _build_welcome_email(first_name)
+            # 1. Hoş geldin emaili
+            html_w, plain_w = _build_welcome_email(first_name)
             asyncio.create_task(
-                _send_email_async(row["email"], "Premium üyeliğiniz aktif edildi", html, plain)
+                _send_email_async(row["email"], "✅ ONE-BUNE Premium üyeliğiniz aktif edildi", html_w, plain_w)
+            )
+            # 2. Fatura emaili
+            from datetime import date
+            today_str  = date.today().strftime("%d.%m.%Y")
+            period_end = (date.today() + __import__('datetime').timedelta(days=30)).strftime("%d.%m.%Y")
+            invoice_no = f"INV-{date.today().strftime('%Y%m')}-{str(user_id).zfill(5)}"
+            user_for_invoice = dict(row)
+            # DB'den TC, telefon, adres çek
+            try:
+                async with db_pool.acquire() as _c:
+                    _br = await _c.fetchrow(
+                        "SELECT phone, identity_no, address, city FROM users WHERE id = $1", user_id
+                    )
+                    if _br:
+                        user_for_invoice.update(dict(_br))
+            except Exception:
+                pass
+            html_i, plain_i = _build_invoice_email(user_for_invoice, invoice_no, today_str, period_end)
+            asyncio.create_task(
+                _send_email_async(row["email"], f"ONE-BUNE Faturanız — {invoice_no}", html_i, plain_i)
             )
 
     except Exception as e:
@@ -745,7 +865,7 @@ async def payment_callback(request: Request):
                 <body style="font-family:sans-serif;text-align:center;padding:40px;">
                 <h1>⚠️ Geçici Sistem Hatası</h1>
                 <p>Ödemeniz alındı ancak aktivasyon gecikmeli olabilir.<br>
-                Lütfen destek ile iletişime geçin: destek@one-bune.com</p>
+                Lütfen destek ile iletişime geçin: info@skymerge.tech</p>
                 </body></html>
             """, status_code=503)
 
@@ -840,7 +960,7 @@ async def payment_callback(request: Request):
             <body style="font-family:sans-serif;text-align:center;padding:40px;">
             <h1>⚠️ İşlem Hatası</h1>
             <p>Ödemeniz alınmış olabilir. Lütfen destek ile iletişime geçin:<br>
-            <strong>destek@one-bune.com</strong></p>
+            <strong>info@skymerge.tech</strong></p>
             </body></html>
         """, status_code=500)
 
