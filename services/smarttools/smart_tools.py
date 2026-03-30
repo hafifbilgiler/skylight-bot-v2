@@ -59,6 +59,7 @@ app.add_middleware(
 SEARXNG_URL        = os.getenv("SEARXNG_URL",        None)
 BRAVE_API_KEY      = os.getenv("BRAVE_API_KEY",      None)
 CRAWL4AI_URL       = os.getenv("CRAWL4AI_URL",       "http://crawl4ai:11235")
+CRAWL4AI_TOKEN     = os.getenv("CRAWL4AI_TOKEN",     "skylight-crawl4ai-2026")
 DEEPINFRA_API_KEY  = os.getenv("DEEPINFRA_API_KEY",  "")
 DEEPINFRA_BASE_URL = os.getenv("DEEPINFRA_BASE_URL", "https://api.deepinfra.com/v1/openai")
 SYNTHESIS_MODEL    = os.getenv("SYNTHESIS_MODEL",    "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8")
@@ -707,10 +708,15 @@ async def fetch_via_crawl4ai(url: str) -> Optional[str]:
     if any(d in url for d in skip):
         return None
     try:
+        headers = {}
+        if CRAWL4AI_TOKEN:
+            headers["Authorization"] = f"Bearer {CRAWL4AI_TOKEN}"
+
         async with httpx.AsyncClient(timeout=CRAWL4AI_TIMEOUT) as client:
-            # Crawl4AI v0.4+ API formatı
+            # Crawl4AI v0.4+ API — token ile
             resp = await client.post(
                 f"{CRAWL4AI_URL}/crawl",
+                headers=headers,
                 json={
                     "urls": [url],
                     "crawler_params": {

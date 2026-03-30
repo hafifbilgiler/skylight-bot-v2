@@ -941,18 +941,31 @@ def classify_intent(
     # 18c. DEBUG_AUTO — "çalışmıyor" / hata / traceback
     # ══════════════════════════════════════════════════════════
     if any(sig in p for sig in _DEBUG_AUTO_SIGNALS):
+        # Önceki mesajlarda hata detayı var mı kontrol et
+        has_error_detail = any(
+            any(w in (m.get("content","")).lower() for w in
+                ["traceback","error:","exception","line ","file ","syntaxerror","typeerror"])
+            for m in (history or [])[-3:]
+        )
+        if has_error_detail or "traceback" in p or "error:" in p:
+            strategy = (
+                "Kullanıcı hata bildirdi ve detay mevcut. "
+                "Direkt analiz et: 1) Kök sebebi 1 cümlede açıkla. "
+                "2) Sadece sorunlu satırı/bölümü düzelt — tüm dosyayı yeniden yazma. "
+                "3) Neden olduğunu kısa açıkla."
+            )
+        else:
+            strategy = (
+                "Kullanıcı sorun bildiriyor ama detay yok. "
+                "ASLA hemen kod yazma — önce şunu sor: "
+                "'Hangi hata mesajını alıyorsun? Hatayı veya ekran görüntüsünü paylaşır mısın?' "
+                "Tek soru sor, bekle."
+            )
         return {
             "intent": Intent.DEBUG_AUTO,
             "target": None,
             "has_prior_context": has_code_context,
-            "response_strategy": (
-                "Kullanıcı bir hata veya sorun bildiriyor. "
-                "ASLA hemen kod yazma. "
-                "1) Hangi hata mesajını aldığını sor (görmüyorsan). "
-                "2) Tam hata mesajını veya ekran görüntüsünü paylaşmasını iste. "
-                "3) Hata gelince: kök sebebi bul → kısa açıkla → sadece ilgili kısmı düzelt. "
-                "Görsel/traceback zaten varsa direkt analiz et."
-            ),
+            "response_strategy": strategy,
             "confidence": "high",
         }
 
