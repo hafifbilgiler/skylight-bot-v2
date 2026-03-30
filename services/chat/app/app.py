@@ -155,6 +155,12 @@ class ChatRequest(BaseModel):
     context:         Optional[str]        = None
     session_summary: Optional[str]        = None
     file_id:         Optional[str]        = None
+    # Smart Router v4 — Gateway'den gelir
+    live_type_hint:  Optional[str]        = None  # currency/weather/deep_search/web
+    router_intent:   Optional[str]        = None  # code_debug/how_to/web_search
+    router_thinking: Optional[str]        = None  # Router'ın düşüncesi
+    user_level:      Optional[str]        = None  # beginner/intermediate/expert
+    needs_realtime:  Optional[bool]       = None  # Router realtime lazım dedi mi
 
 class ThinkingStep(BaseModel):
     emoji:   str
@@ -1230,6 +1236,7 @@ async def build_messages(
     context:         Optional[str] = None,
     session_summary: Optional[str] = None,
     config:          Dict           = None,
+    **kwargs,
 ) -> List[Dict]:
     """
     LLM'e gönderilecek mesaj dizisini oluşturur.
@@ -1319,9 +1326,20 @@ async def build_messages(
         system_content += f"\n\n{state_context}"
         print(f"[CHAT] State context injected: {len(state_context)} chars")
 
-    # 3. LIVE DATA — smart_tools /classify + /live
-    #    Artık keyword listesi yok. Tek çağrı, tek karar.
-    live_context = await get_live_data(user_prompt, mode=mode)
+    # 3. LIVE DATA — Router kararı varsa direkt kullan, yoksa keyword
+    _router_dec = {
+        "needs_realtime": kwargs.get("needs_realtime"),
+        "tool":           kwargs.get("live_type_hint", "none"),
+        "confidence":     "high" if kwargs.get("live_type_hint") else "low",
+        "intent":         kwargs.get("router_intent", ""),
+    } if kwargs.get("live_type_hint") or kwargs.get("needs_realtime") else None
+
+    live_context = await get_live_data(
+        user_prompt,
+        mode=mode,
+        router_tool=kwargs.get("live_type_hint"),
+        router_decision=_router_dec,
+    )
     if live_context:
         system_content += f"\n\n{live_context}"
         print(f"[CHAT] Live data injected: {len(live_context)} chars")
@@ -1434,6 +1452,11 @@ async def chat(request: ChatRequest):
         context=request.context,
         session_summary=request.session_summary,
         config=config,
+        live_type_hint  = request.live_type_hint,
+        router_intent   = request.router_intent,
+        router_thinking = request.router_thinking,
+        user_level      = request.user_level,
+        needs_realtime  = request.needs_realtime,
     )
 
     async def response_generator():
