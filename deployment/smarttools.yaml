@@ -19,7 +19,7 @@ metadata:
     app: skylight-smart-tools
     version: "2.2.0"
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: skylight-smart-tools
@@ -132,7 +132,7 @@ spec:
     kind: Deployment
     name: skylight-smart-tools
   minReplicas: 1
-  maxReplicas: 5
+  maxReplicas: 1
   metrics:
   - type: Resource
     resource:
