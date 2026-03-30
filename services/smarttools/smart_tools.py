@@ -228,14 +228,28 @@ def _extract_city(query: str) -> Optional[str]:
     noise = {
         'hava','durumu','weather','sıcaklık','bugün','nasıl','nedir','kaç',
         'derece','için','de','da','şuan','şimdi','ne','nerede','olan',
+        'havalar','nasıl','bugünkü','anlık','şuanki','mevcut',
     }
+    # Önce bilinen şehir listesine bak
+    known_cities = [
+        'istanbul','ankara','izmir','antalya','bursa','adana','konya',
+        'berlin','london','paris','new york','tokyo','dubai','moscow',
+        'new','york','los','angeles','san','francisco',
+        'amsterdam','madrid','rome','vienna','barcelona',
+    ]
+    q_lower = query.lower()
+    for city in known_cities:
+        if city in q_lower:
+            return city.title()
+
     words = re.findall(r'\b[a-zA-ZçğıöşüÇĞİÖŞÜ]+\b', query)
     clean = [w for w in words if w.lower() not in noise and len(w) > 2]
     if not clean:
         return None
     first = clean[0]
     for suf in ['daki','deki','dan','den','da','de','ta','te',
-                'nın','nin','nun','nün','ın','in','un','ün']:
+                'nın','nin','nun','nün','ın','in','un','ün',
+                'da','de','nin','nun']:
         if first.lower().endswith(suf) and len(first) > len(suf) + 2:
             first = first[:-len(suf)]
             break
@@ -378,7 +392,14 @@ def get_weather(query: str) -> Dict:
             "humidity":    c["relative_humidity_2m"],
             "description": desc,
             "wind_speed":  round(c.get("wind_speed_10m", 0), 1),
-            "formatted":   f"{city_name}, {country}: {round(c['temperature_2m'])}°C, {desc}",
+            "formatted": (
+                f"🌍 {city_name}, {country}\n"
+                f"🌡️ Sıcaklık: {round(c['temperature_2m'])}°C "
+                f"(hissedilen {round(c['apparent_temperature'])}°C)\n"
+                f"🌤️ Durum: {desc}\n"
+                f"💧 Nem: %{c['relative_humidity_2m']} | "
+                f"💨 Rüzgar: {round(c.get('wind_speed_10m', 0))} km/h"
+            ),
         }}
         weather_cache.set(key, result)
         print(f"[WEATHER] {city_name}: {c['temperature_2m']}°C, {desc}")

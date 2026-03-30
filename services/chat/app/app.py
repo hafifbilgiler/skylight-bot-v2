@@ -330,9 +330,9 @@ async def get_live_data(query: str, mode: str = "assistant") -> Optional[str]:
                 synthesis = data.get("data", {}).get("synthesis", "")
                 if synthesis:
                     result = (
-                        f"[Web Araştırma Sonucu]\n"
+                        f"[CANLI VERİ — BU BİLGİYİ KULLAN, EĞİTİM VERİNİ KULLANMA]\n"
                         f"{synthesis}\n"
-                        f"[/Web Araştırma Sonucu]"
+                        f"[/CANLI VERİ]"
                     )
                     print(f"[DEEP SEARCH] ✅ {len(synthesis)} chars")
                     return result
