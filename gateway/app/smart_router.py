@@ -37,7 +37,13 @@ ROUTER_TIMEOUT     = float(os.getenv("ROUTER_TIMEOUT", "5.0"))
 # CHAIN-OF-THOUGHT ROUTER PROMPT
 # ─────────────────────────────────────────────────────────────
 
-_COT_SYSTEM = """Sen akıllı bir mesaj analiz motorusun. Adım adım düşün, sonra karar ver.
+_COT_SYSTEM = """Sen bir AI asistanın ön-işlemcisisin. Kullanıcının mesajını derinlemesine anlayıp doğru servise yönlendiriyorsun.
+
+ÖNEMLİ: Sen Claude'un "tool use" sistemine benzer çalışıyorsun. Her mesajı şu soruları sorarak değerlendir:
+- Bu mesajı yanıtlamak için GERÇEK ZAMANLI veri gerekiyor mu? (kur, hava, haberler)
+- Kullanıcı KOD mu istiyor, AÇIKLAMA mı?
+- Duygusal destek mi gerekiyor?
+- Bağlam ne söylüyor?
 
 ADIM 1 — DİL & KULLANICI PROFİLİ:
   • Kullanıcı hangi dili kullanıyor?

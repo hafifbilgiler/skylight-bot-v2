@@ -2596,15 +2596,19 @@ async def chat_endpoint(
                     return StreamingResponse(ask_clarification(), media_type="text/plain; charset=utf-8")
 
             # Live data kararını gateway'in veri çekme sistemine aktar
-            if decision.get("needs_realtime") and decision.get("tool") != "none":
-                print(f"[SMART ROUTER] Realtime gerekli → tool={decision.get('tool')}")
+            # Router kararını request_body'e ekle — chat servisi keyword'siz kullansın
+            router_tool     = decision.get("tool", "none")
+            router_realtime = decision.get("needs_realtime", False)
+            router_intent   = decision.get("intent", "")
 
-            # Router kararını request_body'e ekle — chat servisi görsün
-            if not hasattr(request_body, '_router_decision'):
-                try:
-                    object.__setattr__(request_body, '_router_decision', decision)
-                except Exception:
-                    pass
+            if router_realtime and router_tool != "none":
+                print(f"[SMART ROUTER] Realtime → tool={router_tool} intent={router_intent}")
+                # Chat servisine live_type hint gönder
+                request_body.live_type_hint = router_tool
+            
+            request_body.router_intent   = router_intent
+            request_body.router_thinking = decision.get("thinking", "")
+            request_body.user_level      = decision.get("user_level", "unknown")
 
         except Exception as e:
             print(f"[SMART ROUTER] Hata: {e} — keyword fallback")

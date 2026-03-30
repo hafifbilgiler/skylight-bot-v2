@@ -173,7 +173,13 @@ class ThinkingStep(BaseModel):
 _CURRENCY_KW  = ("dolar","euro","eur","usd","gbp","sterlin","pound","jpy","yen","chf",
                  "döviz","doviz","exchange rate","kaç tl","kac tl","tl kaç",
                  "dolar kaç","euro kaç","döviz kuru","kur nedir","dolar kuru","euro kuru")
-                 # "kur" KALDIRILDI — "kurulur","kurulum" gibi kelimelerde false positive veriyordu
+
+# Tek kelime döviz — "euro" "dolar" tek başına yazılınca da çalışsın
+_CURRENCY_SINGLE = ("dolar","euro","eur","usd","gbp","sterlin","chf","jpy","yen","pound")
+
+# Yeniden veri çekme sinyalleri — "tekrar bak", "yanlış", "güncelle"
+_RETRY_KW = ("tekrar bak","yeniden bak","güncelle","yanlış verdin","hatalı",
+              "doğru değil","bir daha bak","güncel değil","eski veri")
 _WEATHER_KW   = ("hava durumu","havadurumu","hava nasıl","havalar nasıl",
                  "hava kaç derece","sıcaklık","sicaklik","yağmur yağıyor",
                  "kar yağıyor","weather","forecast","bugün hava","yarın hava","derece")
@@ -240,8 +246,20 @@ def _detect_live_type(query: str, mode: str) -> Optional[str]:
     if any(k in q for k in _STATIC_KW) and len(q.split()) <= 6:
         return None
 
+    # Retry sinyali — önceki canlı veri yanlışsa yeniden çek
+    if any(k in q for k in _RETRY_KW):
+        # Hangi araç tekrar sorulacak? Context'e bak
+        # Şimdilik currency ve genel olarak işle
+        return "currency" if any(k in q for k in _CURRENCY_SINGLE) else "currency"
+
     # Önce anlık API sinyalleri — bunlar /unified'a gider
     if any(k in q for k in _CURRENCY_KW): return "currency"
+
+    # Tek kelime döviz — "euro" veya "dolar" tek başına
+    q_stripped = q.strip().rstrip("?! ")
+    if q_stripped in _CURRENCY_SINGLE or len(q.split()) <= 2 and any(k in q for k in _CURRENCY_SINGLE):
+        return "currency"
+
     if any(k in q for k in _WEATHER_KW):  return "weather"
     if any(k in q for k in _CRYPTO_KW):   return "crypto"
     if any(k in q for k in _TIME_KW):     return "time"
@@ -255,15 +273,26 @@ def _detect_live_type(query: str, mode: str) -> Optional[str]:
     return None
 
 
-async def get_live_data(query: str, mode: str = "assistant") -> Optional[str]:
+async def get_live_data(
+    query: str,
+    mode: str = "assistant",
+    router_tool: str = None,   # Smart Router'dan gelen tool kararı
+) -> Optional[str]:
     """
-    1. Local detection (0ms) — canlı veri lazım mı?
+    1. Router tool hint varsa → direkt kullan (LLM kararı, keyword yok)
+    2. Yoksa → local keyword detection
     2. Lazımsa smart_tools /unified'a git — gerçek veriyi getir
     3. format_for_llm() ile LLM'e hazır formata dönüştür
 
     Ağ çağrısı sadece canlı veri gerektiğinde yapılır.
     """
-    live_type = _detect_live_type(query, mode)
+    # Router kararı varsa keyword'ü atla — LLM zaten anladı
+    if router_tool and router_tool != "none":
+        live_type = router_tool
+        print(f"[LIVE DATA] Router hint → {live_type} (keyword bypass)")
+    else:
+        live_type = _detect_live_type(query, mode)
+    
     if not live_type:
         return None
 
@@ -390,7 +419,11 @@ async def get_live_data(query: str, mode: str = "assistant") -> Optional[str]:
                 for r in tool_data.get("results", [])[:3]:
                     parts.append(f"• {r.get('title','')}: {r.get('content','')[:200]}")
 
-            formatted = "\n".join(parts)
+            formatted = (
+                "\n".join(parts) +
+                "\n\n[NOT: Sadece bu veriyi kullan. "
+                "Önceki konulardan bahsetme, sadece bu soruyu cevapla.]"
+            )
             print(f"[LIVE DATA] ✅ {tool_used} — {len(formatted)} chars")
             return formatted
 
