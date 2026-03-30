@@ -211,10 +211,19 @@ BORSA_URL = os.getenv("BORSA_URL", "http://skylight-borsa:8086")
 # ── Güncel bilgi gerektiren sinyaller — deep_search'e gider ────
 # Bu sinyaller varsa keyword detection yerine deep_search çağrılır
 _DEEP_SEARCH_KW = (
-    # Spor — güncel sonuçlar mutlaka web'den gelsin
+    # Spor
     "maç sonucu","son maç","maçı kaç","playoff","eleme maçı","dünya kupası",
     "şampiyonlar ligi","süper lig","puan durumu","fikstür","transfer",
     "world cup","champions league","premier league","la liga",
+    # Güncel karşılaştırma / sıralama / piyasa durumu
+    "şu an en iyi","şuanda en iyi","piyasada en iyi","en iyi hangisi",
+    "hangi daha iyi","hangisi daha iyi","karşılaştır","comparison",
+    "en popüler","en çok kullanılan","en güncel","piyasada ne var",
+    "yeni çıkan","son çıkan","2025 en iyi","2026 en iyi",
+    "en iyi yapay zeka","en iyi ai","best ai","best llm",
+    # Teknoloji güncel
+    "son model","en yeni model","yeni sürüm","hangi model daha iyi",
+    "chatgpt mi claude mu","gemini mi","hangi ai","ai karşılaştırma",
     # Mevzuat / hukuk / vergi
     "asgari ücret","asgari sermaye","vergi oranı","vergi dilimi",
     "sgk prim","kıdem tazminatı","ihbar tazminatı",
