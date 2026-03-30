@@ -818,8 +818,26 @@ def detect_image_modification_request(prompt: str) -> bool:
         # Stil değişimi
         'anime tarzı', 'anime style', 'cartoon style', 'realistic style',
         'oil painting', 'watercolor', 'sketch style',
+        # Beğenmeme / yeniden oluştur
+        'beğenmedim', 'begenmedi', 'güzel değil', 'iyi değil',
+        'tekrar yap', 'yeniden yap', 'başka türlü', 'farklı yap',
+        'farklı bir', 'farklı şekilde', 'daha iyi yap',
+        'değiştir bunu', 'bunu değiştir',
+        'try again', 'redo', 'do it again', 'make it different',
+        "i don't like", 'not good', 'try another',
     )
     if any(phrase in prompt_lower for phrase in strong_visual):
+        return True
+
+    # ── 2b. BEĞENMEME + ÖNCEKİ GÖRSEL BAĞLAMI ──────────────────
+    # "beğenmedim", "olmadı", "yeniden" → önceki görseli yeniden üret
+    displeasure = (
+        'olmadı', 'olmadi', 'beğenmedi', 'beğenmedim', 'begenmedi',
+        'güzel değil', 'iyi değil', 'kötü oldu', 'kötü çıktı',
+        'bunu değiştir', 'değiştir', 'yeniden', 'tekrar',
+        'başka', 'farklı', 'daha iyi',
+    )
+    if any(d in prompt_lower for d in displeasure):
         return True
 
     # ── 3. ZAYIF SİNYALLER — word boundary + referans ───────────
@@ -1033,7 +1051,35 @@ def get_conversation_context(conversation_id: str) -> dict:
 
 
 def combine_prompts_for_modification(original_prompt: str, modification_request: str) -> str:
-    return f"{original_prompt}\n\nMODIFICATION REQUEST: {modification_request}"
+    """
+    Orijinal görsel prompt'u + değişiklik isteğini akıllıca birleştir.
+    Claude gibi: önceki görseli bilerek değiştirir.
+    """
+    mod_lower = modification_request.lower()
+
+    # Beğenmeme / yeniden üret → orijinali koru + varyasyon iste
+    displeasure_signals = (
+        'beğenmedim', 'olmadı', 'güzel değil', 'iyi değil',
+        'farklı yap', 'başka türlü', 'tekrar', 'yeniden',
+        'try again', 'redo', 'different',
+    )
+    is_displeasure = any(d in mod_lower for d in displeasure_signals)
+
+    if is_displeasure:
+        # Önceki prompt'u koru ama varyasyon iste
+        return (
+            f"{original_prompt}, "
+            f"different composition and style variation, "
+            f"alternative interpretation, fresh take, "
+            f"user requested: {modification_request}"
+        )
+
+    # Spesifik değişiklik → orijinali temel al, değişikliği uygula
+    return (
+        f"{original_prompt}. "
+        f"KEEP the overall composition and style. "
+        f"CHANGE ONLY: {modification_request}"
+    )
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -2377,20 +2423,37 @@ async def chat_endpoint(
         async def stream_image_gen():
             try:
                 async with httpx.AsyncClient(timeout=180.0) as client:
+                    # Görsel bağlamını history'e enjekte et
+                    enriched_history = conversation_history.copy()
+                    if modification_of_id and last_generated_prompt:
+                        enriched_history.insert(0, {
+                            "role": "system",
+                            "content": (
+                                f"[GÖRSEL BAĞLAMI] Bu konuşmada daha önce şu prompt ile görsel oluşturuldu:\n"
+                                f"Kullanıcı isteği: {last_user_prompt}\n"
+                                f"Oluşturulan prompt: {last_generated_prompt}\n"
+                                f"Kullanıcı bu görseli değiştirmek istiyor: {user_facing_prompt}"
+                            )
+                        })
+
                     response = await client.post(f"{IMAGE_GEN_SERVICE_URL}/generate", json={
                         "prompt":               request_body.prompt,
                         "user_id":              str(user_id or 0),
                         "conversation_id":      conversation_id,
-                        "conversation_history": conversation_history,
+                        "conversation_history": enriched_history,
                         "size":                 "1024x1024",
                         "save_to_db":           True,
                         "modification_of":      modification_of_id,
                         "original_user_prompt": user_facing_prompt,
+                        "is_modification":      bool(modification_of_id),
                     })
                     if response.status_code == 200:
                         data = response.json()
                         if data.get("success"):
-                            yield "✨ **Görsel Başarıyla Oluşturuldu!**\n\n"
+                            if modification_of_id:
+                                yield "🎨 **Görsel Güncellendi!**\n\n"
+                            else:
+                                yield "✨ **Görsel Oluşturuldu!**\n\n"
                             image_b64      = data.get("image_b64")
                             db_image_id    = data.get("db_image_id")
                             gen_prompt_out = data.get("generated_prompt", request_body.prompt)
@@ -2501,15 +2564,47 @@ async def chat_endpoint(
             decision = await route_message(prompt, history_for_router)
             routed_mode = router_to_gateway_mode(decision)
 
+            # ── Yeni v4 alanlarını kullan ───────────────────────
+            user_level  = decision.get("user_level", "unknown")
+            is_ambiguous = decision.get("ambiguous", False)
+            thinking    = decision.get("thinking", "")
+            clarification = decision.get("clarification_needed")
+
+            # IT Expert: router expert dedi + teknik konu → it_expert modu
+            if user_level == "expert" and routed_mode == "assistant":
+                intent = decision.get("intent","")
+                if any(w in intent for w in ["architecture","how_to","concept"]):
+                    routed_mode = "it_expert"
+
             if routed_mode != "assistant":
                 mode = routed_mode
-                print(f"[SMART ROUTER] '{prompt[:40]}' → {mode} "
-                      f"(intent={decision.get('intent')}, "
-                      f"realtime={decision.get('needs_realtime')})")
+
+            print(f"[SMART ROUTER] '{prompt[:40]}' → {mode} "
+                  f"| intent={decision.get('intent')} "
+                  f"| lvl={user_level} "
+                  f"| conf={decision.get('confidence')}")
+            if thinking:
+                print(f"[ROUTER 🧠] {thinking[:80]}")
+
+            # Belirsiz mesaj → kullanıcıya soru sor
+            if is_ambiguous and clarification:
+                from smart_router import should_ask_clarification
+                question = should_ask_clarification(decision, prompt)
+                if question:
+                    async def ask_clarification():
+                        yield question
+                    return StreamingResponse(ask_clarification(), media_type="text/plain; charset=utf-8")
 
             # Live data kararını gateway'in veri çekme sistemine aktar
             if decision.get("needs_realtime") and decision.get("tool") != "none":
                 print(f"[SMART ROUTER] Realtime gerekli → tool={decision.get('tool')}")
+
+            # Router kararını request_body'e ekle — chat servisi görsün
+            if not hasattr(request_body, '_router_decision'):
+                try:
+                    object.__setattr__(request_body, '_router_decision', decision)
+                except Exception:
+                    pass
 
         except Exception as e:
             print(f"[SMART ROUTER] Hata: {e} — keyword fallback")

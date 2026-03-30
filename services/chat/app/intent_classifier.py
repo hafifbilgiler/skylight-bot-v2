@@ -36,6 +36,8 @@ class Intent:
 
     # ── Teknik istekler ───────────────────────────────────────
     DEBUG_REQUEST        = "debug_request"        # hata analizi
+    DEBUG_AUTO           = "debug_auto"           # otomatik hata tespit (görsel/traceback)
+    PRE_CODE             = "pre_code"             # kod yazmadan önce klarifikasyon
     CODE_GENERATE        = "code_generate"        # yeni kod yaz
     CODE_EXPLAIN         = "code_explain"         # kodu açıkla
     CODE_MODIFY          = "code_modify"          # düzelt/ekle/refactor
@@ -163,6 +165,26 @@ _CODE_MODIFY_SIGNALS = (
     "ekle", "kaldır", "sil", "update", "modify",
     "change", "remove", "add feature", "özellik ekle",
     "yeniden yaz", "rewrite",
+)
+
+# Klarifikasyon gerektiren belirsiz kod istekleri
+_PRE_CODE_SIGNALS = (
+    # Belirsiz kapsam — ne kadar büyük olduğu belli değil
+    "uygulama yap", "sistem kur", "platform yap", "proje oluştur",
+    "app yaz", "website yap", "servis kur", "api geliştir",
+    "bot yaz", "bot kur", "chatbot", "dashboard yap",
+    # Stack belirsiz
+    "bir şey yap", "bir şey yaz", "yardım et koda",
+    "proje başlat", "baştan yaz", "sıfırdan yaz",
+)
+
+# Otomatik debug — kullanıcı çalışmıyor/hata diyor
+_DEBUG_AUTO_SIGNALS = (
+    "çalışmıyor", "calismiyoe", "çalışmadı", "hata alıyorum",
+    "hata var", "error var", "error alıyorum", "crash",
+    "patladı", "broken", "bozuk", "düzelmedi", "olmadı",
+    "yine hata", "hâlâ hata", "hala hata", "aynı hata",
+    "neden çalışmıyor", "sorun ne",
 )
 
 _CODE_GENERATE_SIGNALS = (
@@ -456,15 +478,50 @@ def _is_new_topic(prompt: str, history: List[Dict]) -> bool:
 # ─────────────────────────────────────────────────────────────
 
 def classify_intent(
-    prompt: str,
-    history: List[Dict],
-    mode: str = "assistant",
+    prompt:          str,
+    history:         List[Dict],
+    mode:            str  = "assistant",
+    router_decision: Dict = None,
 ) -> Dict:
     """
-    Kullanıcının niyetini LOCAL olarak sınıflandırır. 0ms, network yok.
-
-    Döner: { intent, target, has_prior_context, response_strategy, confidence }
+    Kullanıcının niyetini sınıflandırır.
+    Smart Router v4 yüksek güven kararı verdiyse → direkt kabul et.
+    Düşük güven veya router yoksa → kendi sınıflandırmasını yap.
     """
+    # ── Smart Router v4 kararını öncelikli kullan ─────────────
+    if router_decision and router_decision.get("confidence") == "high":
+        _router_map = {
+            "code_debug":          Intent.DEBUG_REQUEST,
+            "code_modify":         Intent.CODE_MODIFY,
+            "code_generate":       Intent.CODE_GENERATE,
+            "code_review":         Intent.CODE_REVIEW,
+            "code_explain":        Intent.CODE_EXPLAIN,
+            "code_optimize":       Intent.PERFORMANCE,
+            "architecture_design": Intent.ARCHITECTURE,
+            "how_to":              Intent.HOW_TO,
+            "concept_explain":     Intent.CONCEPT_LEARN,
+            "step_by_step":        Intent.STEP_BY_STEP,
+            "emotional_support":   Intent.EMOTIONAL,
+            "general_chat":        Intent.CHAT,
+        }
+        ri = router_decision.get("intent","")
+        if ri in _router_map:
+            thinking = router_decision.get("thinking","")
+            level    = router_decision.get("user_level","unknown")
+            model    = router_decision.get("model","auto")
+            return {
+                "intent":            _router_map[ri],
+                "target":            None,
+                "has_prior_context": bool(history),
+                "response_strategy": (
+                    f"Router v4 kararı: {thinking} "
+                    f"[model={model}, level={level}]"
+                ),
+                "confidence":        "high",
+                "_from_router":      True,
+            }
+
+    # Router yoksa veya low/medium confidence → kendi sınıflandırması
     p = prompt.lower().strip()
     has_code_context = _has_recent_code(history)
     has_history      = len(history) >= 1
@@ -881,6 +938,47 @@ def classify_intent(
         }
 
     # ══════════════════════════════════════════════════════════
+    # 18c. DEBUG_AUTO — "çalışmıyor" / hata / traceback
+    # ══════════════════════════════════════════════════════════
+    if any(sig in p for sig in _DEBUG_AUTO_SIGNALS):
+        return {
+            "intent": Intent.DEBUG_AUTO,
+            "target": None,
+            "has_prior_context": has_code_context,
+            "response_strategy": (
+                "Kullanıcı bir hata veya sorun bildiriyor. "
+                "ASLA hemen kod yazma. "
+                "1) Hangi hata mesajını aldığını sor (görmüyorsan). "
+                "2) Tam hata mesajını veya ekran görüntüsünü paylaşmasını iste. "
+                "3) Hata gelince: kök sebebi bul → kısa açıkla → sadece ilgili kısmı düzelt. "
+                "Görsel/traceback zaten varsa direkt analiz et."
+            ),
+            "confidence": "high",
+        }
+
+    # ══════════════════════════════════════════════════════════
+    # 18d. PRE_CODE — Belirsiz büyük kod isteği → önce sor
+    # ══════════════════════════════════════════════════════════
+    if any(sig in p for sig in _PRE_CODE_SIGNALS) and not has_code_context:
+        target = _extract_target(prompt, history)
+        return {
+            "intent": Intent.PRE_CODE,
+            "target": target,
+            "has_prior_context": False,
+            "response_strategy": (
+                "Kullanıcı büyük/belirsiz bir kod projesi istiyor. "
+                "ASLA direkt kod yazma. "
+                "Önce şu soruları sor (hepsini tek mesajda, kısa): "
+                "1) Stack/teknoloji nedir? (Python/Node/React vs) "
+                "2) Mevcut kod var mı? "
+                "3) Hangi özellikler olsun? "
+                "4) Boyut tahmini: küçük script mi, tam proje mi? "
+                "Kullanıcı yanıtlayınca kod yaz."
+            ),
+            "confidence": "high",
+        }
+
+    # ══════════════════════════════════════════════════════════
     # 19. YENİ KOD YAZMA
     # ══════════════════════════════════════════════════════════
     if any(sig in p for sig in _CODE_GENERATE_SIGNALS) and mode in ("code", "it_expert", "assistant"):
@@ -890,8 +988,10 @@ def classify_intent(
             "has_prior_context": has_code_context,
             "response_strategy": (
                 "Kullanıcı yeni kod yazmanı istiyor. "
-                "Tam, eksiksiz, production-ready kod yaz. "
-                "ASLA truncate etme — 500+ satır gerekiyorsa yaz."
+                "Eğer stack/gereksinim belirsizse 1-2 kısa soru sor. "
+                "Kullanıcı onaylarsa: tam, eksiksiz, production-ready kod yaz. "
+                "ASLA truncate etme — 500+ satır gerekiyorsa yaz. "
+                "Kod bittikten sonra: 'Test etmek ister misin?' diye sor."
             ),
             "confidence": "high",
         }
@@ -1105,6 +1205,8 @@ def build_reasoning_hint(
         Intent.USER_PREFERENCE:     "⚙️  KULLANICI TERCİHİ",
         Intent.EMOTIONAL:           "💛 DUYGUSAL",
         Intent.FRUSTRATION:         "😤 HAYAL KIRIKLIGI",
+        Intent.PRE_CODE:            "🤔 KOD ÖNCESİ SORULAR",
+        Intent.DEBUG_AUTO:          "🔍 OTOMATİK DEBUG",
         Intent.HOW_TO:              "❓ NASIL YAPILIR",
         Intent.NEW_TOPIC:           "🆕 YENİ KONU",
         Intent.CHAT:                "💬 SOHBET",

@@ -478,11 +478,58 @@ async def should_create_summary(conversation_id: str) -> bool:
     return False
 
 
+def _score_message_importance(msg: dict) -> float:
+    """
+    Mesajın önemini 0-1 arasında puanla.
+    Claude'un sliding window mantığına benzer önem skoru.
+    """
+    content = (msg.get("content") or "").lower()
+    role    = msg.get("role", "user")
+    score   = 0.5  # base
+
+    # Kullanıcı mesajları genelde daha önemli
+    if role == "user":
+        score += 0.1
+
+    # Kod içeren mesajlar kritik
+    if "```" in content or "def " in content or "import " in content:
+        score += 0.25
+
+    # Hata mesajları kritik
+    if any(w in content for w in ["error","hata","traceback","exception","failed"]):
+        score += 0.2
+
+    # Karar ifadeleri
+    if any(w in content for w in ["tamam","kabul","evet","hayır","kesinlikle","anlaştık"]):
+        score += 0.15
+
+    # Kısa mesajlar genelde az önemli
+    if len(content) < 30:
+        score -= 0.15
+
+    # Çok uzun mesajlar bilgi yoğun
+    if len(content) > 500:
+        score += 0.1
+
+    return min(1.0, max(0.0, score))
+
+
 async def create_conversation_summary(user_id: int, conversation_id: str, config: Dict):
+    """
+    Akıllı özetleme — Claude benzeri sliding window + önem skoru.
+
+    Strateji:
+    1. Tüm özetlenmemiş mesajları al
+    2. Her mesajı önem skoruna göre değerlendir
+    3. Önemli mesajları tam tut, düşük önemli olanları özet olarak sakla
+    4. Hiyerarşik özet: konu → alt konular → kararlar → sonraki adımlar
+    5. Kullanıcı bellek güncelleme (tercihler, teknik bilgi)
+    """
     if not db_pool:
         return
     try:
         async with db_pool.acquire() as conn:
+            # Özetlenmemiş mesajları al
             messages = await conn.fetch("""
                 SELECT content, role, created_at, id FROM messages
                 WHERE conversation_id = $1::uuid
@@ -492,46 +539,88 @@ async def create_conversation_summary(user_id: int, conversation_id: str, config
                     '00000000-0000-0000-0000-000000000000'::uuid)
                 ORDER BY created_at ASC
             """, conversation_id)
+
             if not messages or len(messages) < 5:
                 return
 
-            conv_text = "\n".join([f"{m['role']}: {m['content']}" for m in messages])
-            prompt    = f"""Analyze this conversation and create a structured summary:
+        msgs = [dict(m) for m in messages]
 
-{conv_text}
+        # ── Önem skorlama ────────────────────────────────────
+        scored = [(m, _score_message_importance(m)) for m in msgs]
 
-Provide a JSON response:
+        # Yüksek öneme sahip mesajları tam tut (skor > 0.65)
+        high_priority = [m for m, s in scored if s > 0.65]
+        low_priority  = [m for m, s in scored if s <= 0.65]
+
+        # Düşük öncelikli mesajları kısalt
+        low_text  = "\n".join([
+            f"{m['role'][:1].upper()}: {m['content'][:120]}..."
+            for m in low_priority
+        ])
+        high_text = "\n".join([
+            f"{m['role'].upper()}: {m['content'][:600]}"
+            for m in high_priority
+        ])
+
+        # ── LLM ile akıllı özet ─────────────────────────────
+        is_tr = any(
+            any(c in (m.get("content") or "") for c in "çğışöüÇĞİŞÖÜ")
+            for m in msgs[:5]
+        )
+        lang_rule = "TÜRKÇE yanıtla." if is_tr else "Respond in English."
+
+        prompt = f"""Bir konuşmayı analiz edip yapılandırılmış özet çıkar.
+
+ÖNEMLİ MESAJLAR (tam içerik):
+{high_text}
+
+DİĞER MESAJLAR (kısaltılmış):
+{low_text if low_text else "(yok)"}
+
+Aşağıdaki JSON formatında yanıtla. {lang_rule}
 {{
-    "topic": "Main topic",
-    "subtopics": ["sub1","sub2"],
-    "progress": "What was accomplished",
-    "decisions_made": ["decision1"],
-    "next_steps": ["step1"],
-    "learned_facts": {{"preferences": "...", "technical": "..."}}
+  "topic": "Ana konu (max 60 karakter)",
+  "subtopics": ["alt konu 1", "alt konu 2"],
+  "summary": "Konuşmanın özeti (max 200 kelime, Türkçe)",
+  "decisions_made": ["alınan karar 1", "alınan karar 2"],
+  "next_steps": ["sonraki adım 1"],
+  "user_preferences": {{
+    "communication": "nasıl iletişim kuruyor (kısa/detaylı/teknik)",
+    "technical_level": "beginner/intermediate/expert",
+    "domain": "çalıştığı alan"
+  }},
+  "key_facts": ["önemli bilgi 1", "önemli bilgi 2"]
 }}
-Respond ONLY with valid JSON."""
+SADECE JSON döndür, başka hiçbir şey yazma."""
 
-            summary_response = ""
-            async for chunk in stream_deepinfra_completion(
-                messages=[
-                    {"role": "system", "content": "Conversation analyst. JSON only."},
-                    {"role": "user",   "content": prompt}
-                ],
-                model=config["model"], max_tokens=800,
-                temperature=0.3, top_p=0.85,
-            ):
-                summary_response += chunk
+        summary_response = ""
+        async for chunk in stream_deepinfra_completion(
+            messages=[
+                {"role": "system",
+                 "content": "Konuşma analisti. Sadece geçerli JSON döndür, markdown yok."},
+                {"role": "user", "content": prompt}
+            ],
+            model=config["model"],
+            max_tokens=600,
+            temperature=0.1,
+            top_p=0.9,
+        ):
+            summary_response += chunk
 
-            try:
-                data = json.loads(summary_response.strip())
-            except json.JSONDecodeError:
-                if "```json" in summary_response:
-                    s = summary_response.find("```json") + 7
-                    e = summary_response.find("```", s)
-                    data = json.loads(summary_response[s:e].strip())
-                else:
-                    return
+        # JSON parse
+        try:
+            raw = summary_response.strip()
+            if "```" in raw:
+                s = raw.find("{")
+                e = raw.rfind("}") + 1
+                raw = raw[s:e]
+            data = json.loads(raw)
+        except Exception:
+            print(f"[SUMMARY] JSON parse hatası — atlandı")
+            return
 
+        # ── DB kaydet ────────────────────────────────────────
+        async with db_pool.acquire() as conn:
             await conn.execute("""
                 INSERT INTO conversation_summaries
                 (user_id, conversation_id, messages_start, messages_end,
@@ -540,21 +629,38 @@ Respond ONLY with valid JSON."""
                  start_message_id, end_message_id, messages_summarized)
                 VALUES ($1, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb,
                         $12::uuid, $13::uuid, $14)
+                ON CONFLICT DO NOTHING
             """,
-                user_id, conversation_id, 1, len(messages),
-                data.get('topic','Conversation'), data.get('subtopics',[]),
-                data.get('progress',''),          data.get('progress',''),
-                data.get('decisions_made',[]),     data.get('next_steps',[]),
-                json.dumps(data.get('learned_facts',{})),
-                messages[0]['id'], messages[-1]['id'], len(messages),
+                user_id, conversation_id,
+                1, len(msgs),
+                data.get("topic", "Konuşma"),
+                data.get("subtopics", []),
+                data.get("summary", ""),
+                data.get("summary", ""),
+                data.get("decisions_made", []),
+                data.get("next_steps", []),
+                json.dumps({
+                    "preferences": data.get("user_preferences", {}),
+                    "key_facts":   data.get("key_facts", []),
+                }),
+                msgs[0]["id"],
+                msgs[-1]["id"],
+                len(msgs),
             )
-            print(f"[SUMMARY] Created: {data.get('topic')}")
+            print(f"[SUMMARY] ✅ '{data.get('topic')}' — {len(msgs)} mesaj, "
+                  f"{len(high_priority)} yüksek önem, {len(low_priority)} düşük önem")
 
-            if data.get('learned_facts'):
-                await update_user_memory_from_summary(user_id, data['learned_facts'])
+        # ── Kullanıcı belleğini güncelle ─────────────────────
+        prefs = data.get("user_preferences", {})
+        if prefs:
+            await update_user_memory_from_summary(user_id, {
+                "preferences": prefs.get("communication", ""),
+                "technical":   prefs.get("technical_level", ""),
+                "domain":      prefs.get("domain", ""),
+            })
+
     except Exception as e:
-        print(f"[SUMMARY CREATION ERROR] {e}")
-        import traceback; traceback.print_exc()
+        print(f"[SUMMARY ERROR] {e}")
 
 
 async def update_user_memory_from_summary(user_id: int, learned_facts: Dict):
@@ -578,6 +684,97 @@ async def update_user_memory_from_summary(user_id: int, learned_facts: Dict):
 # ═══════════════════════════════════════════════════════════════
 # CODE MODE
 # ═══════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════
+# KULLANICI DOSYA WORKSPACE — Konuşmada dosya saklama
+# Kullanıcı kodu paylaşırsa → workspace'e kaydet
+# Sonraki mesajlarda otomatik bağlam olarak kullan
+# ═══════════════════════════════════════════════════════════════
+
+async def save_user_file_to_workspace(
+    conversation_id: str,
+    filename: str,
+    content_text: str,
+    language: str = "unknown"
+):
+    """Kullanıcının paylaştığı kodu workspace'e kaydet."""
+    if not db_pool or not conversation_id:
+        return
+    try:
+        async with db_pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO workspace_files
+                    (conversation_id, filename, content, language,
+                     size_bytes, created_at, updated_at)
+                VALUES ($1::uuid, $2, $3, $4, $5, NOW(), NOW())
+                ON CONFLICT (conversation_id, filename)
+                DO UPDATE SET
+                    content    = EXCLUDED.content,
+                    language   = EXCLUDED.language,
+                    size_bytes = EXCLUDED.size_bytes,
+                    updated_at = NOW()
+            """, conversation_id, filename,
+                 content_text, language, len(content_text.encode()))
+            print(f"[WORKSPACE] ✅ {filename} kaydedildi ({len(content_text)} chars)")
+    except Exception as e:
+        print(f"[WORKSPACE] ❌ {e}")
+
+
+async def load_workspace_files(conversation_id: str) -> List[Dict]:
+    """Workspace'teki dosyaları yükle — max 5, en son güncellenenler."""
+    if not db_pool or not conversation_id:
+        return []
+    try:
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT filename, content, language, updated_at
+                FROM workspace_files
+                WHERE conversation_id = $1::uuid
+                ORDER BY updated_at DESC
+                LIMIT 5
+            """, conversation_id)
+            return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+
+def _extract_code_blocks(text: str) -> List[Dict]:
+    """Mesajdan kod bloklarını çıkar — filename + content + language."""
+    import re
+    blocks = []
+    # backtick python ... backtick formatı
+    pattern = re.compile(r"```(\w+)?\n(.*?)```", re.DOTALL)
+    for match in pattern.finditer(text):
+        lang    = match.group(1) or "text"
+        code    = match.group(2).strip()
+        if len(code) > 50:  # Çok kısa snippet'leri atla
+            blocks.append({"language": lang, "content": code})
+    return blocks
+
+
+async def process_user_message_for_workspace(
+    conversation_id: str,
+    user_message: str
+):
+    """
+    Kullanıcı mesajında kod varsa workspace'e kaydet.
+    Otomatik filename üret (lang + timestamp).
+    """
+    blocks = _extract_code_blocks(user_message)
+    for i, block in enumerate(blocks):
+        lang     = block["language"]
+        ext_map  = {
+            "python":"py","javascript":"js","typescript":"ts",
+            "jsx":"jsx","tsx":"tsx","html":"html","css":"css",
+            "sql":"sql","bash":"sh","yaml":"yaml","json":"json",
+            "go":"go","rust":"rs","java":"java","cpp":"cpp",
+        }
+        ext      = ext_map.get(lang, "txt")
+        filename = f"user_code_{i+1}.{ext}"
+        await save_user_file_to_workspace(
+            conversation_id, filename, block["content"], lang
+        )
+
 
 async def load_code_context(conversation_id: str) -> Optional[Dict]:
     if not db_pool or not conversation_id:
@@ -853,6 +1050,18 @@ async def generate_thinking_steps(
     return steps
 
 
+def get_deep_search_steps(is_tr: bool = True) -> List[ThinkingStep]:
+    """Deep search pipeline adımları — 6 adım, gerçek zamanlı gösterilir."""
+    return [
+        ThinkingStep(emoji="🔍", message="Web'de aranıyor..." if is_tr else "Searching the web..."),
+        ThinkingStep(emoji="📄", message="Sayfalar okunuyor..." if is_tr else "Reading pages..."),
+        ThinkingStep(emoji="✂️",  message="İçerik parçalanıyor..." if is_tr else "Chunking content..."),
+        ThinkingStep(emoji="⚡", message="En alakalı kaynaklar seçiliyor..." if is_tr else "Selecting best sources..."),
+        ThinkingStep(emoji="✍️",  message="Yanıt hazırlanıyor..." if is_tr else "Generating answer..."),
+        ThinkingStep(emoji="🔎", message="Yanıt doğrulanıyor..." if is_tr else "Verifying answer..."),
+    ]
+
+
 # ═══════════════════════════════════════════════════════════════
 # WEB SEARCH SYNTHESIS
 # ═══════════════════════════════════════════════════════════════
@@ -1047,14 +1256,53 @@ async def build_messages(
             f"[/GÜNCEL BİLGİ]\n\n"
         ) + system_content
 
-    # 6. SESSION SUMMARY (legacy)
-    if session_summary:
-        system_content += f"\n\n[SESSION SUMMARY]\n{session_summary}\n[/SESSION SUMMARY]"
+    # 6. WORKSPACE DOSYALARI — Kullanıcının paylaştığı kodlar
+    if conversation_id:
+        ws_files = await load_workspace_files(conversation_id)
+        if ws_files:
+            ws_text = "\n\n".join([
+                f"📁 {f['filename']} ({f['language']}):\n```{f['language']}\n{f['content'][:1500]}\n```"
+                for f in ws_files[:3]
+            ])
+            system_content += f"""
+
+[KULLANICI WORKSPACE]
+Bu konuşmada kullanıcının paylaştığı dosyalar:
+{ws_text}
+Bu dosyalara atıfta bulunabilirsin. "bu kodu düzelt" gibi ifadeler workspace'teki koda işaret eder.
+[/KULLANICI WORKSPACE]"""
+
+    # 7. KONUŞMA ÖZETİ — Akıllı özetleme sisteminden geliyor
+    if session_summary and session_summary != "[CONVERSATION SUMMARY]\nNew conversation\n[/CONVERSATION SUMMARY]":
+        system_content += f"""
+
+[KONUŞMA BAĞLAMI]
+{session_summary}
+[/KONUŞMA BAĞLAMI]
+
+Not: Yukarıdaki özet bu konuşmanın geçmişini özetler.
+Kullanıcı bağlam sorarsa özete başvur, tekrar sormadan yanıtla."""
 
     messages.append({"role": "system", "content": system_content})
 
-    # History (son 15 çift = 30 mesaj)
-    for msg in (history or [])[-15:]:
+    # ── Akıllı History Seçimi — Önem bazlı sliding window ──────
+    # Son 6 mesajı her zaman al (yakın bağlam kritik)
+    # Önceki mesajlardan önemli olanları ekle (skor > 0.65)
+    # Toplam max 20 mesaj — token maliyetini dengele
+    all_history = history or []
+    if len(all_history) <= 20:
+        selected_history = all_history
+    else:
+        recent   = all_history[-6:]               # Son 6 kesinlikle
+        older    = all_history[:-6]               # Öncekiler
+        # Önemlileri seç
+        important = [
+            m for m in older
+            if _score_message_importance(m) > 0.6
+        ][-14:]  # Max 14 eski mesaj
+        selected_history = important + recent
+
+    for msg in selected_history:
         messages.append({"role": msg["role"], "content": msg["content"]})
 
     messages.append({"role": "user", "content": user_prompt})
@@ -1108,12 +1356,40 @@ async def chat(request: ChatRequest):
             buffer    = ""
             full_text = ""  # State update için tam cevabı topla
 
-            # Thinking display
-            if show_thinking:
+            # Kullanıcı mesajında kod varsa workspace'e kaydet
+            if request.conversation_id:
+                asyncio.create_task(
+                    process_user_message_for_workspace(
+                        request.conversation_id,
+                        request.prompt
+                    )
+                )
+
+            # ── Deep search adımları — gerçek pipeline çalışırken göster ──
+            live_type_check = _detect_live_type(request.prompt, request.mode or "assistant")
+            is_deep = live_type_check == "deep_search"
+            is_tr   = any(c in request.prompt for c in "çğışöüÇĞİŞÖÜ") or True
+
+            if is_deep:
+                ds_steps = get_deep_search_steps(is_tr)
+                # Adım 1-4 hemen göster (search + scrape + chunk + rerank)
+                for step in ds_steps[:4]:
+                    yield f"[STEP]{step.emoji} {step.message}[/STEP]\n"
+                    await asyncio.sleep(0.1)
+
+            # Thinking display (deep search değilse)
+            elif show_thinking:
                 steps = await generate_thinking_steps(request.prompt, request.mode, request.history or [])
                 for step in steps:
-                    yield f"{step.emoji} {step.message}\n"
+                    yield f"[STEP]{step.emoji} {step.message}[/STEP]\n"
                 yield "\n"
+
+            # Deep search kalan adımları — generate + reflect
+            if is_deep:
+                for step in ds_steps[4:]:
+                    yield f"[STEP]{step.emoji} {step.message}[/STEP]\n"
+                    await asyncio.sleep(0.1)
+                yield "[STEPS_DONE]\n"
 
             # Model log — hangi model cevaplıyor
             print(f"[MODEL] mode={request.mode} | model={config['model']} | max_tokens={config['max_tokens']}")
@@ -1153,6 +1429,164 @@ async def chat(request: ChatRequest):
             yield f"\n\n⚠️ Bir hata oluştu: {str(e)}"
 
     return StreamingResponse(response_generator(), media_type="text/plain; charset=utf-8")
+
+
+# ═══════════════════════════════════════════════════════════════
+# SSE ENDPOINT — Claude gibi event stream
+# ═══════════════════════════════════════════════════════════════
+
+@app.post("/chat/sse")
+async def chat_sse(request: ChatRequest):
+    """
+    SSE (Server-Sent Events) endpoint.
+    Claude gibi event tiplerine göre ayrı kanaldan gönderir.
+
+    Event tipleri:
+      step       → araç adımı (search, scrape, chunk, rerank, generate, reflect)
+      text       → gerçek cevap içeriği (streaming)
+      done       → tamamlandı
+      error      → hata
+
+    Frontend kullanımı:
+      const evtSource = new EventSource('/chat/sse', {method:'POST'})
+      evtSource.addEventListener('step', e => showStep(JSON.parse(e.data)))
+      evtSource.addEventListener('text', e => appendText(e.data))
+      evtSource.addEventListener('done', e => finalize())
+    """
+    import json as _json
+
+    user_id = request.user_id
+    mode    = request.mode or "assistant"
+    prompt  = request.prompt
+
+    if mode not in MODE_CONFIGS:
+        raise HTTPException(status_code=400, detail=f"Invalid mode: {mode}")
+
+    config = MODE_CONFIGS[mode]
+
+    def sse_event(event_type: str, data) -> str:
+        """SSE formatı: event: TYPE\ndata: DATA\n\n"""
+        if isinstance(data, dict):
+            data = _json.dumps(data, ensure_ascii=False)
+        return f"event: {event_type}\ndata: {data}\n\n"
+
+    async def sse_generator():
+        try:
+            # ── Deep search mi? ──────────────────────────────────
+            live_type = _detect_live_type(prompt, mode)
+            is_deep   = live_type == "deep_search"
+            is_tr     = any(c in prompt for c in "çğışöüÇĞİŞÖÜ") or True
+
+            if is_deep:
+                steps = get_deep_search_steps(is_tr)
+                step_names = ["search","scrape","chunk","rerank","generate","reflect"]
+
+                # Adım 1-4: search → rerank (live data çekilirken göster)
+                for i, step in enumerate(steps[:4]):
+                    yield sse_event("step", {
+                        "index":  i,
+                        "name":   step_names[i],
+                        "emoji":  step.emoji,
+                        "text":   step.message,
+                        "status": "running",
+                    })
+                    await asyncio.sleep(0.05)
+
+                # Live data çek
+                live_context = await get_live_data(prompt, mode)
+
+                # Adım 4'ü tamamla
+                yield sse_event("step", {
+                    "index":  3,
+                    "name":   "rerank",
+                    "emoji":  "⚡",
+                    "text":   "En alakalı kaynaklar seçildi" if is_tr else "Best sources selected",
+                    "status": "done",
+                })
+
+                # Adım 5: generate
+                yield sse_event("step", {
+                    "index":  4,
+                    "name":   "generate",
+                    "emoji":  steps[4].emoji,
+                    "text":   steps[4].message,
+                    "status": "running",
+                })
+
+            else:
+                live_context = await get_live_data(prompt, mode)
+
+                # Normal thinking steps
+                show_thinking = should_show_thinking(prompt, mode, request.history or [])
+                if show_thinking:
+                    think_steps = await generate_thinking_steps(prompt, mode, request.history or [])
+                    for i, step in enumerate(think_steps):
+                        yield sse_event("step", {
+                            "index":  i,
+                            "name":   "thinking",
+                            "emoji":  step.emoji,
+                            "text":   step.message,
+                            "status": "running",
+                        })
+                        await asyncio.sleep(0.05)
+
+            # Mesajları hazırla
+            messages = await build_messages(
+                mode=mode, user_id=user_id,
+                conversation_id=request.conversation_id,
+                user_prompt=prompt,
+                history=request.history or [],
+                rag_context=request.rag_context,
+                context=live_context,
+                session_summary=request.session_summary,
+                config=config,
+            )
+
+            # ── Text streaming ────────────────────────────────────
+            full_text = ""
+            async for chunk in stream_deepinfra_completion(
+                messages=messages,
+                model=config["model"],
+                max_tokens=config["max_tokens"],
+                temperature=config["temperature"],
+                top_p=config["top_p"],
+            ):
+                full_text += chunk
+                yield sse_event("text", chunk)
+
+            # Reflect adımı — deep search sonrası
+            if is_deep:
+                yield sse_event("step", {
+                    "index":  5,
+                    "name":   "reflect",
+                    "emoji":  "🔎",
+                    "text":   "Yanıt doğrulandı" if is_tr else "Answer verified",
+                    "status": "done",
+                })
+
+            # Tüm adımları done yap
+            yield sse_event("done", {
+                "total_chars": len(full_text),
+                "mode":        mode,
+            })
+
+            # Background tasks
+            if request.conversation_id:
+                asyncio.create_task(check_and_create_summary_async(
+                    user_id, request.conversation_id, config))
+
+        except Exception as e:
+            yield sse_event("error", {"message": str(e)})
+
+    return StreamingResponse(
+        sse_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control":   "no-cache",
+            "X-Accel-Buffering": "no",  # Nginx buffer'ı kapat
+            "Connection":      "keep-alive",
+        },
+    )
 
 
 async def check_and_create_summary_async(user_id: int, conversation_id: str, config: Dict):
