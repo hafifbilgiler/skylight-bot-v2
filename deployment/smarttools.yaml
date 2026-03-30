@@ -71,6 +71,10 @@ spec:
               name: smart-tools-secret
               key: BRAVE_API_KEY
               optional: true
+        - name: CRAWL4AI_URL
+          value: "http://crawl4ai:11235"
+        - name: RERANKER_URL
+          value: "http://skylight-reranker:8087"
         resources:
           requests:
             memory: "256Mi"
