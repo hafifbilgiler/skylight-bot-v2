@@ -16,7 +16,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Outfit:wght@700;800&display=swap" rel="stylesheet">
 
-<style>
+ <style>
         :root {
             --bg-color: #0a0a0c;
             --sidebar-color: #111114;
@@ -221,6 +221,131 @@
         }
         .new-chat-btn i { font-size: 11px; opacity: 0.7; }
 
+        /* ── Sidebar Nav ───────────────────────── */
+        .sidebar-nav {
+            display: flex;
+            gap: 4px;
+            padding: 4px;
+            background: rgba(255,255,255,0.03);
+            border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.06);
+        }
+        .sidebar-nav-btn {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+            padding: 8px 4px;
+            background: none;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            color: rgba(255,255,255,0.45);
+            font-size: 10px;
+            font-family: inherit;
+            font-weight: 500;
+            transition: all 0.2s;
+            letter-spacing: 0.3px;
+        }
+        .sidebar-nav-btn i { font-size: 15px; }
+        .sidebar-nav-btn:hover { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.8); }
+        .sidebar-nav-btn.active {
+            background: rgba(0,242,254,0.1);
+            color: #00f2fe;
+        }
+        /* ── Uygulamalar sayfası ──────────────────── */
+        #apps-page {
+            display: none;
+            flex-direction: column;
+            gap: 12px;
+            flex: 1;
+            overflow-y: auto;
+        }
+        .apps-section-title {
+            font-size: 11px;
+            color: rgba(255,255,255,0.35);
+            text-transform: uppercase;
+            letter-spacing: 1.2px;
+            font-weight: 600;
+            padding: 0 2px;
+        }
+        .app-card {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 14px;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.07);
+            border-radius: 12px;
+            cursor: default;
+            transition: all 0.2s;
+            position: relative;
+            overflow: hidden;
+        }
+        .app-card:hover { background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.12); }
+        .app-card-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            flex-shrink: 0;
+        }
+        .app-card-info { flex: 1; min-width: 0; }
+        .app-card-name { font-size: 13px; font-weight: 600; color: rgba(255,255,255,0.85); }
+        .app-card-desc { font-size: 11px; color: rgba(255,255,255,0.38); margin-top: 2px; }
+        .app-card-badge {
+            font-size: 9px;
+            font-weight: 700;
+            padding: 3px 7px;
+            border-radius: 20px;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            flex-shrink: 0;
+        }
+        .badge-soon {
+            background: rgba(251,191,36,0.12);
+            color: #fbbf24;
+            border: 1px solid rgba(251,191,36,0.25);
+        }
+        .badge-new {
+            background: rgba(0,242,254,0.12);
+            color: #00f2fe;
+            border: 1px solid rgba(0,242,254,0.25);
+        }
+        /* ── Conv dropdown toggle ─────────────────── */
+        .conv-dropdown-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 6px 4px;
+            cursor: pointer;
+            border-radius: 8px;
+            transition: background 0.15s;
+            user-select: none;
+        }
+        .conv-dropdown-header:hover { background: rgba(255,255,255,0.04); }
+        .conv-dropdown-header .label {
+            font-size: 10px;
+            color: rgba(255,255,255,0.55);
+            text-transform: uppercase;
+            letter-spacing: 1.2px;
+            font-weight: 700;
+        }
+        .conv-dropdown-header .chevron {
+            font-size: 12px;
+            color: rgba(255,255,255,0.55);
+            transition: transform 0.2s;
+        }
+        .conv-dropdown-header.open .chevron { transform: rotate(180deg); }
+        .conv-dropdown-body {
+            overflow: visible;
+        }
+        .conv-dropdown-body:not(.open) { display: none; }
+
         #conversation-list-container {
             display: none;
             flex-direction: column;
@@ -228,6 +353,11 @@
             flex: 1;
             min-height: 0;
             overflow-y: auto;
+        }
+        #conversation-list {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
         }
 
         .conv-section-label {
@@ -243,30 +373,34 @@
         .conversation-item {
             padding: 10px 12px;
             background: transparent;
-            border-radius: 8px;
-            border-left: 2px solid transparent;
+            border-radius: 10px;
+            border-left: none;
             cursor: pointer;
-            transition: all 0.15s;
+            transition: all 0.18s;
+            margin-bottom: 1px;
         }
-        .conversation-item:hover { background: rgba(255,255,255,0.03); }
+        .conversation-item:hover {
+            background: rgba(255,255,255,0.05);
+        }
         .conversation-item.active {
-            background: rgba(0,242,254,0.06);
-            border-left-color: var(--accent-color);
+            background: linear-gradient(135deg, rgba(0,242,254,0.08), rgba(0,242,254,0.04));
+            box-shadow: inset 0 0 0 1px rgba(0,242,254,0.12);
         }
+        .conversation-item.active .conv-title { color: #fff; font-weight: 600; }
 
         .conv-title {
-            font-size: 12.5px;
+            font-size: 13px;
             font-weight: 500;
             margin-bottom: 3px;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
-            color: var(--text-primary);
+            color: rgba(255,255,255,0.88);
         }
 
         .conv-meta {
             font-size: 11px;
-            color: var(--text-muted);
+            color: rgba(255,255,255,0.38);
             display: flex;
             justify-content: space-between;
             align-items: center;
@@ -901,69 +1035,19 @@
         }
         #ptr-indicator.active { transform: translateY(80px); }
 
-        .mode-selector-container {
-            max-width: 700px;
-            margin: 0 auto 8px;
-            display: flex;
-            gap: 6px;
-            padding: 0 10px;
-            position: relative;
-        }
+        
 
-        .mode-dropdown-wrapper {
-            position: relative;
-        }
-        .mode-dropdown-trigger {
-            background: rgba(255,255,255,0.04);
-            border: 1px solid rgba(255,255,255,0.08);
-            color: var(--accent-color);
-            padding: 8px 14px;
-            border-radius: 12px;
-            font-size: 11px;
-            font-weight: 700;
-            cursor: pointer;
-            transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-            display: flex;
-            align-items: center;
-            gap: 7px;
-            text-transform: uppercase;
-            letter-spacing: 0.8px;
-            font-family: inherit;
-            backdrop-filter: blur(8px);
-            white-space: nowrap;
-        }
-        .mode-dropdown-trigger:hover {
-            background: rgba(0, 242, 254, 0.08);
-            border-color: rgba(0, 242, 254, 0.25);
-        }
-        .mode-dropdown-trigger .chevron {
-            font-size: 8px;
-            transition: transform 0.2s ease;
-            opacity: 0.5;
-        }
-        .mode-dropdown-trigger.open .chevron {
-            transform: rotate(180deg);
-        }
-        .mode-dropdown-menu {
-            position: absolute;
-            bottom: calc(100% + 6px);
-            left: 0;
-            background: rgba(22, 27, 34, 0.97);
-            border: 1px solid rgba(255,255,255,0.1);
-            border-radius: 14px;
-            padding: 6px;
-            min-width: 240px;
-            backdrop-filter: blur(20px);
-            box-shadow: 0 8px 32px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.05);
-            z-index: 100;
-            display: none;
-            animation: dropUp 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-        }
+        
+        
+        
+        
+        
+        
         @keyframes dropUp {
             from { opacity: 0; transform: translateY(8px) scale(0.96); }
             to { opacity: 1; transform: translateY(0) scale(1); }
         }
-        .mode-dropdown-menu.show { display: block; }
+        
 
         .mode-section-divider {
             height: 1px;
@@ -979,70 +1063,31 @@
             padding: 6px 14px 2px;
         }
 
-        .mode-dropdown-item {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            padding: 10px 14px;
-            border-radius: 10px;
-            cursor: pointer;
-            transition: all 0.15s ease;
-            color: var(--text-secondary);
-            font-size: 12px;
-            font-weight: 500;
-        }
-        .mode-dropdown-item:hover {
-            background: rgba(255,255,255,0.06);
-            color: var(--text-primary);
-        }
-        .mode-dropdown-item.active {
-            background: rgba(0, 242, 254, 0.1);
-            color: var(--accent-color);
-        }
-        .mode-dropdown-item i {
-            font-size: 13px;
-            width: 18px;
-            text-align: center;
-        }
-        .mode-dropdown-item .item-label { font-weight: 600; }
-        .mode-dropdown-item .item-desc {
-            font-size: 10px;
-            color: var(--text-muted);
-            margin-top: 1px;
-        }
-        .mode-dropdown-item .item-check {
-            margin-left: auto;
-            font-size: 10px;
-            opacity: 0;
-            color: var(--accent-color);
-        }
-        .mode-dropdown-item.active .item-check { opacity: 1; }
+        
+        
+        
+        
+        
+        
+        
+        
 
-        .mode-dropdown-item[data-mode="it_expert"].active { background: rgba(34,197,94,0.08); color: #22c55e; }
-        .mode-dropdown-item[data-mode="it_expert"].active .item-check { color: #22c55e; }
-        .mode-dropdown-item[data-mode="student"].active { background: rgba(251,191,36,0.08); color: #fbbf24; }
-        .mode-dropdown-item[data-mode="student"].active .item-check { color: #fbbf24; }
-        .mode-dropdown-item[data-mode="social"].active { background: rgba(236,72,153,0.08); color: #ec4899; }
-        .mode-dropdown-item[data-mode="social"].active .item-check { color: #ec4899; }
+        
+        
+        
+        
+        
+        
 
-        .mode-dropdown-item.mode-locked {
-            opacity: 0.45 !important;
-            position: relative;
-        }
-        .mode-dropdown-item.mode-locked:hover {
-            background: rgba(255, 180, 0, 0.06);
-        }
+        
+        
         .mode-lock-icon {
             margin-left: auto;
             font-size: 11px;
             color: #ffb400;
             opacity: 0.8;
         }
-        .mode-dropdown-item.mode-locked .item-desc::after {
-            content: ' · Premium';
-            color: #ffb400;
-            font-weight: 600;
-        }
+        
 
         .hint-chip {
             background: rgba(255,255,255,0.03);
@@ -1749,8 +1794,8 @@
             .bot-bubble { max-width: 92%; }
             .quick-hints { gap: 6px; }
             .hint-chip { font-size: 11px; padding: 7px 11px; }
-            .mode-dropdown-trigger { padding: 7px 10px; font-size: 10px; }
-            .mode-dropdown-menu { min-width: 210px; }
+            
+            
             .ai-orb-wrapper { width: 140px; height: 140px; }
         }
         .onebune-image-loading {
@@ -1930,7 +1975,7 @@
     <div id="overlay" onclick="toggleSidebar()"></div>
 
     <aside id="sidebar">
-        <div style="padding:18px 16px; flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:16px;">
+        <div style="padding:18px 16px 8px; flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:12px; min-height:0;">
 
             <div id="user-profile-box">
                 <div class="user-info-row">
@@ -1960,28 +2005,56 @@
                 </p>
             </div>
 
-            <button class="new-chat-btn" onclick="createNewChat()">
+            <!-- ── Sidebar Nav ─────────────────────── -->
+            <div class="sidebar-nav" id="sidebar-nav">
+                <button class="sidebar-nav-btn active" id="nav-chats" onclick="switchSidebarTab('chats')">
+                    <i class="fas fa-comments"></i>
+                    Sohbetler
+                </button>
+                <button class="sidebar-nav-btn" id="nav-apps" onclick="switchSidebarTab('apps')">
+                    <i class="fas fa-grid-2"></i>
+                    Uygulamalar
+                </button>
+            </div>
+
+            <!-- ── Yeni Sohbet Butonu ──────────────── -->
+            <button class="new-chat-btn" id="new-chat-btn-sidebar" onclick="createNewChat()">
                 <i class="fas fa-plus"></i> Yeni Sohbet
             </button>
 
-            <div id="conversation-list-container">
-                <div style="display:flex;justify-content:space-between;align-items:center;padding:0 4px;">
-                    <div class="conv-section-label" style="margin:0;">Geçmiş Konuşmalar</div>
-                    <button onclick="deleteAllConversations()" title="Tüm geçmişi sil" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:11px;padding:4px 8px;border-radius:6px;transition:all 0.2s;" onmouseover="this.style.color='#ff4b4b';this.style.background='rgba(255,75,75,0.1)'" onmouseout="this.style.color='var(--text-muted)';this.style.background='none'">
-                        <i class="fas fa-trash-alt"></i>
-                    </button>
+            <!-- ══════════════════════════════════════
+                 SOHBETLER SAYFASI
+                 ══════════════════════════════════════ -->
+            <div id="chats-page" style="display:flex;flex-direction:column;gap:8px;flex:1;overflow:visible;">
+
+                <!-- Dropdown header -->
+                <div class="conv-dropdown-header open" id="conv-dropdown-toggle" onclick="toggleConvDropdown()">
+                    <span class="label">Geçmiş Konuşmalar</span>
+                    <span style="display:flex;align-items:center;gap:8px;">
+                        <button onclick="deleteAllConversations();event.stopPropagation();" title="Tüm geçmişi sil"
+                            style="background:none;border:none;color:rgba(255,255,255,0.25);cursor:pointer;font-size:10px;padding:2px 4px;border-radius:4px;transition:all 0.15s;"
+                            onmouseover="this.style.color='#ff4b4b'" onmouseout="this.style.color='rgba(255,255,255,0.25)'">
+                            <i class="fas fa-trash-alt"></i>
+                        </button>
+                        <i class="fas fa-chevron-down chevron"></i>
+                    </span>
                 </div>
-                <!-- Konuşma arama -->
-                <div style="padding:6px 0 4px;position:relative;">
-                    <input id="conv-search" type="text" placeholder="Konuşmalarda ara..."
-                        oninput="filterConversations(this.value)"
-                        style="width:100%;box-sizing:border-box;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:7px 30px 7px 10px;color:var(--text-primary);font-size:12px;font-family:inherit;outline:none;transition:border-color 0.2s;"
-                        onfocus="this.style.borderColor='rgba(0,242,254,0.35)'"
-                        onblur="this.style.borderColor='rgba(255,255,255,0.08)'">
-                    <i class="fas fa-search" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);font-size:11px;color:var(--text-muted);pointer-events:none;"></i>
+
+                <!-- Dropdown body -->
+                <div class="conv-dropdown-body open" id="conv-dropdown-body">
+                    <div style="padding:4px 0 6px;position:relative;">
+                        <input id="conv-search" type="text" placeholder="Konuşmalarda ara..."
+                            oninput="filterConversations(this.value)"
+                            style="width:100%;box-sizing:border-box;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:7px 30px 7px 10px;color:var(--text-primary);font-size:12px;font-family:inherit;outline:none;transition:border-color 0.2s;"
+                            onfocus="this.style.borderColor='rgba(0,242,254,0.35)'"
+                            onblur="this.style.borderColor='rgba(255,255,255,0.08)'">
+                        <i class="fas fa-search" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);font-size:11px;color:var(--text-muted);pointer-events:none;"></i>
+                    </div>
+                    <div id="conversation-list"></div>
                 </div>
-                <div id="conversation-list"></div>
             </div>
+
+            <div id="conversation-list-container" style="display:none;"></div>
 
             <div id="auth-container" class="auth-container-v2">
                 <div id="auth-choice-step" class="auth-choice-v2">
@@ -2025,6 +2098,71 @@
                     <div class="auth-field-v2">
                         <label class="auth-label-v2">E-posta / Email</label>
                         <div class="auth-input-wrap-v2"><i class="fas fa-at"></i><input type="email" id="auth-email" placeholder="ornek@email.com" autocomplete="email"></div>
+                    </div>
+                    <!-- KVKK — sadece kayıt modunda göster -->
+                    <div id="register-agreements" style="display:none;margin:14px 0 6px;">
+                        <div style="background:rgba(0,242,254,0.04);border:1px solid rgba(0,242,254,0.12);border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:12px;">
+
+                            <!-- Zorunlu KVKK checkbox -->
+                            <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
+                                <input type="checkbox" id="chk-reg-kvkk"
+                                    style="margin-top:2px;accent-color:#00f2fe;width:16px;height:16px;flex-shrink:0;cursor:pointer;">
+                                <span style="font-size:12px;color:rgba(255,255,255,0.78);line-height:1.6;">
+                                    <a href="/legal/kvkk-aydinlatma.php" target="_blank"
+                                        style="color:#00f2fe;text-decoration:none;font-weight:600;"
+                                        onclick="event.stopPropagation()">KVKK Aydınlatma Metni</a>'ni,
+                                    <a href="/legal/gizlilik-politikasi.php" target="_blank"
+                                        style="color:#00f2fe;text-decoration:none;font-weight:600;"
+                                        onclick="event.stopPropagation()">Gizlilik Politikası</a>'nı ve
+                                    <a href="/legal/kullanim-kosullari.php" target="_blank"
+                                        style="color:#00f2fe;text-decoration:none;font-weight:600;"
+                                        onclick="event.stopPropagation()">Kullanım Koşulları</a>'nı
+                                    okudum, kabul ediyorum.<span style="color:#ff4b4b;font-weight:700;"> *</span>
+                                </span>
+                            </label>
+
+                            <!-- Veri kullanım bilgisi -->
+                            <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:8px;">
+                                <div style="font-size:10px;font-weight:700;color:rgba(255,255,255,0.35);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:2px;">
+                                    Toplanan Veriler ve Kullanım Amacı
+                                </div>
+                                <div style="display:flex;gap:8px;align-items:flex-start;">
+                                    <i class="fas fa-id-card" style="color:#00f2fe;font-size:11px;margin-top:2px;flex-shrink:0;width:14px;"></i>
+                                    <span style="font-size:11px;color:rgba(255,255,255,0.5);line-height:1.5;">
+                                        <strong style="color:rgba(255,255,255,0.65);">TC Kimlik No</strong> — Yalnızca yasal fatura zorunluluğu kapsamında ödeme işlemlerinde kullanılır.
+                                    </span>
+                                </div>
+                                <div style="display:flex;gap:8px;align-items:flex-start;">
+                                    <i class="fas fa-location-dot" style="color:#a78bfa;font-size:11px;margin-top:2px;flex-shrink:0;width:14px;"></i>
+                                    <span style="font-size:11px;color:rgba(255,255,255,0.5);line-height:1.5;">
+                                        <strong style="color:rgba(255,255,255,0.65);">Adres bilgisi</strong> — Yalnızca fatura düzenlenmesi amacıyla alınır, başka amaçla işlenmez.
+                                    </span>
+                                </div>
+                                <div style="display:flex;gap:8px;align-items:flex-start;">
+                                    <i class="fas fa-phone" style="color:#22c55e;font-size:11px;margin-top:2px;flex-shrink:0;width:14px;"></i>
+                                    <span style="font-size:11px;color:rgba(255,255,255,0.5);line-height:1.5;">
+                                        <strong style="color:rgba(255,255,255,0.65);">Telefon numarası</strong> — Ödeme güvenliği ve hesap doğrulama için kullanılır.
+                                    </span>
+                                </div>
+                                <div style="display:flex;gap:8px;align-items:flex-start;">
+                                    <i class="fas fa-shield-halved" style="color:#fbbf24;font-size:11px;margin-top:2px;flex-shrink:0;width:14px;"></i>
+                                    <span style="font-size:11px;color:rgba(255,255,255,0.5);line-height:1.5;">
+                                        Kişisel verileriniz <strong style="color:rgba(255,255,255,0.65);">üçüncü taraflarla paylaşılmaz</strong>, KVKK kapsamında korunur.
+                                    </span>
+                                </div>
+                            </div>
+
+                            <!-- İsteğe bağlı iletişim onayı -->
+                            <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
+                                <input type="checkbox" id="chk-reg-iletisim"
+                                    style="margin-top:2px;accent-color:#00f2fe;width:16px;height:16px;flex-shrink:0;cursor:pointer;">
+                                <span style="font-size:12px;color:rgba(255,255,255,0.48);line-height:1.6;">
+                                    Kampanya, güncelleme ve yeniliklerden e-posta ile haberdar olmak istiyorum.
+                                    <span style="color:rgba(255,255,255,0.28);">(isteğe bağlı)</span>
+                                </span>
+                            </label>
+
+                        </div>
                     </div>
                     <button class="auth-submit-v2" onclick="handleCodeRequest()"><i class="fas fa-paper-plane"></i> Doğrulama Kodu Gönder</button>
                 </div>
@@ -2109,64 +2247,7 @@
             </div>
         </div>
 
-        <div class="mode-selector-container">
-            <div class="mode-dropdown-wrapper">
-                <div class="mode-dropdown-trigger" id="mode-trigger" onclick="toggleModeDropdown()">
-                    <i class="fas fa-robot" id="mode-trigger-icon"></i>
-                    <span id="mode-trigger-label">Asistan</span>
-                    <i class="fas fa-chevron-down chevron"></i>
-                </div>
-                <div class="mode-dropdown-menu" id="mode-dropdown">
-                    <!-- ✅ 2 ANA MODE -->
-                    <div class="mode-dropdown-item active" data-mode="assistant" onclick="selectMode('assistant')">
-                        <i class="fas fa-robot"></i>
-                        <div>
-                            <div class="item-label">Asistan</div>
-                            <div class="item-desc">Sohbet, görsel analiz, genel sorular</div>
-                        </div>
-                        <i class="fas fa-check item-check"></i>
-                    </div>
-                    <div class="mode-dropdown-item" data-mode="code" onclick="selectMode('code')">
-                        <i class="fas fa-code"></i>
-                        <div>
-                            <div class="item-label">Kod Yazıcı</div>
-                            <div class="item-desc">Kod yaz, debug, screenshot analiz</div>
-                        </div>
-                        <i class="fas fa-check item-check"></i>
-                    </div>
-                    
-                    <!-- ✅ DIVIDER -->
-                    <div class="mode-section-divider"></div>
-                    <div class="mode-section-label">Uzman Modları</div>
-                    
-                    <!-- ✅ 3 UZMAN BETA MODE -->
-                    <div class="mode-dropdown-item" data-mode="it_expert" onclick="selectMode('it_expert')">
-                        <i class="fas fa-server" style="color:#22c55e;"></i>
-                        <div>
-                            <div class="item-label">IT Uzmanı <span style="font-size:9px;color:#ffb400;margin-left:4px;font-weight:700;">BETA</span></div>
-                            <div class="item-desc">Derin teknik · RAG + Web</div>
-                        </div>
-                        <i class="fas fa-check item-check"></i>
-                    </div>
-                    <div class="mode-dropdown-item" data-mode="student" onclick="selectMode('student')">
-                        <i class="fas fa-graduation-cap" style="color:#fbbf24;"></i>
-                        <div>
-                            <div class="item-label">Öğrenci <span style="font-size:9px;color:#ffb400;margin-left:4px;font-weight:700;">BETA</span></div>
-                            <div class="item-desc">Ders, sınav, çalışma teknikleri</div>
-                        </div>
-                        <i class="fas fa-check item-check"></i>
-                    </div>
-                    <div class="mode-dropdown-item" data-mode="social" onclick="selectMode('social')">
-                        <i class="fas fa-heart" style="color:#ec4899;"></i>
-                        <div>
-                            <div class="item-label">Sosyal <span style="font-size:9px;color:#ffb400;margin-left:4px;font-weight:700;">BETA</span></div>
-                            <div class="item-desc">Yemek, seyahat, hobi, yaşam</div>
-                        </div>
-                        <i class="fas fa-check item-check"></i>
-                    </div>
-                </div>
-            </div>
-        </div>
+
 
         <div class="input-wrapper">
             <button class="attach-btn" id="attach-btn" onclick="document.getElementById('file-input').click()" title="Dosya veya Görsel Yükle">
@@ -2260,5 +2341,235 @@
             }, 100);
         };
     </script>
+<!-- DESTEK MODAL -->
+<div id="support-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;display:none;align-items:center;justify-content:center;padding:20px;">
+    <div style="background:#111118;border:1px solid rgba(255,255,255,0.08);border-radius:18px;padding:28px;width:100%;max-width:440px;position:relative;">
+        <button onclick="document.getElementById('support-modal').style.display='none'" style="position:absolute;top:14px;right:16px;background:none;border:none;color:rgba(255,255,255,0.4);font-size:18px;cursor:pointer;"><i class="fas fa-xmark"></i></button>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;">
+            <div style="width:36px;height:36px;border-radius:10px;background:rgba(0,242,254,0.1);display:flex;align-items:center;justify-content:center;color:#00f2fe;"><i class="fas fa-headset"></i></div>
+            <h3 style="margin:0;font-size:16px;font-weight:600;">Destek & Geri Bildirim</h3>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:18px;">
+            <button onclick="setSupportType('bug')" data-stype="bug" class="support-type-btn" style="display:flex;align-items:center;gap:12px;padding:14px 16px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);border-radius:12px;cursor:pointer;text-align:left;transition:all 0.2s;width:100%;">
+                <i class="fas fa-bug" style="color:#ff6b6b;font-size:18px;width:20px;flex-shrink:0;"></i>
+                <div><div style="font-size:14px;font-weight:600;color:#fff;">Hata Bildirimi</div><div style="font-size:12px;color:rgba(255,255,255,0.6);margin-top:2px;">Bir şey çalışmıyor mu?</div></div>
+            </button>
+            <button onclick="setSupportType('idea')" data-stype="idea" class="support-type-btn" style="display:flex;align-items:center;gap:12px;padding:14px 16px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);border-radius:12px;cursor:pointer;text-align:left;transition:all 0.2s;width:100%;">
+                <i class="fas fa-lightbulb" style="color:#fbbf24;font-size:18px;width:20px;flex-shrink:0;"></i>
+                <div><div style="font-size:14px;font-weight:600;color:#fff;">Öneri / Fikir</div><div style="font-size:12px;color:rgba(255,255,255,0.6);margin-top:2px;">Yeni özellik veya iyileştirme</div></div>
+            </button>
+            <button onclick="setSupportType('general')" data-stype="general" class="support-type-btn" style="display:flex;align-items:center;gap:12px;padding:14px 16px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);border-radius:12px;cursor:pointer;text-align:left;transition:all 0.2s;width:100%;">
+                <i class="fas fa-comment" style="color:#a78bfa;font-size:18px;width:20px;flex-shrink:0;"></i>
+                <div><div style="font-size:14px;font-weight:600;color:#fff;">Genel Geri Bildirim</div><div style="font-size:12px;color:rgba(255,255,255,0.6);margin-top:2px;">Her türlü görüş</div></div>
+            </button>
+        </div>
+        <textarea id="support-message" placeholder="Mesajınızı buraya yazın..." style="width:100%;min-height:100px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:12px;color:#fff;font-size:13px;resize:vertical;outline:none;box-sizing:border-box;font-family:inherit;"></textarea>
+        <button onclick="submitSupport()" style="width:100%;margin-top:12px;padding:12px;background:linear-gradient(135deg,#00f2fe,#a78bfa);border:none;border-radius:12px;color:#000;font-size:14px;font-weight:600;cursor:pointer;">
+            <i class="fas fa-paper-plane"></i> Gönder
+        </button>
+        <p id="support-result" style="text-align:center;font-size:12px;margin-top:10px;color:#00e676;display:none;">✓ Mesajınız alındı, teşekkürler!</p>
+    </div>
+</div>
+<!-- ══════════════════════════════════════════════════════════
+     UYGULAMALAR FULL-PAGE OVERLAY
+     ══════════════════════════════════════════════════════════ -->
+<div id="apps-fullpage" style="
+    display:none;
+    position:fixed;
+    inset:0;
+    background:#0a0a0f;
+    z-index:9000;
+    overflow-y:auto;
+">
+    <!-- Header -->
+    <div style="
+        position:sticky;top:0;z-index:10;
+        background:rgba(10,10,15,0.95);
+        backdrop-filter:blur(20px);
+        border-bottom:1px solid rgba(255,255,255,0.06);
+        padding:16px 24px;
+        display:flex;align-items:center;gap:16px;
+    ">
+        <button onclick="closeAppsPage()" style="
+            background:rgba(255,255,255,0.06);
+            border:1px solid rgba(255,255,255,0.1);
+            border-radius:10px;
+            color:rgba(255,255,255,0.7);
+            width:36px;height:36px;
+            cursor:pointer;
+            display:flex;align-items:center;justify-content:center;
+            font-size:14px;
+            transition:all 0.2s;
+            flex-shrink:0;
+        " onmouseover="this.style.background='rgba(255,255,255,0.1)'"
+           onmouseout="this.style.background='rgba(255,255,255,0.06)'">
+            <i class="fas fa-arrow-left"></i>
+        </button>
+        <div>
+            <div style="font-size:18px;font-weight:700;color:#fff;letter-spacing:-0.3px;">Uygulamalar</div>
+            <div style="font-size:12px;color:rgba(255,255,255,0.38);margin-top:1px;">Skylight ekosistemi</div>
+        </div>
+    </div>
+
+    <!-- İçerik -->
+    <div style="max-width:780px;margin:0 auto;padding:32px 20px 60px;">
+
+        <!-- Intro -->
+        <div style="
+            text-align:center;
+            margin-bottom:40px;
+        ">
+            <div style="
+                display:inline-flex;align-items:center;gap:8px;
+                background:rgba(0,242,254,0.08);
+                border:1px solid rgba(0,242,254,0.18);
+                border-radius:20px;
+                padding:6px 16px;
+                font-size:12px;
+                color:#00f2fe;
+                font-weight:600;
+                margin-bottom:16px;
+                letter-spacing:0.5px;
+            ">
+                <i class="fas fa-rocket"></i> Çok Yakında
+            </div>
+            <h2 style="font-size:26px;font-weight:800;color:#fff;margin:0 0 10px;letter-spacing:-0.5px;">
+                Her ihtiyaç için<br>özel bir asistan
+            </h2>
+            <p style="font-size:14px;color:rgba(255,255,255,0.45);margin:0;line-height:1.6;max-width:400px;margin:0 auto;">
+                Skylight'ın güçlü modelleri, farklı alanlara özel deneyimlerle geliyor.
+            </p>
+        </div>
+
+        <!-- Kartlar grid -->
+        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px;">
+
+            <!-- Sosyal -->
+            <div class="app-fullcard" onclick="" style="
+                background:linear-gradient(135deg,rgba(251,191,36,0.08) 0%,rgba(249,115,22,0.05) 100%);
+                border:1px solid rgba(251,191,36,0.18);
+                border-radius:20px;
+                padding:24px 20px;
+                cursor:default;
+                transition:all 0.25s;
+                position:relative;
+                overflow:hidden;
+            "
+            onmouseover="this.style.transform='translateY(-3px)';this.style.borderColor='rgba(251,191,36,0.35)'"
+            onmouseout="this.style.transform='';this.style.borderColor='rgba(251,191,36,0.18)'">
+                <div style="position:absolute;top:-20px;right:-20px;width:80px;height:80px;background:radial-gradient(circle,rgba(251,191,36,0.12),transparent);border-radius:50%;"></div>
+                <div style="width:52px;height:52px;border-radius:16px;background:linear-gradient(135deg,rgba(251,191,36,0.2),rgba(249,115,22,0.2));display:flex;align-items:center;justify-content:center;margin-bottom:16px;">
+                    <i class="fas fa-comments" style="font-size:22px;color:#fbbf24;"></i>
+                </div>
+                <div style="font-size:16px;font-weight:700;color:#fff;margin-bottom:6px;">Sosyal Asistan</div>
+                <div style="font-size:12px;color:rgba(255,255,255,0.45);line-height:1.5;margin-bottom:16px;">Yemek tarifleri, seyahat planları, günlük yaşam tavsiyeleri</div>
+                <span style="display:inline-block;background:rgba(251,191,36,0.12);color:#fbbf24;border:1px solid rgba(251,191,36,0.25);font-size:10px;font-weight:700;padding:4px 10px;border-radius:20px;letter-spacing:0.5px;text-transform:uppercase;">Yakında</span>
+            </div>
+
+            <!-- Finans -->
+            <div class="app-fullcard" style="
+                background:linear-gradient(135deg,rgba(34,197,94,0.08) 0%,rgba(16,185,129,0.05) 100%);
+                border:1px solid rgba(34,197,94,0.18);
+                border-radius:20px;
+                padding:24px 20px;
+                cursor:default;
+                transition:all 0.25s;
+                position:relative;
+                overflow:hidden;
+            "
+            onmouseover="this.style.transform='translateY(-3px)';this.style.borderColor='rgba(34,197,94,0.35)'"
+            onmouseout="this.style.transform='';this.style.borderColor='rgba(34,197,94,0.18)'">
+                <div style="position:absolute;top:-20px;right:-20px;width:80px;height:80px;background:radial-gradient(circle,rgba(34,197,94,0.12),transparent);border-radius:50%;"></div>
+                <div style="width:52px;height:52px;border-radius:16px;background:linear-gradient(135deg,rgba(34,197,94,0.2),rgba(16,185,129,0.2));display:flex;align-items:center;justify-content:center;margin-bottom:16px;">
+                    <i class="fas fa-chart-line" style="font-size:22px;color:#22c55e;"></i>
+                </div>
+                <div style="font-size:16px;font-weight:700;color:#fff;margin-bottom:6px;">Finans Asistanı</div>
+                <div style="font-size:12px;color:rgba(255,255,255,0.45);line-height:1.5;margin-bottom:16px;">Borsa analizi, yatırım tavsiyeleri, bütçe ve harcama takibi</div>
+                <span style="display:inline-block;background:rgba(34,197,94,0.12);color:#22c55e;border:1px solid rgba(34,197,94,0.25);font-size:10px;font-weight:700;padding:4px 10px;border-radius:20px;letter-spacing:0.5px;text-transform:uppercase;">Yakında</span>
+            </div>
+
+            <!-- IT & DevOps -->
+            <div class="app-fullcard" style="
+                background:linear-gradient(135deg,rgba(59,130,246,0.08) 0%,rgba(99,102,241,0.05) 100%);
+                border:1px solid rgba(59,130,246,0.18);
+                border-radius:20px;
+                padding:24px 20px;
+                cursor:default;
+                transition:all 0.25s;
+                position:relative;
+                overflow:hidden;
+            "
+            onmouseover="this.style.transform='translateY(-3px)';this.style.borderColor='rgba(59,130,246,0.35)'"
+            onmouseout="this.style.transform='';this.style.borderColor='rgba(59,130,246,0.18)'">
+                <div style="position:absolute;top:-20px;right:-20px;width:80px;height:80px;background:radial-gradient(circle,rgba(59,130,246,0.12),transparent);border-radius:50%;"></div>
+                <div style="width:52px;height:52px;border-radius:16px;background:linear-gradient(135deg,rgba(59,130,246,0.2),rgba(99,102,241,0.2));display:flex;align-items:center;justify-content:center;margin-bottom:16px;">
+                    <i class="fas fa-server" style="font-size:22px;color:#3b82f6;"></i>
+                </div>
+                <div style="font-size:16px;font-weight:700;color:#fff;margin-bottom:6px;">IT & DevOps</div>
+                <div style="font-size:12px;color:rgba(255,255,255,0.45);line-height:1.5;margin-bottom:16px;">Kubernetes, Docker, Cloud altyapı ve sistem yönetimi</div>
+                <span style="display:inline-block;background:rgba(59,130,246,0.12);color:#3b82f6;border:1px solid rgba(59,130,246,0.25);font-size:10px;font-weight:700;padding:4px 10px;border-radius:20px;letter-spacing:0.5px;text-transform:uppercase;">Yakında</span>
+            </div>
+
+            <!-- Doküman -->
+            <div class="app-fullcard" style="
+                background:linear-gradient(135deg,rgba(167,139,250,0.08) 0%,rgba(236,72,153,0.05) 100%);
+                border:1px solid rgba(167,139,250,0.18);
+                border-radius:20px;
+                padding:24px 20px;
+                cursor:default;
+                transition:all 0.25s;
+                position:relative;
+                overflow:hidden;
+            "
+            onmouseover="this.style.transform='translateY(-3px)';this.style.borderColor='rgba(167,139,250,0.35)'"
+            onmouseout="this.style.transform='';this.style.borderColor='rgba(167,139,250,0.18)'">
+                <div style="position:absolute;top:-20px;right:-20px;width:80px;height:80px;background:radial-gradient(circle,rgba(167,139,250,0.12),transparent);border-radius:50%;"></div>
+                <div style="width:52px;height:52px;border-radius:16px;background:linear-gradient(135deg,rgba(167,139,250,0.2),rgba(236,72,153,0.2));display:flex;align-items:center;justify-content:center;margin-bottom:16px;">
+                    <i class="fas fa-file-lines" style="font-size:22px;color:#a78bfa;"></i>
+                </div>
+                <div style="font-size:16px;font-weight:700;color:#fff;margin-bottom:6px;">Doküman Asistanı</div>
+                <div style="font-size:12px;color:rgba(255,255,255,0.45);line-height:1.5;margin-bottom:16px;">PDF, Word okuma, analiz, özetleme ve içerik üretimi</div>
+                <span style="display:inline-block;background:rgba(167,139,250,0.12);color:#a78bfa;border:1px solid rgba(167,139,250,0.25);font-size:10px;font-weight:700;padding:4px 10px;border-radius:20px;letter-spacing:0.5px;text-transform:uppercase;">Yakında</span>
+            </div>
+
+            <!-- Öğrenci — tek başına ortalanmış -->
+            <div class="app-fullcard" style="
+                grid-column:span 2;
+                background:linear-gradient(135deg,rgba(0,242,254,0.07) 0%,rgba(79,172,254,0.05) 100%);
+                border:1px solid rgba(0,242,254,0.16);
+                border-radius:20px;
+                padding:24px 20px;
+                cursor:default;
+                transition:all 0.25s;
+                position:relative;
+                overflow:hidden;
+                display:flex;align-items:center;gap:20px;
+            "
+            onmouseover="this.style.transform='translateY(-2px)';this.style.borderColor='rgba(0,242,254,0.32)'"
+            onmouseout="this.style.transform='';this.style.borderColor='rgba(0,242,254,0.16)'">
+                <div style="position:absolute;top:-20px;right:-20px;width:100px;height:100px;background:radial-gradient(circle,rgba(0,242,254,0.08),transparent);border-radius:50%;"></div>
+                <div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,rgba(0,242,254,0.15),rgba(79,172,254,0.15));display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+                    <i class="fas fa-graduation-cap" style="font-size:24px;color:#00f2fe;"></i>
+                </div>
+                <div style="flex:1;">
+                    <div style="font-size:16px;font-weight:700;color:#fff;margin-bottom:5px;">Öğrenci Asistanı</div>
+                    <div style="font-size:12px;color:rgba(255,255,255,0.45);line-height:1.5;">Ödev hazırlama, sınav hazırlık, konu anlatımı ve öğrenme desteği</div>
+                </div>
+                <span style="display:inline-block;background:rgba(0,242,254,0.1);color:#00f2fe;border:1px solid rgba(0,242,254,0.22);font-size:10px;font-weight:700;padding:4px 10px;border-radius:20px;letter-spacing:0.5px;text-transform:uppercase;flex-shrink:0;">Yakında</span>
+            </div>
+
+        </div>
+
+        <!-- Alt bilgi -->
+        <div style="margin-top:32px;text-align:center;">
+            <p style="font-size:13px;color:rgba(255,255,255,0.3);line-height:1.6;">
+                Tüm uygulamalar Skylight'ın güçlü AI altyapısıyla çalışacak.<br>
+                Haberleri kaçırmak için bildirimleri açık tutun.
+            </p>
+        </div>
+
+    </div>
+</div>
+
 </body>
 </html>

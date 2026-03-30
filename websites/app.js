@@ -143,15 +143,7 @@ function setChatMode(mode) {
     currentChatMode = mode;
     const cfg = MODE_CONFIG[mode] || MODE_CONFIG.assistant;
 
-    const triggerIcon = document.getElementById('mode-trigger-icon');
-    const triggerLabel = document.getElementById('mode-trigger-label');
-    if (triggerIcon) triggerIcon.className = `fas ${cfg.icon}`;
-    if (triggerLabel) triggerLabel.textContent = cfg.label;
-
-    document.querySelectorAll('.mode-dropdown-item').forEach(item => {
-        item.classList.toggle('active', item.dataset.mode === mode);
-    });
-
+    // Mode UI kaldırıldı — sadece placeholder güncellenir
     if (!uploadedFile && !uploadedImage) userInput.placeholder = cfg.placeholder;
     updateHintChips(mode);
     closeModeDropdown();
@@ -378,9 +370,13 @@ function showEmailStep(mode) {
     if (mode === 'register') {
         stepLabel.textContent = "Kayıt Ol / Register";
         if (stepIcon) { stepIcon.classList.add("register-icon-v2"); stepIcon.innerHTML = '<i class="fas fa-user-plus"></i>'; }
+        const agr = document.getElementById("register-agreements");
+        if (agr) { agr.style.display = "block"; agr.style.visibility = "visible"; }
     } else {
         stepLabel.textContent = "Giriş Yap / Login";
         if (stepIcon) { stepIcon.classList.remove("register-icon-v2"); stepIcon.innerHTML = '<i class="fas fa-envelope"></i>'; }
+        const agr = document.getElementById("register-agreements");
+        if (agr) { agr.style.display = "none"; agr.style.visibility = ""; }
     }
 }
 
@@ -394,6 +390,16 @@ async function handleCodeRequest() {
     const email = document.getElementById("auth-email").value.trim();
     const name = document.getElementById("auth-name") ? document.getElementById("auth-name").value.trim() : "";
     if (!email.includes('@')) return alert("Geçerli bir mail girin.");
+    // Kayıt modunda KVKK zorunlu
+    if (authMode === "register") {
+        if (name.length < 2) return alert("Lütfen adınızı girin.");
+        const kvkk = document.getElementById("chk-reg-kvkk");
+        if (kvkk && !kvkk.checked) {
+            kvkk.style.outline = "2px solid #ff4b4b";
+            return alert("Devam etmek için KVKK ve Kullanım Koşulları'nı onaylamanız gerekiyor.");
+        }
+        if (kvkk) kvkk.style.outline = "";
+    }
     tempEmail = email;
     try {
         const res = await fetch(PROXY_URL, {
@@ -606,19 +612,104 @@ async function loadConversations() {
 function renderConversations() {
     conversationList.innerHTML = "";
     if (conversations.length === 0) {
-        conversationList.innerHTML = `<div style="text-align:center;color:var(--text-muted);font-size:12px;padding:24px 0;"><i class="far fa-comment-dots" style="font-size:20px;display:block;margin-bottom:8px;opacity:0.3;"></i>Henüz konuşma yok</div>`;
+        conversationList.innerHTML = `
+            <div style="text-align:center;padding:28px 12px;">
+                <i class="far fa-comment-dots" style="font-size:26px;display:block;margin-bottom:10px;color:rgba(255,255,255,0.12);"></i>
+                <div style="font-size:13px;color:rgba(255,255,255,0.3);font-weight:500;">Henüz konuşma yok</div>
+                <div style="font-size:11px;color:rgba(255,255,255,0.18);margin-top:4px;">Yeni Sohbet ile başla</div>
+            </div>`;
         return;
     }
+
+    // Tarihe göre grupla: Bugün / Bu Hafta / Daha Eski
+    const now        = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const weekStart  = todayStart - 7 * 24 * 60 * 60 * 1000;
+
+    const groups = { today: [], week: [], older: [] };
     conversations.forEach(conv => {
-        const item = document.createElement("div");
-        item.className = "conversation-item";
-        if (conv.id === currentConversationId) item.classList.add("active");
-        const title = conv.title || "Yeni Sohbet";
-        const timeAgo = formatTimeAgo(conv.updated_at || conv.created_at);
-        item.innerHTML = `<div class="conv-title">${escapeHtml(title)}</div><div class="conv-meta"><span>${timeAgo}</span><span class="conv-delete" onclick="deleteConversation('${conv.id}', event)"><i class="fas fa-trash-alt"></i></span></div>`;
-        item.onclick = (e) => { if (!e.target.closest('.conv-delete')) loadConversation(conv.id); };
-        conversationList.appendChild(item);
+        const raw = conv.updated_at || conv.created_at || '';
+        const t   = new Date(raw).getTime();
+        if (isNaN(t) || t >= todayStart)     groups.today.push(conv);
+        else if (t >= weekStart)             groups.week.push(conv);
+        else                                 groups.older.push(conv);
     });
+
+    // Debug: kaç konuşma var?
+    console.log('[CONV] Toplam:', conversations.length,
+        '| Bugün:', groups.today.length,
+        '| Hafta:', groups.week.length,
+        '| Eski:', groups.older.length);
+
+    const renderGroup = (label, list) => {
+        if (!list.length) return;
+
+        // Grup başlığı
+        const header = document.createElement('div');
+        header.style.cssText = 'font-size:10px;color:rgba(255,255,255,0.25);text-transform:uppercase;letter-spacing:1px;font-weight:600;padding:10px 4px 4px;';
+        header.textContent = label;
+        conversationList.appendChild(header);
+
+        list.forEach(conv => {
+            const item = document.createElement('div');
+            item.className = 'conversation-item';
+            if (conv.id === currentConversationId) item.classList.add('active');
+
+            const title   = conv.title || 'Yeni Sohbet';
+            const timeAgo = formatTimeAgo(conv.updated_at || conv.created_at);
+            const isActive = conv.id === currentConversationId;
+
+            // Rastgele ama tutarlı renk — id'den türet
+            const hues = [195, 210, 260, 280, 160, 30, 340];
+            const hue  = hues[parseInt(conv.id.replace(/-/g,'').slice(0,8), 16) % hues.length];
+            const dotColor = isActive
+                ? '#00f2fe'
+                : `hsl(${hue}, 60%, 62%)`;
+            const bgActive = isActive
+                ? `linear-gradient(135deg, rgba(0,242,254,0.08), rgba(0,242,254,0.04))`
+                : 'transparent';
+
+            item.style.background = isActive ? bgActive : '';
+
+            item.innerHTML = `
+                <div style="display:flex;align-items:center;gap:9px;">
+                    <div style="
+                        width:7px;height:7px;border-radius:50%;
+                        background:${dotColor};
+                        flex-shrink:0;
+                        box-shadow:${isActive ? '0 0 6px rgba(0,242,254,0.5)' : 'none'};
+                        transition:all 0.2s;
+                        opacity:${isActive ? '1' : '0.5'};
+                    "></div>
+                    <div style="flex:1;min-width:0;">
+                        <div class="conv-title" style="
+                            font-size:13px;
+                            font-weight:${isActive ? '600' : '450'};
+                            color:${isActive ? '#fff' : 'rgba(255,255,255,0.72)'};
+                            letter-spacing:${isActive ? '-0.1px' : '0'};
+                        ">${escapeHtml(title)}</div>
+                        <div style="font-size:11px;color:rgba(255,255,255,0.28);margin-top:2px;">${timeAgo}</div>
+                    </div>
+                    <span class="conv-delete" onclick="deleteConversation('${conv.id}', event)"
+                        style="opacity:0;padding:4px 6px;border-radius:6px;color:rgba(255,255,255,0.25);transition:all 0.15s;flex-shrink:0;"
+                        onmouseover="this.style.color='#ff6b6b';this.style.background='rgba(255,75,75,0.1)'"
+                        onmouseout="this.style.color='rgba(255,255,255,0.25)';this.style.background=''">
+                        <i class="fas fa-trash-alt" style="font-size:10px;"></i>
+                    </span>
+                </div>`;
+
+            // Hover'da silme butonu göster
+            item.onmouseenter = () => { const d = item.querySelector('.conv-delete'); if(d) d.style.opacity='1'; };
+            item.onmouseleave = () => { const d = item.querySelector('.conv-delete'); if(d) d.style.opacity='0'; };
+
+            item.onclick = (e) => { if (!e.target.closest('.conv-delete')) loadConversation(conv.id); };
+            conversationList.appendChild(item);
+        });
+    };
+
+    renderGroup('Bugün', groups.today);
+    renderGroup('Bu Hafta', groups.week);
+    renderGroup('Daha Eski', groups.older);
 }
 
 // ── Konuşma arama / filtreleme ──────────────────────────────
@@ -914,13 +1005,14 @@ async function handleChat() {
     userInput.style.height = 'auto';
 
     const botMsg = createMessage(false);
-    const modeLabels = { assistant: "Asistan", code: "Kod Yazıcı", it_expert: "IT Uzmanı", student: "Öğrenci", social: "Sosyal" };
-    const modeIcons = { assistant: "fa-robot", code: "fa-code", it_expert: "fa-server", student: "fa-graduation-cap", social: "fa-heart" };
-    botMsg.content.innerHTML = `<div style="display:inline-flex;align-items:center;gap:5px;margin-bottom:6px;font-size:10px;color:var(--text-muted);padding:2px 8px;background:rgba(255,255,255,0.03);border-radius:8px;border:1px solid var(--border-color);"><i class="fas ${modeIcons[currentChatMode] || 'fa-robot'}" style="font-size:9px;"></i>${modeLabels[currentChatMode] || 'Asistan'}</div><div class="typing-indicator"><span></span><span></span><span></span></div>`;
+    // Mode badge kaldırıldı — tek asistan deneyimi
+    botMsg.content.innerHTML = `<div class="typing-indicator"><span></span><span></span><span></span></div>`;
 
     showStopButton();
 
-    const requestBody = { action: "chat", prompt, mode: currentChatMode, conversation_id: currentConversationId, token: localStorage.getItem('token') };
+    // Kullanıcıya görünmeyen arka plan modu — gateway kendi routing yapıyor
+    // Frontend sadece "assistant" gönderir, gateway intent'e göre model seçer
+    const requestBody = { action: "chat", prompt, mode: "assistant", conversation_id: currentConversationId, token: localStorage.getItem('token') };
     // Dosya: bu mesajda yüklendiyse veya konuşmada daha önce yüklendiyse gönder
     const activeFile = fileForThisMsg || window._activeConvFile;
     if (activeFile) requestBody.file_id = activeFile.file_id;
@@ -1536,6 +1628,9 @@ function initSidebarFooter() {
                             <a href="/legal/sirket-bilgileri.php" class="footer-lnk" target="_blank">
                                 <i class="fas fa-building"></i> Şirket
                             </a>
+                            <button onclick="showSupportModal()" class="footer-lnk" style="background:none;border:none;cursor:pointer;font-family:inherit;">
+                                <i class="fas fa-headset"></i> Destek
+                            </button>
                         </div>
 
                         <div class="footer-divider"></div>
@@ -2343,6 +2438,156 @@ function smSelectAvatar(style, seed) {
     // Geçici olarak sakla (kaydet butonuna basılınca DB'ye gidecek)
     localStorage.setItem('avatar_style_pending', style);
 }
+
+// ── DESTEK MODAL ──────────────────────────────────────────────
+let _supportType = 'general';
+
+function showSupportModal() {
+    const modal = document.getElementById('support-modal');
+    if (modal) {
+        modal.style.display = 'flex';
+        // reset
+        _supportType = 'general';
+        document.querySelectorAll('.support-type-btn').forEach(b => {
+            b.style.background = 'rgba(255,255,255,0.04)';
+            b.style.borderColor = 'rgba(255,255,255,0.08)';
+        });
+        const msgEl = document.getElementById('support-message');
+        if (msgEl) msgEl.value = '';
+        const res = document.getElementById('support-result');
+        if (res) res.style.display = 'none';
+    }
+}
+
+function setSupportType(type) {
+    _supportType = type;
+    document.querySelectorAll('.support-type-btn').forEach(b => {
+        const isActive = b.dataset.stype === type;
+        b.style.background = isActive ? 'rgba(0,242,254,0.08)' : 'rgba(255,255,255,0.04)';
+        b.style.borderColor = isActive ? 'rgba(0,242,254,0.3)' : 'rgba(255,255,255,0.08)';
+    });
+}
+
+async function submitSupport() {
+    const msg = document.getElementById('support-message')?.value?.trim();
+    if (!msg || msg.length < 5) {
+        showToast('Lütfen mesajınızı yazın', 'warn'); return;
+    }
+    const token = localStorage.getItem('token');
+    try {
+        await fetch(PROXY_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                action: 'feedback',
+                token,
+                conversation_id: currentConversationId || '',
+                user_query: `[DESTEK - ${_supportType.toUpperCase()}]`,
+                assistant_response: msg,
+                rating: _supportType === 'bug' ? -1 : 1,
+                comment: `[${_supportType}] ${msg}`,
+            })
+        });
+        const res = document.getElementById('support-result');
+        if (res) { res.style.display = 'block'; }
+        showToast('Mesajınız alındı, teşekkürler!', 'success');
+        setTimeout(() => {
+            document.getElementById('support-modal').style.display = 'none';
+        }, 2000);
+    } catch(e) {
+        showToast('Gönderilemedi, tekrar deneyin', 'error');
+    }
+}
+// ─────────────────────────────────────────────────────────────
+
+// ── SIDEBAR TAB ──────────────────────────────────────────────
+function switchSidebarTab(tab) {
+    const navChats = document.getElementById('nav-chats');
+    const navApps  = document.getElementById('nav-apps');
+
+    if (tab === 'apps') {
+        // Sidebar'ı kapat, tam ekran apps sayfasını aç
+        openAppsPage();
+        // Nav highlight — apps aktif
+        navApps?.classList.add('active');
+        navChats?.classList.remove('active');
+        // Kısa süre sonra nav'ı sıfırla (sayfa kapanınca tekrar sohbetler aktif)
+        setTimeout(() => {
+            navApps?.classList.remove('active');
+            navChats?.classList.add('active');
+        }, 300);
+    }
+}
+
+function openAppsPage() {
+    const page = document.getElementById('apps-fullpage');
+    if (!page) return;
+
+    // Mevcut state'i kaydet — kapanınca restore edeceğiz
+    window._appsPagePrevState = {
+        centerStage: document.getElementById('center-stage')?.style.display || '',
+        chatDisplay: document.getElementById('chat-display')?.style.display || '',
+        mainContainer: document.getElementById('main-container')?.style.display || '',
+    };
+
+    // Animasyonlu aç
+    page.style.display    = 'block';
+    page.style.opacity    = '0';
+    page.style.transform  = 'translateY(12px)';
+    page.style.transition = 'opacity 0.22s ease, transform 0.22s ease';
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+        page.style.opacity   = '1';
+        page.style.transform = 'translateY(0)';
+    }));
+
+    document.body.style.overflow = 'hidden';
+    page.scrollTop = 0;
+}
+
+function closeAppsPage() {
+    const page = document.getElementById('apps-fullpage');
+    if (!page) return;
+
+    page.style.opacity   = '0';
+    page.style.transform = 'translateY(12px)';
+
+    setTimeout(() => {
+        page.style.display    = 'none';
+        page.style.opacity    = '';
+        page.style.transform  = '';
+        page.style.transition = '';
+        document.body.style.overflow = '';
+
+        // Önceki state'i restore et
+        const prev = window._appsPagePrevState || {};
+        const centerStage   = document.getElementById('center-stage');
+        const chatDisplay   = document.getElementById('chat-display');
+        const mainContainer = document.getElementById('main-container');
+        if (centerStage)   centerStage.style.display   = prev.centerStage   ?? '';
+        if (chatDisplay)   chatDisplay.style.display   = prev.chatDisplay   ?? '';
+        if (mainContainer) mainContainer.style.display = prev.mainContainer ?? '';
+
+        // Nav butonunu sıfırla
+        document.getElementById('nav-chats')?.classList.add('active');
+        document.getElementById('nav-apps')?.classList.remove('active');
+
+    }, 220);
+}
+
+function toggleConvDropdown() {
+    const toggle = document.getElementById('conv-dropdown-toggle');
+    const body   = document.getElementById('conv-dropdown-body');
+    if (!toggle || !body) return;
+    const isOpen = body.classList.contains('open');
+    if (isOpen) {
+        body.classList.remove('open');
+        toggle.classList.remove('open');
+    } else {
+        body.classList.add('open');
+        toggle.classList.add('open');
+    }
+}
+// ─────────────────────────────────────────────────────────────
 
 function smTab(btn, id) {
     document.querySelectorAll('.sm-tab').forEach(t => t.classList.remove('active'));
