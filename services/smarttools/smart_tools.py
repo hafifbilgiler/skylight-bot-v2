@@ -724,10 +724,6 @@ async def fetch_via_crawl4ai(url: str) -> Optional[str]:
                         "word_count_threshold": 30,
                         "excluded_tags": ["nav","footer","header","aside","script","style"],
                         "remove_overlay_elements": True,
-                    },
-                    "extraction_config": {
-                        "type": "cosine",
-                        "params": {"word_count_threshold": 20}
                     }
                 }
             )
