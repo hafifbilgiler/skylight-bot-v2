@@ -67,9 +67,9 @@ RERANK_MODEL       = os.getenv("RERANK_MODEL",       "BAAI/bge-reranker-v2-m3")
 RERANKER_URL       = os.getenv("RERANKER_URL",       "http://skylight-reranker:8087")
 
 MAX_PAGE_CHARS   = 8000   # Crawl4AI daha temiz çıktı verir, daha fazla alabiliriz
-CHUNK_SIZE       = 600    # Kelime — her chunk bu kadar
-CHUNK_OVERLAP    = 80     # Örtüşme — bağlamı korur
-TOP_CHUNKS       = 5      # Rerank sonrası kaç chunk kullanılacak
+CHUNK_SIZE       = 200    # Kelime — reranker 512 token sınırı var, küçük chunk daha iyi
+CHUNK_OVERLAP    = 30     # Örtüşme
+TOP_CHUNKS       = 8      # Rerank sonrası kaç chunk — küçük chunk, daha fazla alınabilir
 CRAWL4AI_TIMEOUT = 20
 DIRECT_TIMEOUT   = 8
 
@@ -765,6 +765,124 @@ async def fetch_page_content(url: str) -> Optional[str]:
 # LLM SENTEZİ
 # ═══════════════════════════════════════════════════════════════
 
+def _score_result_relevance(query: str, result: dict) -> float:
+    """Bir web sonucunun sorguyla alakasını 0-1 arası skorla."""
+    q_words = set(query.lower().split())
+    text    = (result.get("title","") + " " + result.get("content","")).lower()
+    
+    # Kelime örtüşmesi
+    overlap = sum(1 for w in q_words if w in text and len(w) > 2)
+    score   = overlap / (len(q_words) + 1)
+    
+    # Güvenilir domain boost
+    url = result.get("url", "").lower()
+    trusted = ["wikipedia","bbc","reuters","anadolu","ntv","cnn","goal.com",
+               "transfermarkt","sofascore","flashscore","tff.org","uefa.com",
+               "apple.com","microsoft.com","openai.com","anthropic.com",
+               "techcrunch","theverge","wired","bloomberg","forbes"]
+    if any(d in url for d in trusted):
+        score += 0.3
+    
+    # Güncel içerik boost (2025, 2026 içeriyorsa)
+    if "2025" in text or "2026" in text:
+        score += 0.1
+    
+    # Placeholder ceza
+    if "[" in text and "]" in text:
+        score -= 0.5
+        
+    return min(score, 1.0)
+
+
+def _format_results_directly(
+    query: str,
+    search_results: List[dict],
+    page_contents: List[dict],
+    language: str = "tr",
+) -> str:
+    """
+    Web sonuçlarını akıllıca seç ve formatla.
+    - Reranker'dan geçmiş top chunk'lar varsa onları kullan
+    - Yoksa en alakalı arama sonuçlarını skorla, doğru olanı seç
+    """
+    lines = []
+
+    # Sayfa içerikleri — bunlar zaten reranker'dan geçti, en iyi içerik
+    if page_contents:
+        best_pages = []
+        for pc in page_contents:
+            score = _score_result_relevance(query, {
+                "title":   pc.get("title",""),
+                "content": pc.get("content","")[:300],
+                "url":     pc.get("url",""),
+            })
+            best_pages.append((score, pc))
+        
+        # Skora göre sırala, en iyi 2'yi al
+        best_pages.sort(key=lambda x: x[0], reverse=True)
+        for score, pc in best_pages[:2]:
+            if score < 0.1:
+                continue
+            title   = pc.get("title", "")[:80]
+            url     = pc.get("url", "")[:70]
+            # İçeriğin en alakalı paragrafını bul
+            content = pc.get("content", "")
+            paragraphs = [p.strip() for p in content.split("\n") if len(p.strip()) > 80]
+            q_words = set(query.lower().split())
+            best_para = max(
+                paragraphs[:10],
+                key=lambda p: sum(1 for w in q_words if w in p.lower()),
+                default=content[:400]
+            )
+            lines.append(f"**{title}**")
+            lines.append(best_para[:500])
+            lines.append(f"*Kaynak: {url}*")
+            lines.append("")
+
+    # Arama snippet'leri — skora göre filtrele
+    if search_results:
+        scored = []
+        for r in search_results:
+            score = _score_result_relevance(query, r)
+            scored.append((score, r))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        
+        # Sadece skor > 0.15 olanları göster, max 4
+        good = [(s, r) for s, r in scored if s > 0.15][:4]
+        
+        if good:
+            if lines:
+                lines.append("---")
+            for score, r in good:
+                title   = r.get("title","")[:80]
+                snippet = r.get("content","")[:250].strip()
+                url     = r.get("url","")[:70]
+                if snippet:
+                    lines.append(f"• **{title}**")
+                    lines.append(f"  {snippet}")
+                    lines.append(f"  *{url}*")
+
+    return "\n".join(lines) if lines else "Web kaynaklarında güncel bilgi bulunamadı."
+
+
+def _has_hallucination(text: str) -> bool:
+    """LLM placeholder veya uydurma içeriği tespit et."""
+    hallucination_signs = [
+        "[takım adı]", "[skor]", "[tarih]", "[rakip]",
+        "[stad]", "[isim]", r"\[.*\]",
+        "bilgi bulunamadı ama", "kesin söyleyemem ama",
+        "tahminim", "muhtemelen",
+    ]
+    text_lower = text.lower()
+    import re
+    for sign in hallucination_signs:
+        if "[" in sign and "]" in sign and re.search(sign, text):
+            return True
+        if sign in text_lower:
+            return True
+    return False
+
+
 async def synthesize_with_llm(
     query:          str,
     search_results: List[dict],
@@ -772,82 +890,86 @@ async def synthesize_with_llm(
     language:       str = "tr",
     context_hint:   Optional[str] = None,
 ) -> str:
-    """Ham sonuçları LLM ile sentezler. API key yoksa ham döner."""
+    """
+    Güvenli sentez:
+    1. LLM ile dene — ama sıkı kontrol et
+    2. Hallucination tespit ederse → direkt web sonuçlarını döndür
+    3. LLM yoksa → direkt web sonuçları
+    """
+    # Ham web verisi her zaman hazır
+    raw_output = _format_results_directly(query, search_results, page_contents, language)
+
     if not DEEPINFRA_API_KEY:
-        return "\n\n".join([
-            f"**{r.get('title','')}**\n{r.get('content','')[:300]}"
-            for r in search_results[:4]
-        ])
+        return raw_output
 
-    search_txt = "\n".join([
-        f"[{i+1}] {r.get('title','')}\n    {r.get('content','')[:400]}"
-        for i, r in enumerate(search_results[:5])
+    # Sadece spesifik olgusal verileri içeren kısa snippetleri LLM'e ver
+    # Sayfa içeriğinin sadece en alakalı ilk 300 kelimesini al
+    best_content = ""
+    if page_contents:
+        best_content = page_contents[0].get("content", "")[:1500]
+    
+    snippets = "\n".join([
+        f"KAYNAK {i+1}: {r.get('title','')}\n{r.get('content','')[:400]}"
+        for i, r in enumerate(search_results[:4])
     ])
-    page_txt = "\n\n".join([
-        f"━━ {pc.get('title', pc.get('url','?'))} ━━\n{pc['content']}"
-        for pc in page_contents if pc.get("content")
-    ]) if page_contents else ""
 
-    lang_rule = "YANITI TÜRKÇE yaz." if language == "tr" else "Respond in ENGLISH."
-    ctx       = f"\nBağlam: {context_hint}" if context_hint else ""
+    lang_rule = "Türkçe yanıtla." if language == "tr" else "Respond in English."
+    ctx = f" (Bağlam: {context_hint})" if context_hint else ""
 
-    prompt = f"""Sen bir web araştırma asistanısın.
+    prompt = f"""{lang_rule}
 
-SORU: "{query}"{ctx}
+Soru: {query}{ctx}
 
-━━━ WEB ARAMA SONUÇLARI (SADECE BUNLARI KULLAN) ━━━
-{search_txt}
+Aşağıdaki web kaynaklarından KOPYALAYARAK yanıtla.
+Kendi bilgini EKLEME. Kaynaklarda yoksa "Bulunamadı" de.
 
-━━━ SAYFA İÇERİKLERİ ━━━
-{page_txt if page_txt else "(sayfa içeriği alınamadı)"}
+{snippets}
 
-━━━ KESİN KURALLAR ━━━
-1. {lang_rule}
-2. SADECE yukarıdaki web sonuçlarını kullan — KENDİ EĞİTİM VERİNİ KULLANMA
-3. Web sonuçlarında olmayan bilgiyi ASLA üretme veya tahmin etme
-4. Skor, tarih, isim gibi olgusal bilgileri YALNIZCA kaynaktan al
-5. Bilgi yoksa: "Web kaynaklarında güncel bilgi bulunamadı" de
-6. Kaynak göster: "X'e göre..." formatında
-7. Direkt yanıtla — giriş, özür yok
-8. Maksimum 250 kelime
+{"SAYFA İÇERİĞİ:" + chr(10) + best_content if best_content else ""}
 
-YANLIŞ YAPMA:
-- Eğitim verinden bilgi üretme (özellikle spor sonuçları, haberler, fiyatlar)
-- "Bilgi bulunamadı" derken bile tahminde bulunma
-- Tarih ve skor gibi verileri uydurmaa"""
+Kurallar:
+- Sadece yukarıdaki kaynaklardan bilgi kullan
+- Olgusal veri (skor, tarih, isim, fiyat) için KAYNAKTAN kopyala
+- Kaynaklarda yoksa: "Web kaynaklarında bu bilgi bulunamadı" yaz
+- [placeholder] içeren yanıt YAZMA
+- 200 kelimeden kısa tut"""
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=25.0) as client:
             resp = await client.post(
                 f"{DEEPINFRA_BASE_URL}/chat/completions",
                 headers={"Content-Type": "application/json",
                          "Authorization": f"Bearer {DEEPINFRA_API_KEY}"},
                 json={
-                    "model": SYNTHESIS_MODEL,
+                    "model":    SYNTHESIS_MODEL,
                     "messages": [
-                        {"role": "system",
-                         "content": (
-                             "Sen YALNIZCA verilen web arama sonuçlarını kullanan bir araştırma asistanısın. "
-                             "KENDİ EĞİTİM VERİNİ ASLA KULLANMAZSIN. "
-                             "Spor sonuçları, haberler, fiyatlar, tarihler — bunları SADECE web sonuçlarından alırsın. "
-                             "Web sonuçlarında olmayan bilgiyi üretmezsin, tahmin etmezsin. "
-                             "Bilgi yoksa bunu açıkça söylersin."
-                         )},
+                        {"role": "system", "content":
+                         "Sen bir web araştırma asistanısın. "
+                         "SADECE sana verilen kaynaklardan bilgi kullanırsın. "
+                         "Kaynaklarda olmayan hiçbir olgusal bilgiyi (skor, tarih, isim, fiyat) üretmezsin. "
+                         "Eğer bilgi kaynaklarda yoksa 'Bulunamadı' dersin."},
                         {"role": "user", "content": prompt},
                     ],
-                    "max_tokens": 800, "temperature": 0.1, "stream": False,
+                    "max_tokens": 500, "temperature": 0.0, "stream": False,
                 })
-            content = resp.json().get("choices",[{}])[0].get("message",{}).get("content","")
-            if content:
-                print(f"[LLM] ✅ Sentez: {len(content)} chars")
-                return content
-    except Exception as e:
-        print(f"[LLM] ❌ {e}")
 
-    return "\n\n".join([
-        f"**{r.get('title','')}**\n{r.get('content','')[:250]}"
-        for r in search_results[:4]
-    ])
+        result = resp.json().get("choices",[{}])[0].get("message",{}).get("content","")
+
+        if not result:
+            print("[LLM] Boş yanıt → raw output")
+            return raw_output
+
+        # Hallucination kontrolü
+        if _has_hallucination(result):
+            print(f"[LLM] ⚠️ Hallucination tespit edildi → raw output")
+            return raw_output
+
+        print(f"[LLM] ✅ Sentez: {len(result)} chars")
+        return result
+
+    except Exception as e:
+        print(f"[LLM] ❌ {e} → ham web sonuçları gösteriliyor")
+        return raw_output
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -991,31 +1113,73 @@ async def deep_search_pipeline(req: DeepSearchRequest) -> Dict:
     all_chunks: List[str] = []
     for pc in page_contents:
         chunks = chunk_text(pc["content"], CHUNK_SIZE, CHUNK_OVERLAP)
-        tagged = [f"[Kaynak: {pc['title'][:50]} | {pc['url'][:40]}]\n{c}" for c in chunks]
-        all_chunks.extend(tagged)
+        for c in chunks:
+            all_chunks.append({
+                "text":  f"[Kaynak: {pc['title'][:60]} | {pc['url'][:50]}]\n{c}",
+                "title": pc.get("title",""),
+                "url":   pc.get("url",""),
+                "type":  "page",
+            })
     for r in results[:req.num_results]:
-        snippet = r.get("content", "")
+        snippet = r.get("content","")
         if snippet and len(snippet) > 80:
-            all_chunks.append(f"[Kaynak: {r.get('title','')[:50]}]\n{snippet}")
+            all_chunks.append({
+                "text":  f"[Kaynak: {r.get('title','')[:60]}]\n{snippet}",
+                "title": r.get("title",""),
+                "url":   r.get("url",""),
+                "type":  "snippet",
+            })
     print(f"[DEEP SEARCH] 3/6 CHUNK ✅ {len(all_chunks)} chunk")
 
     # ── 4. RERANK ────────────────────────────────────────────
-    top_chunks: List[str] = []
+    top_chunks: List[dict] = []
     if all_chunks:
-        top_chunks = await rerank_chunks(req.query, all_chunks, min(TOP_CHUNKS + 2, len(all_chunks)))
+        # Reranker'a sadece text gönder
+        texts = [c["text"] for c in all_chunks]
+        top_k = min(TOP_CHUNKS + 2, len(texts))
+        ranked_texts = await rerank_chunks(req.query, texts, top_k)
+        
+        # Sıralı textlere metadata'yı geri eşle
+        text_to_meta = {c["text"]: c for c in all_chunks}
+        for t in ranked_texts:
+            meta = text_to_meta.get(t, {"text": t, "title":"", "url":"", "type":"unknown"})
+            top_chunks.append(meta)
+
     print(f"[DEEP SEARCH] 4/6 RERANK ✅ {len(top_chunks)} chunk seçildi")
 
     # ── 5. GENERATE ──────────────────────────────────────────
     synthesis = None
     if req.synthesize:
-        top_pc = [{"title":"Top Sources","url":"","content":"\n\n---\n\n".join(top_chunks)}] if top_chunks else page_contents
-        synthesis = await synthesize_with_llm(req.query, results, top_pc, req.language, req.context_hint)
+        # Reranker'ın seçtiklerini kaynak bilgisiyle synthesis'e ver
+        top_pc_reranked = []
+        seen_urls = set()
+        for chunk in top_chunks:
+            url = chunk.get("url","")
+            if url and url not in seen_urls:
+                seen_urls.add(url)
+                top_pc_reranked.append({
+                    "title":   chunk.get("title",""),
+                    "url":     url,
+                    "content": chunk.get("text",""),
+                })
+        
+        # top_pc yoksa page_contents kullan
+        top_pc = top_pc_reranked if top_pc_reranked else page_contents
+        
+        # Synthesis'e reranked chunks'ları ver — ham results değil
+        reranked_snippets = [
+            {"title": c.get("title",""), "url": c.get("url",""),
+             "content": c.get("text","")[:400]}
+            for c in top_chunks
+        ]
+        synthesis = await synthesize_with_llm(
+            req.query, reranked_snippets, top_pc, req.language, req.context_hint
+        )
         print(f"[DEEP SEARCH] 5/6 GENERATE ✅ {len(synthesis or '')} chars")
 
-    # ── 6. REFLECT ───────────────────────────────────────────
-    if synthesis and req.synthesize and DEEPINFRA_API_KEY:
-        synthesis = await reflect_and_improve(req.query, synthesis, top_chunks, req.language)
-        print(f"[DEEP SEARCH] 6/6 REFLECT ✅ Final: {len(synthesis)} chars")
+    # ── 6. REFLECT — hallucination check zaten synthesis'te yapılıyor ──
+    # reflect_and_improve kaldırıldı — ikinci LLM çağrısı daha fazla hallucination riski
+    print(f"[DEEP SEARCH] 6/6 REFLECT ✅ (synthesis'te kontrol edildi)")
 
     elapsed = round(time.time() - t0, 2)
     print(f"[DEEP SEARCH] ✅ {elapsed}s | {len(results)} kaynak | {len(page_contents)} sayfa\n")
