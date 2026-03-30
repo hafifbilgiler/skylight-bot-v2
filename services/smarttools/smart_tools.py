@@ -58,15 +58,18 @@ app.add_middleware(
 
 SEARXNG_URL        = os.getenv("SEARXNG_URL",        None)
 BRAVE_API_KEY      = os.getenv("BRAVE_API_KEY",      None)
-CRAWL4AI_URL       = os.getenv("CRAWL4AI_URL",       None)
-JINA_BASE_URL      = "https://r.jina.ai"
+CRAWL4AI_URL       = os.getenv("CRAWL4AI_URL",       "http://crawl4ai:11235")
 DEEPINFRA_API_KEY  = os.getenv("DEEPINFRA_API_KEY",  "")
 DEEPINFRA_BASE_URL = os.getenv("DEEPINFRA_BASE_URL", "https://api.deepinfra.com/v1/openai")
 SYNTHESIS_MODEL    = os.getenv("SYNTHESIS_MODEL",    "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8")
+RERANK_MODEL       = os.getenv("RERANK_MODEL",       "BAAI/bge-reranker-v2-m3")
+RERANKER_URL       = os.getenv("RERANKER_URL",       "http://skylight-reranker:8087")
 
-MAX_PAGE_CHARS   = 3000
-JINA_TIMEOUT     = 12
-CRAWL4AI_TIMEOUT = 15
+MAX_PAGE_CHARS   = 8000   # Crawl4AI daha temiz çıktı verir, daha fazla alabiliriz
+CHUNK_SIZE       = 600    # Kelime — her chunk bu kadar
+CHUNK_OVERLAP    = 80     # Örtüşme — bağlamı korur
+TOP_CHUNKS       = 5      # Rerank sonrası kaç chunk kullanılacak
+CRAWL4AI_TIMEOUT = 20
 DIRECT_TIMEOUT   = 8
 
 # ═══════════════════════════════════════════════════════════════
@@ -613,42 +616,124 @@ async def async_web_search(query: str, num: int = 5) -> Dict:
 # SAYFA ÇEKME — Jina → Crawl4AI → Direkt
 # ═══════════════════════════════════════════════════════════════
 
-async def fetch_via_jina(url: str) -> Optional[str]:
-    """Jina.ai Reader — ücretsiz, sınırsız, JS render, temiz markdown."""
-    try:
-        async with httpx.AsyncClient(timeout=JINA_TIMEOUT) as client:
-            resp = await client.get(
-                f"{JINA_BASE_URL}/{url}",
-                headers={"Accept": "text/plain", "X-Return-Format": "markdown",
-                         "X-Timeout": "8"},
-            )
-            if resp.status_code != 200:
-                return None
-            text = resp.text.strip()
-            if not text or len(text) < 100:
-                return None
-            print(f"[JINA] ✅ {url[:60]} → {len(text)} chars")
-            return text[:MAX_PAGE_CHARS]
-    except Exception as e:
-        print(f"[JINA] ❌ {url[:60]}: {e}")
-        return None
+# ═══════════════════════════════════════════════════════════════
+# CHUNK — Metni yönetilebilir parçalara böl
+# LangChain gerekmez — sliding window ile yapılır
+# ═══════════════════════════════════════════════════════════════
 
+def chunk_text(text: str, chunk_size: int = CHUNK_SIZE,
+               overlap: int = CHUNK_OVERLAP) -> List[str]:
+    """
+    Sliding window chunk.
+    chunk_size: kelime sayısı
+    overlap:    örtüşen kelime sayısı (bağlamı korur)
+    """
+    words  = text.split()
+    if len(words) <= chunk_size:
+        return [text]
+    chunks = []
+    step   = chunk_size - overlap
+    for i in range(0, len(words), step):
+        chunk = " ".join(words[i:i + chunk_size])
+        if chunk.strip():
+            chunks.append(chunk)
+        if i + chunk_size >= len(words):
+            break
+    return chunks
+
+
+# ═══════════════════════════════════════════════════════════════
+# RERANK — DeepInfra BGE Reranker ile en iyi chunkları seç
+# ═══════════════════════════════════════════════════════════════
+
+async def rerank_chunks(query: str, chunks: List[str],
+                        top_k: int = TOP_CHUNKS) -> List[str]:
+    """
+    Lokal BGE Reranker servisi ile query-chunk alaka puanı hesapla.
+    Servis yoksa keyword fallback.
+    """
+    if not chunks:
+        return []
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(
+                f"{RERANKER_URL}/rerank",
+                json={
+                    "query":     query,
+                    "documents": [c[:512] for c in chunks],
+                    "top_k":     top_k,
+                    "normalize": True,
+                },
+            )
+            if resp.status_code == 200:
+                data    = resp.json()
+                results = data.get("results", [])
+                model   = data.get("model", "?")
+                top     = [r["document"] for r in results]
+                print(f"[RERANK] ✅ {len(chunks)} → {len(top)} chunk | model={model} | best={results[0]['score']:.3f}" if results else f"[RERANK] ✅ boş sonuç")
+                return top
+    except Exception as e:
+        print(f"[RERANK] ❌ Servis ulaşılamıyor: {e} — keyword fallback")
+
+    return _keyword_rerank(query, chunks, top_k)
+
+
+def _keyword_rerank(query: str, chunks: List[str], top_k: int) -> List[str]:
+    """Basit keyword overlap skoru — API olmadan rerank."""
+    q_words = set(query.lower().split())
+    scored  = []
+    for chunk in chunks:
+        c_words = set(chunk.lower().split())
+        score   = len(q_words & c_words) / (len(q_words) + 1)
+        scored.append((chunk, score))
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return [c for c, _ in scored[:top_k]]
+
+
+# ═══════════════════════════════════════════════════════════════
+# SAYFA ÇEKME — Crawl4AI → Direkt
+# ═══════════════════════════════════════════════════════════════
 
 async def fetch_via_crawl4ai(url: str) -> Optional[str]:
-    """Crawl4AI — CRAWL4AI_URL set edilince aktif olur."""
+    """
+    Crawl4AI lokal pod — JS render, temiz markdown.
+    Jina.ai kaldırıldı — tüm scraping buradan.
+    """
     if not CRAWL4AI_URL:
+        return None
+    skip = ("youtube.com","youtu.be","twitter.com","x.com",
+            "instagram.com","facebook.com","tiktok.com","reddit.com")
+    if any(d in url for d in skip):
         return None
     try:
         async with httpx.AsyncClient(timeout=CRAWL4AI_TIMEOUT) as client:
-            resp = await client.post(f"{CRAWL4AI_URL}/crawl",
-                json={"urls": [url], "priority": 8,
-                      "crawler_params": {"headless": True, "word_count_threshold": 50}})
+            # Crawl4AI v0.4+ API formatı
+            resp = await client.post(
+                f"{CRAWL4AI_URL}/crawl",
+                json={
+                    "urls": [url],
+                    "crawler_params": {
+                        "headless": True,
+                        "word_count_threshold": 30,
+                        "excluded_tags": ["nav","footer","header","aside","script","style"],
+                        "remove_overlay_elements": True,
+                    },
+                    "extraction_config": {
+                        "type": "cosine",
+                        "params": {"word_count_threshold": 20}
+                    }
+                }
+            )
             if resp.status_code != 200:
                 return None
-            results = resp.json().get("results", [])
-            if results and results[0].get("success"):
-                md = results[0].get("markdown","") or results[0].get("extracted_content","")
-                if md and len(md) > 100:
+            data    = resp.json()
+            results = data.get("results", [data] if data.get("success") else [])
+            for r in results:
+                md = (r.get("markdown") or
+                      r.get("fit_markdown") or
+                      r.get("extracted_content") or "")
+                if md and len(md.strip()) > 100:
                     print(f"[CRAWL4AI] ✅ {url[:60]} → {len(md)} chars")
                     return md[:MAX_PAGE_CHARS]
     except Exception as e:
@@ -685,19 +770,14 @@ async def fetch_via_direct(url: str) -> Optional[str]:
 
 async def fetch_page_content(url: str) -> Optional[str]:
     """
-    Katman 1: Jina.ai   (aktif — ücretsiz, sınırsız)
-    Katman 2: Crawl4AI  (CRAWL4AI_URL set edilince)
-    Katman 3: Direkt    (son çare)
+    Katman 1: Crawl4AI  (lokal pod — JS render, temiz markdown)
+    Katman 2: Direkt    (son çare — JS render yok)
     """
     if not url or not url.startswith(("http://","https://")):
         return None
-    content = await fetch_via_jina(url)
+    content = await fetch_via_crawl4ai(url)
     if content:
         return content
-    if CRAWL4AI_URL:
-        content = await fetch_via_crawl4ai(url)
-        if content:
-            return content
     return await fetch_via_direct(url)
 
 
@@ -790,14 +870,90 @@ YANLIŞ YAPMA:
 
 
 # ═══════════════════════════════════════════════════════════════
+# REFLECTION — Cevabı LLM ile kontrol et ve iyileştir
+# ═══════════════════════════════════════════════════════════════
+
+async def reflect_and_improve(query: str, draft: str,
+                               chunks: List[str], language: str = "tr") -> str:
+    """
+    Self-reflection: LLM kendi cevabını değerlendirir.
+    Eksik, yanlış veya belirsiz kısım varsa düzeltir.
+    API yoksa draft'ı aynen döndür.
+    """
+    if not DEEPINFRA_API_KEY or not draft:
+        return draft
+
+    lang_rule = "TÜRKÇE yanıtla." if language == "tr" else "Respond in ENGLISH."
+    context   = "\n\n".join(chunks[:3]) if chunks else ""
+
+    prompt = f"""Aşağıda bir kullanıcı sorusu ve bir taslak cevap var.
+Taslak cevabı eleştirel gözle değerlendir:
+
+SORU: {query}
+
+TASLAK CEVAP:
+{draft}
+
+KAYNAK İÇERİK (doğrulama için):
+{context[:2000] if context else "(kaynak yok)"}
+
+DEĞERLENDİRME KRİTERLERİ:
+1. Soru tam olarak yanıtlanmış mı?
+2. Sayısal değerler (tarih, fiyat, oran) doğru mu?
+3. Eksik önemli bilgi var mı?
+4. Çelişkili bir ifade var mı?
+
+GÖREV:
+- Taslak yeterliyse: "ONAYLANDI" yaz, ardından taslağı aynen döndür.
+- Eksik/yanlış varsa: Düzeltilmiş versiyonu yaz. "ONAYLANDI" yazma.
+- {lang_rule}
+- Maksimum 350 kelime."""
+
+    try:
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            resp = await client.post(
+                f"{DEEPINFRA_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {DEEPINFRA_API_KEY}",
+                         "Content-Type": "application/json"},
+                json={
+                    "model": SYNTHESIS_MODEL,
+                    "messages": [
+                        {"role": "system",
+                         "content": "Eleştirel düşünen, doğruluğa önem veren bir AI editörüsün."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "max_tokens": 600, "temperature": 0.05, "stream": False,
+                }
+            )
+            result = resp.json().get("choices",[{}])[0].get("message",{}).get("content","")
+            if result:
+                if result.startswith("ONAYLANDI"):
+                    # Taslak onaylandı — temizle ve döndür
+                    clean = result.replace("ONAYLANDI","").strip()
+                    print(f"[REFLECT] ✅ Onaylandı ({len(draft)} chars)")
+                    return clean if clean else draft
+                else:
+                    print(f"[REFLECT] ✅ İyileştirildi ({len(draft)} → {len(result)} chars)")
+                    return result
+    except Exception as e:
+        print(f"[REFLECT] ❌ {e} — draft kullanılıyor")
+
+    return draft
+
+
+# ═══════════════════════════════════════════════════════════════
 # DEEP SEARCH PIPELINE
 # ═══════════════════════════════════════════════════════════════
 
 async def deep_search_pipeline(req: DeepSearchRequest) -> Dict:
     """
-    Adım 1: Arama (SearXNG/Brave/DDG)
-    Adım 2: Paralel sayfa çekme (Jina.ai — asyncio.gather)
-    Adım 3: LLM sentezi
+    6 Adımlı Deep Search Pipeline:
+    1. Search   — SearXNG/Brave/DDG ile link topla
+    2. Scrape   — Crawl4AI ile içerik çek (lokal, JS render)
+    3. Chunk    — Sliding window ile metni parçala
+    4. Rerank   — BGE Reranker ile en alakalı chunkları seç
+    5. Generate — LLM ile sentez yap
+    6. Reflect  — LLM cevabı kontrol et ve iyileştir
     """
     t0        = time.time()
     cache_key = f"ds_{req.query.lower().strip()}_{req.num_results}_{req.fetch_pages}"
@@ -809,17 +965,16 @@ async def deep_search_pipeline(req: DeepSearchRequest) -> Dict:
     print(f"[DEEP SEARCH] '{req.query}'")
     print(f"{'━'*60}")
 
-    # Adım 1
+    # ── Adım 1: SEARCH ──────────────────────────────────────────
     sr = await async_web_search(req.query, req.num_results)
     if not sr.get("success"):
         return {"success": False, "error": "Arama başarısız",
                 "query": req.query, "tool_used": "deep_search"}
-
     results  = sr.get("data", {}).get("results", [])
     provider = sr.get("data", {}).get("provider", "?")
-    print(f"[DEEP SEARCH] Adım 1 ✅ {len(results)} sonuç ({provider})")
+    print(f"[DEEP SEARCH] 1/6 SEARCH ✅ {len(results)} sonuç ({provider})")
 
-    # Adım 2
+    # ── Adım 2: SCRAPE ──────────────────────────────────────────
     page_contents = []
     if results and req.fetch_pages > 0:
         urls    = [r.get("url","") for r in results[:req.fetch_pages] if r.get("url")]
@@ -827,17 +982,45 @@ async def deep_search_pipeline(req: DeepSearchRequest) -> Dict:
                                        return_exceptions=True)
         for item, text in zip(results[:req.fetch_pages], fetched):
             if isinstance(text, str) and text:
-                page_contents.append({"url": item.get("url",""),
-                                      "title": item.get("title",""), "content": text})
-                print(f"[DEEP SEARCH]   ✅ {item.get('title','')[:50]} → {len(text)} chars")
-    print(f"[DEEP SEARCH] Adım 2 ✅ {len(page_contents)}/{req.fetch_pages} sayfa")
+                page_contents.append({"url":     item.get("url",""),
+                                      "title":   item.get("title",""),
+                                      "content": text})
+                print(f"[DEEP SEARCH] 2/6 SCRAPE ✅ {item.get('title','')[:45]} → {len(text)} chars")
+    print(f"[DEEP SEARCH] 2/6 SCRAPE ✅ {len(page_contents)}/{req.fetch_pages} sayfa")
 
-    # Adım 3
+    # ── Adım 3: CHUNK ───────────────────────────────────────────
+    all_chunks: List[str] = []
+    for pc in page_contents:
+        raw_chunks = chunk_text(pc["content"], CHUNK_SIZE, CHUNK_OVERLAP)
+        # Her chunk'a kaynak bilgisi ekle — LLM kaynak gösterebilsin
+        tagged = [f"[Kaynak: {pc['title'][:60]}]\n{c}" for c in raw_chunks]
+        all_chunks.extend(tagged)
+    # Arama snippet'lerini de ekle
+    for r in results[:req.num_results]:
+        snippet = r.get("content","")
+        if snippet and len(snippet) > 80:
+            all_chunks.append(f"[Kaynak: {r.get('title','')[:60]}]\n{snippet}")
+    print(f"[DEEP SEARCH] 3/6 CHUNK ✅ {len(all_chunks)} chunk oluşturuldu")
+
+    # ── Adım 4: RERANK ──────────────────────────────────────────
+    top_chunks: List[str] = []
+    if all_chunks:
+        top_chunks = await rerank_chunks(req.query, all_chunks, TOP_CHUNKS)
+        print(f"[DEEP SEARCH] 4/6 RERANK ✅ {len(top_chunks)} chunk seçildi")
+
+    # ── Adım 5: GENERATE ────────────────────────────────────────
     synthesis = None
     if req.synthesize:
+        # synthesize_with_llm'e top chunk içerikleri ver
+        top_page_contents = [{"title":"","url":"","content":"\n\n".join(top_chunks)}] if top_chunks else page_contents
         synthesis = await synthesize_with_llm(
-            req.query, results, page_contents, req.language, req.context_hint)
-        print(f"[DEEP SEARCH] Adım 3 ✅ {len(synthesis or '')} chars")
+            req.query, results, top_page_contents, req.language, req.context_hint)
+
+
+    # ── Adım 6: REFLECT ─────────────────────────────────────────
+    if synthesis and req.synthesize:
+        synthesis = await reflect_and_improve(req.query, synthesis, top_chunks, req.language)
+        print(f"[DEEP SEARCH] 6/6 REFLECT ✅ Final: {len(synthesis)} chars")
 
     elapsed = round(time.time() - t0, 2)
     print(f"[DEEP SEARCH] Toplam: {elapsed}s\n")
