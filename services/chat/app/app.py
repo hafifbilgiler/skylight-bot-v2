@@ -205,6 +205,10 @@ BORSA_URL = os.getenv("BORSA_URL", "http://skylight-borsa:8086")
 # ── Güncel bilgi gerektiren sinyaller — deep_search'e gider ────
 # Bu sinyaller varsa keyword detection yerine deep_search çağrılır
 _DEEP_SEARCH_KW = (
+    # Spor — güncel sonuçlar mutlaka web'den gelsin
+    "maç sonucu","son maç","maçı kaç","playoff","eleme maçı","dünya kupası",
+    "şampiyonlar ligi","süper lig","puan durumu","fikstür","transfer",
+    "world cup","champions league","premier league","la liga",
     # Mevzuat / hukuk / vergi
     "asgari ücret","asgari sermaye","vergi oranı","vergi dilimi",
     "sgk prim","kıdem tazminatı","ihbar tazminatı",
@@ -229,20 +233,54 @@ _STATIC_KW    = ("nasıl kullanılır","syntax","örnek ver","açıkla","anlat",
 _TECH_MODES   = {"code","it_expert"}
 
 
-def _detect_live_type(query: str, mode: str) -> Optional[str]:
+def _detect_live_type(
+    query: str,
+    mode: str,
+    router_decision: Dict = None,
+) -> Optional[str]:
     """
-    LOCAL detection — 0ms, network yok.
-    Döner: "currency" | "weather" | "crypto" | "time" | "news" |
-           "price_search" | "borsa" | "deep_search" | None
-
-    v2: deep_search sinyalleri eklendi — güncel mevzuat, istatistik,
-        ürün bilgileri artık web'den alınıyor.
+    Akıllı detection — Router LLM kararına öncelik ver.
+    
+    Öncelik sırası:
+    1. Router `needs_realtime=true` dedi → web'e git
+    2. Keyword listesi → anlık API (kur, hava, kripto)
+    3. Router yoksa → keyword ile deep_search karar
+    4. Hiçbiri → None (eğitim verisi kullan)
     """
-    if mode in _TECH_MODES:
-        return None
     q = query.lower()
 
-    # Kesinlikle statik — web'e gitme
+    # ── Router kararı varsa öncelikli kullan ──────────────
+    if router_decision:
+        rt   = router_decision.get("needs_realtime", False)
+        tool = router_decision.get("tool", "none")
+        conf = router_decision.get("confidence", "low")
+
+        if rt and tool and tool != "none":
+            # Router spesifik tool belirledi
+            tool_map = {
+                "currency": "currency",
+                "weather":  "weather",
+                "crypto":   "crypto",
+                "news":     "news",
+                "web":      "deep_search",
+                "borsa":    "borsa",
+                "time":     "time",
+            }
+            mapped = tool_map.get(tool)
+            if mapped:
+                print(f"[DETECT] Router → {mapped} (conf={conf})")
+                return mapped
+
+        if rt and conf in ("high", "medium"):
+            # Realtime lazım ama tool belirsiz → deep search
+            print(f"[DETECT] Router needs_realtime=true → deep_search")
+            return "deep_search"
+
+    # ── Kod modunda canlı veri yok ────────────────────────
+    if mode in _TECH_MODES:
+        return None
+
+    # ── Kesinlikle statik — web'e gitme ──────────────────
     if any(k in q for k in _STATIC_KW) and len(q.split()) <= 6:
         return None
 
@@ -276,11 +314,13 @@ def _detect_live_type(query: str, mode: str) -> Optional[str]:
 async def get_live_data(
     query: str,
     mode: str = "assistant",
-    router_tool: str = None,   # Smart Router'dan gelen tool kararı
+    router_tool: str = None,
+    router_decision: Dict = None,
 ) -> Optional[str]:
     """
-    1. Router tool hint varsa → direkt kullan (LLM kararı, keyword yok)
-    2. Yoksa → local keyword detection
+    1. Router LLM kararı varsa → öncelikli kullan
+    2. Keyword detection → fallback
+    3. Router needs_realtime=true → deep_search
     2. Lazımsa smart_tools /unified'a git — gerçek veriyi getir
     3. format_for_llm() ile LLM'e hazır formata dönüştür
 
@@ -289,9 +329,9 @@ async def get_live_data(
     # Router kararı varsa keyword'ü atla — LLM zaten anladı
     if router_tool and router_tool != "none":
         live_type = router_tool
-        print(f"[LIVE DATA] Router hint → {live_type} (keyword bypass)")
+        print(f"[LIVE DATA] Router tool → {live_type}")
     else:
-        live_type = _detect_live_type(query, mode)
+        live_type = _detect_live_type(query, mode, router_decision)
     
     if not live_type:
         return None
@@ -337,13 +377,25 @@ async def get_live_data(
     # ── Deep search pipeline — güncel mevzuat, istatistik, ürün bilgisi ──
     if live_type == "deep_search":
         try:
-            async with httpx.AsyncClient(timeout=25.0) as client:
+            # Bağlam zenginleştirme — kısa sorulara önceki konuyu ekle
+            enriched_query = query
+            if history and len(query.split()) <= 4:
+                recent = " ".join([
+                    (m.get("content") or "")[:60]
+                    for m in history[-3:]
+                    if m.get("role") == "user"
+                ])
+                if recent.strip():
+                    enriched_query = f"{query} {recent.strip()}"[:200]
+                    print(f"[DEEP SEARCH] Enriched: {enriched_query[:80]}")
+
+            async with httpx.AsyncClient(timeout=35.0) as client:
                 resp = await client.post(
                     f"{SMART_TOOLS_URL}/deep_search",
                     json={
-                        "query":        query,
-                        "num_results":  5,
-                        "fetch_pages":  2,
+                        "query":        enriched_query,
+                        "num_results":  6,
+                        "fetch_pages":  3,
                         "synthesize":   True,
                         "language":     "tr",
                     },

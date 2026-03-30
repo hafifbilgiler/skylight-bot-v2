@@ -1,13 +1,30 @@
 """
 ═══════════════════════════════════════════════════════════════
-SKYLIGHT SMART TOOLS SERVICE — v8.0
+SKYLIGHT SMART TOOLS SERVICE — v7.1
 ═══════════════════════════════════════════════════════════════
-Değişiklikler v7.1 → v8.0:
-  ✅ Jina.ai tamamen kaldırıldı
-  ✅ Crawl4AI birincil scraper (token auth)
-  ✅ WorldTimeAPI kaldırıldı → sistem saati
-  ✅ auto_detect_tool → LLM kararına öncelik
-  ✅ Cosine extraction kaldırıldı (torch gerektiriyordu)
+Görev:
+  - Canlı veri API'leri (kur, hava, kripto, saat, haberler)
+  - Deep Search pipeline (SearXNG → Jina.ai → LLM sentezi)
+  - Web arama (SearXNG → Brave → DuckDuckGo waterfall)
+
+Detection (canlı veri lazım mı?) → chat_service ve gateway'de LOCAL yapılır.
+Bu servis sadece veriyi getirir, karar vermez.
+
+Endpoints:
+  POST /unified      → Canlı veri + web arama (chat servisi çağırır)
+  POST /deep_search  → Araştırma pipeline (gateway çağırır)
+  POST /search       → Direkt web arama
+  GET  /fetch        → Tek URL içeriği (test)
+  GET  /health
+  GET  /
+
+Sayfa çekme:
+  1. Jina.ai   → r.jina.ai/URL (ücretsiz, sınırsız, JS render)
+  2. Crawl4AI  → CRAWL4AI_URL set edilince devreye girer
+  3. Direkt    → Son çare
+
+Arama:
+  SearXNG → Brave → DuckDuckGo
 ═══════════════════════════════════════════════════════════════
 """
 
@@ -17,6 +34,7 @@ from pydantic import BaseModel
 from typing import Optional, List, Dict
 from datetime import datetime
 from urllib.parse import quote_plus
+import pytz
 import requests
 import httpx
 from bs4 import BeautifulSoup
@@ -31,7 +49,7 @@ from enum import Enum
 # CONFIG
 # ═══════════════════════════════════════════════════════════════
 
-app = FastAPI(title="Skylight Smart Tools", version="8.0.0")
+app = FastAPI(title="Skylight Smart Tools", version="7.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_credentials=True,
@@ -45,12 +63,13 @@ CRAWL4AI_TOKEN     = os.getenv("CRAWL4AI_TOKEN",     "skylight-crawl4ai-2026")
 DEEPINFRA_API_KEY  = os.getenv("DEEPINFRA_API_KEY",  "")
 DEEPINFRA_BASE_URL = os.getenv("DEEPINFRA_BASE_URL", "https://api.deepinfra.com/v1/openai")
 SYNTHESIS_MODEL    = os.getenv("SYNTHESIS_MODEL",    "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8")
+RERANK_MODEL       = os.getenv("RERANK_MODEL",       "BAAI/bge-reranker-v2-m3")
 RERANKER_URL       = os.getenv("RERANKER_URL",       "http://skylight-reranker:8087")
 
-MAX_PAGE_CHARS   = 8000
-CHUNK_SIZE       = 600
-CHUNK_OVERLAP    = 80
-TOP_CHUNKS       = 5
+MAX_PAGE_CHARS   = 8000   # Crawl4AI daha temiz çıktı verir, daha fazla alabiliriz
+CHUNK_SIZE       = 600    # Kelime — her chunk bu kadar
+CHUNK_OVERLAP    = 80     # Örtüşme — bağlamı korur
+TOP_CHUNKS       = 5      # Rerank sonrası kaç chunk kullanılacak
 CRAWL4AI_TIMEOUT = 20
 DIRECT_TIMEOUT   = 8
 
@@ -103,10 +122,10 @@ class AsyncCache:
             self._s[k] = (v, time.time() + self._ttl)
 
 
-weather_cache  = SimpleCache(ttl=300)
-currency_cache = SimpleCache(ttl=120)
-search_cache   = SimpleCache(ttl=180)
-deep_cache     = AsyncCache(ttl=300)
+weather_cache  = SimpleCache(ttl=300)   # 5 dk
+currency_cache = SimpleCache(ttl=120)   # 2 dk
+search_cache   = SimpleCache(ttl=180)   # 3 dk
+deep_cache     = AsyncCache(ttl=300)    # 5 dk
 
 # ═══════════════════════════════════════════════════════════════
 # MODELS
@@ -121,7 +140,6 @@ class ToolType(str, Enum):
     PRICE_SEARCH = "price_search"
     WEB_SEARCH   = "web_search"
     DEEP_SEARCH  = "deep_search"
-    BORSA        = "borsa"
 
 
 class UnifiedRequest(BaseModel):
@@ -144,57 +162,62 @@ class DeepSearchRequest(BaseModel):
 
 
 # ═══════════════════════════════════════════════════════════════
-# AUTO DETECT
+# AUTO DETECT — /unified için hangi tool?
 # ═══════════════════════════════════════════════════════════════
 
 def auto_detect_tool(query: str) -> ToolType:
     """
-    Fallback detection — chat/gateway zaten tool_type gönderiyor.
-    Bu sadece tool_type gönderilmediğinde çalışır.
+    Chat servisi zaten ne istediğini biliyor (local detection).
+    Ama /unified'a tool_type gönderilmezse burada belirlenir.
+    Sıralama kritik — spesifik önce, genel sonra.
     """
     q = query.lower()
 
+    # Döviz
     if any(k in q for k in ("dolar","euro","eur","usd","gbp","sterlin","pound",
-                              "döviz","doviz","kaç tl","tl kaç","kur")):
+                              "kur","döviz","doviz","kaç tl","tl kaç")):
         return ToolType.CURRENCY
 
+    # Kripto
     if any(k in q for k in ("bitcoin","btc","ethereum","eth","dogecoin",
                               "doge","solana","kripto","crypto","coin")):
         return ToolType.CRYPTO
 
+    # Hava
     if any(k in q for k in ("hava","havadurumu","weather","sıcaklık",
-                              "sicaklik","derece","yağmur","kar yağ","forecast")):
+                              "sicaklik","derece","yağmur","kar","rüzgar","forecast")):
         return ToolType.WEATHER
 
-    if any(k in q for k in ("borsa","bist","hisse","thyao","garan","akbnk")):
-        return ToolType.BORSA
-
+    # Fiyat
     if any(k in q for k in ("fiyat","price","kaç lira","ne kadar",
                               "altın","petrol","gram altın")):
         return ToolType.PRICE_SEARCH
 
+    # Saat
     if any(k in q for k in ("saat kaç","saati kaç","şimdi saat",
-                              "what time","bugün ne günü","tarih ne")):
+                              "what time","bugün ne günü")):
         return ToolType.TIME
 
+    # Haberler
     if any(k in q for k in ("haber","news","gündem","son dakika","breaking")):
         return ToolType.NEWS
 
+    # Varsayılan
     return ToolType.WEB_SEARCH
 
 
 # ═══════════════════════════════════════════════════════════════
-# WEATHER CODES
+# WMO WEATHER CODES
 # ═══════════════════════════════════════════════════════════════
 
 WEATHER_CODES = {
-    0:"Açık ☀️", 1:"Genellikle açık 🌤️", 2:"Parçalı bulutlu ⛅", 3:"Kapalı ☁️",
-    45:"Sisli 🌫️", 48:"Kırağılı sis 🌫️",
-    51:"Hafif çisenti 🌦️", 53:"Orta çisenti 🌦️", 55:"Yoğun çisenti 🌧️",
-    61:"Hafif yağmur 🌧️", 63:"Orta yağmur 🌧️", 65:"Şiddetli yağmur ⛈️",
-    71:"Hafif kar 🌨️", 73:"Orta kar 🌨️", 75:"Şiddetli kar ❄️",
-    80:"Hafif sağanak 🌦️", 81:"Orta sağanak 🌧️", 82:"Şiddetli sağanak ⛈️",
-    95:"Gök gürültülü fırtına ⛈️", 99:"Şiddetli dolu fırtına ⛈️",
+    0:"Açık", 1:"Genellikle açık", 2:"Parçalı bulutlu", 3:"Kapalı",
+    45:"Sisli", 48:"Kırağılı sis",
+    51:"Hafif çisenti", 53:"Orta çisenti", 55:"Yoğun çisenti",
+    61:"Hafif yağmur", 63:"Orta yağmur", 65:"Şiddetli yağmur",
+    71:"Hafif kar", 73:"Orta kar", 75:"Şiddetli kar",
+    80:"Hafif sağanak", 81:"Orta sağanak", 82:"Şiddetli sağanak",
+    95:"Gök gürültülü fırtına", 99:"Şiddetli dolu fırtına",
 }
 
 # ═══════════════════════════════════════════════════════════════
@@ -205,13 +228,14 @@ def _extract_city(query: str) -> Optional[str]:
     noise = {
         'hava','durumu','weather','sıcaklık','bugün','nasıl','nedir','kaç',
         'derece','için','de','da','şuan','şimdi','ne','nerede','olan',
-        'havalar','bugünkü','anlık','şuanki','mevcut','nasıl','var',
+        'havalar','nasıl','bugünkü','anlık','şuanki','mevcut',
     }
+    # Önce bilinen şehir listesine bak
     known_cities = [
-        'istanbul','ankara','izmir','antalya','bursa','adana','konya','gaziantep',
-        'berlin','london','paris','new york','tokyo','dubai','moscow','amsterdam',
-        'madrid','rome','vienna','barcelona','zurich','geneva','brussels',
-        'los angeles','san francisco','hong kong','singapore','sydney',
+        'istanbul','ankara','izmir','antalya','bursa','adana','konya',
+        'berlin','london','paris','new york','tokyo','dubai','moscow',
+        'new','york','los','angeles','san','francisco',
+        'amsterdam','madrid','rome','vienna','barcelona',
     ]
     q_lower = query.lower()
     for city in known_cities:
@@ -224,7 +248,8 @@ def _extract_city(query: str) -> Optional[str]:
         return None
     first = clean[0]
     for suf in ['daki','deki','dan','den','da','de','ta','te',
-                'nın','nin','nun','nün','ın','in','un','ün']:
+                'nın','nin','nun','nün','ın','in','un','ün',
+                'da','de','nin','nun']:
         if first.lower().endswith(suf) and len(first) > len(suf) + 2:
             first = first[:-len(suf)]
             break
@@ -242,12 +267,10 @@ def _extract_currency_pair(query: str) -> tuple:
         "dolar":"USD","usd":"USD","euro":"EUR","eur":"EUR",
         "pound":"GBP","sterlin":"GBP","gbp":"GBP",
         "tl":"TRY","try":"TRY","lira":"TRY",
-        "yen":"JPY","jpy":"JPY","frank":"CHF","chf":"CHF",
+        "yen":"JPY","frank":"CHF",
     }
     found = [v for k, v in cmap.items() if k in q]
-    # TRY hedef para birimi olarak çıkarsa
-    found = [f for f in found if f != "TRY"]
-    return (found[0] if found else "USD", "TRY")
+    return (found[0] if found else "USD", found[1] if len(found) > 1 else "TRY")
 
 
 def _extract_coin(query: str) -> str:
@@ -255,17 +278,15 @@ def _extract_coin(query: str) -> str:
     if "ethereum" in q or " eth" in q: return "ethereum"
     if "dogecoin" in q or "doge" in q: return "dogecoin"
     if "solana"   in q or " sol" in q: return "solana"
-    if "bnb"      in q:                return "binancecoin"
-    if "xrp"      in q or "ripple" in q: return "ripple"
     return "bitcoin"
 
 
 # ═══════════════════════════════════════════════════════════════
-# LIVE DATA TOOLS
+# LIVE UTILITY TOOLS
 # ═══════════════════════════════════════════════════════════════
 
 def get_time(tz_str: str = "Europe/Istanbul") -> Dict:
-    """Sistem saati UTC+3 — dış API yok, güvenilir."""
+    """Sistem saati — UTC+3 Türkiye (WorldTimeAPI kaldırıldı, güvenilmez)."""
     from datetime import datetime, timezone, timedelta
     tz  = timezone(timedelta(hours=3))
     now = datetime.now(tz)
@@ -281,11 +302,8 @@ def get_time(tz_str: str = "Europe/Istanbul") -> Dict:
     }
     day_tr   = days.get(now.strftime("%A"),   now.strftime("%A"))
     month_tr = months.get(now.strftime("%B"), now.strftime("%B"))
-    formatted = (
-        f"🕐 Saat {now.strftime('%H:%M')}\n"
-        f"📅 {now.day} {month_tr} {now.year}, {day_tr}"
-    )
-    print(f"[TIME] ✅ {now.strftime('%H:%M')} {day_tr} {now.day} {month_tr}")
+    formatted = f"🕐 Saat {now.strftime('%H:%M')} | 📅 {now.day} {month_tr} {now.year}, {day_tr}"
+    print(f"[TIME] ✅ {now.strftime('%H:%M')} {day_tr}")
     return {"success": True, "tool_used": "time", "data": {
         "time":         now.strftime("%H:%M:%S"),
         "date":         now.strftime("%Y-%m-%d"),
@@ -297,7 +315,6 @@ def get_time(tz_str: str = "Europe/Istanbul") -> Dict:
         "date_only":    f"{now.day} {month_tr} {now.year}, {day_tr}",
         "timezone":     "Europe/Istanbul (UTC+3)",
     }}
-
 
 def get_weather(query: str) -> Dict:
     city = _extract_city(query)
@@ -327,7 +344,7 @@ def get_weather(query: str) -> Dict:
         result = {"success": True, "tool_used": "weather", "data": {
             "city":        city_name,
             "country":     country,
-            "temperature": round(c["temperature_2m"], 1),
+            "temperature": round(c["temperature_2m"],      1),
             "feels_like":  round(c["apparent_temperature"], 1),
             "humidity":    c["relative_humidity_2m"],
             "description": desc,
@@ -358,16 +375,16 @@ def get_currency(from_c: str = "USD", to_c: str = "TRY") -> Dict:
         r    = requests.get(f"https://api.exchangerate-api.com/v4/latest/{from_c}", timeout=5)
         rate = r.json()["rates"].get(to_c)
         if rate:
-            result = {"success": True, "tool_used": "currency", "data": {
+            result = {"success": True, "data": {
                 "from": from_c, "to": to_c, "rate": rate,
-                "formatted": f"💱 1 {from_c} = {rate:.4f} {to_c}",
+                "formatted": f"1 {from_c} = {rate:.4f} {to_c}",
             }}
             currency_cache.set(key, result)
             print(f"[CURRENCY] {from_c}/{to_c} = {rate}")
             return result
     except Exception:
         pass
-    # Method 2: Google Finance
+    # Method 2: Google Finance fallback
     try:
         r    = requests.get(
             f"https://www.google.com/finance/quote/{from_c}-{to_c}",
@@ -376,9 +393,9 @@ def get_currency(from_c: str = "USD", to_c: str = "TRY") -> Dict:
         el   = soup.find("div", {"class": "YMlKec fxKbKc"})
         if el:
             rate   = float(el.text.replace(',', '.'))
-            result = {"success": True, "tool_used": "currency", "data": {
+            result = {"success": True, "data": {
                 "from": from_c, "to": to_c, "rate": round(rate, 4),
-                "formatted": f"💱 1 {from_c} = {round(rate, 4)} {to_c}",
+                "formatted": f"1 {from_c} = {round(rate, 4)} {to_c}",
             }}
             currency_cache.set(key, result)
             return result
@@ -391,26 +408,16 @@ def get_crypto(coin: str = "bitcoin") -> Dict:
     try:
         r = requests.get(
             f"https://api.coingecko.com/api/v3/simple/price?"
-            f"ids={coin}&vs_currencies=usd,try&include_24hr_change=true",
+            f"ids={coin}&vs_currencies=usd&include_24hr_change=true",
             timeout=5).json()
         if coin not in r:
             return {"success": False, "error": f"Coin bulunamadı: {coin}"}
-        price_usd = r[coin]["usd"]
-        price_try = r[coin].get("try", 0)
-        change    = r[coin].get("usd_24h_change", 0)
-        arrow     = "📈" if change >= 0 else "📉"
-        print(f"[CRYPTO] {coin} = ${price_usd:,.2f} ({change:+.2f}%)")
-        return {"success": True, "tool_used": "crypto", "data": {
-            "coin": coin,
-            "price_usd": price_usd,
-            "price_try": price_try,
-            "change_24h": round(change, 2),
-            "formatted": (
-                f"₿ {coin.title()}\n"
-                f"💵 ${price_usd:,.2f} USD\n"
-                f"💴 ₺{price_try:,.2f} TRY\n"
-                f"{arrow} 24s değişim: {change:+.2f}%"
-            ),
+        price  = r[coin]["usd"]
+        change = r[coin].get("usd_24h_change", 0)
+        print(f"[CRYPTO] {coin} = ${price:,.2f} ({change:+.2f}%)")
+        return {"success": True, "data": {
+            "coin": coin, "price": price, "change_24h": round(change, 2),
+            "formatted": f"{coin.title()}: ${price:,.2f} (24s: {change:+.2f}%)",
         }}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -429,22 +436,24 @@ def get_news(query: Optional[str] = None) -> Dict:
             for i in soup.find_all('item', limit=5)
         ]
         if articles:
-            return {"success": True, "tool_used": "news", "data": {"articles": articles}}
+            return {"success": True, "data": {"articles": articles}}
         return {"success": False, "error": "Haber bulunamadı"}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
 
 # ═══════════════════════════════════════════════════════════════
-# WEB SEARCH — SearXNG → Brave → DuckDuckGo
+# SYNC WEB SEARCH (waterfall)
 # ═══════════════════════════════════════════════════════════════
 
 def sync_web_search(query: str, num: int = 5) -> Dict:
+    """SearXNG → Brave → DuckDuckGo + 3dk cache."""
     key    = f"s_{query.lower().strip()}"
     cached = search_cache.get(key)
     if cached:
         return cached
 
+    # SearXNG
     if SEARXNG_URL:
         try:
             data    = requests.get(f"{SEARXNG_URL}/search",
@@ -461,6 +470,7 @@ def sync_web_search(query: str, num: int = 5) -> Dict:
         except Exception:
             pass
 
+    # Brave
     if BRAVE_API_KEY:
         try:
             data    = requests.get("https://api.search.brave.com/res/v1/web/search",
@@ -478,6 +488,7 @@ def sync_web_search(query: str, num: int = 5) -> Dict:
         except Exception:
             pass
 
+    # DuckDuckGo
     for ua in ["Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"]:
         try:
@@ -503,7 +514,12 @@ def sync_web_search(query: str, num: int = 5) -> Dict:
     return {"success": False, "error": "Tüm arama sağlayıcıları başarısız"}
 
 
+# ═══════════════════════════════════════════════════════════════
+# ASYNC WEB SEARCH (deep search için)
+# ═══════════════════════════════════════════════════════════════
+
 async def async_web_search(query: str, num: int = 5) -> Dict:
+    """Async waterfall — non-blocking."""
     key    = f"as_{query.lower().strip()}"
     cached = await deep_cache.get(key)
     if cached:
@@ -511,6 +527,7 @@ async def async_web_search(query: str, num: int = 5) -> Dict:
 
     async with httpx.AsyncClient(timeout=12.0) as client:
 
+        # SearXNG
         if SEARXNG_URL:
             try:
                 resp    = await client.get(f"{SEARXNG_URL}/search",
@@ -527,6 +544,7 @@ async def async_web_search(query: str, num: int = 5) -> Dict:
             except Exception as e:
                 print(f"[SEARCH] SearXNG: {e}")
 
+        # Brave
         if BRAVE_API_KEY:
             try:
                 resp    = await client.get("https://api.search.brave.com/res/v1/web/search",
@@ -544,6 +562,7 @@ async def async_web_search(query: str, num: int = 5) -> Dict:
             except Exception as e:
                 print(f"[SEARCH] Brave: {e}")
 
+        # DuckDuckGo
         for ua in ["Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"]:
             try:
@@ -573,11 +592,21 @@ async def async_web_search(query: str, num: int = 5) -> Dict:
 
 
 # ═══════════════════════════════════════════════════════════════
-# CHUNK
+# SAYFA ÇEKME — Jina → Crawl4AI → Direkt
+# ═══════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════
+# CHUNK — Metni yönetilebilir parçalara böl
+# LangChain gerekmez — sliding window ile yapılır
 # ═══════════════════════════════════════════════════════════════
 
 def chunk_text(text: str, chunk_size: int = CHUNK_SIZE,
                overlap: int = CHUNK_OVERLAP) -> List[str]:
+    """
+    Sliding window chunk.
+    chunk_size: kelime sayısı
+    overlap:    örtüşen kelime sayısı (bağlamı korur)
+    """
     words  = text.split()
     if len(words) <= chunk_size:
         return [text]
@@ -593,36 +622,50 @@ def chunk_text(text: str, chunk_size: int = CHUNK_SIZE,
 
 
 # ═══════════════════════════════════════════════════════════════
-# RERANK
+# RERANK — DeepInfra BGE Reranker ile en iyi chunkları seç
 # ═══════════════════════════════════════════════════════════════
 
 async def rerank_chunks(query: str, chunks: List[str],
                         top_k: int = TOP_CHUNKS) -> List[str]:
+    """
+    Lokal BGE Reranker servisi ile query-chunk alaka puanı hesapla.
+    Servis yoksa keyword fallback.
+    """
     if not chunks:
         return []
+
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
             resp = await client.post(
                 f"{RERANKER_URL}/rerank",
-                json={"query": query, "documents": [c[:512] for c in chunks],
-                      "top_k": top_k, "normalize": True},
+                json={
+                    "query":     query,
+                    "documents": [c[:512] for c in chunks],
+                    "top_k":     top_k,
+                    "normalize": True,
+                },
             )
             if resp.status_code == 200:
                 data    = resp.json()
                 results = data.get("results", [])
+                model   = data.get("model", "?")
                 top     = [r["document"] for r in results]
-                if results:
-                    print(f"[RERANK] ✅ {len(chunks)} → {len(top)} | best={results[0]['score']:.3f}")
+                print(f"[RERANK] ✅ {len(chunks)} → {len(top)} chunk | model={model} | best={results[0]['score']:.3f}" if results else f"[RERANK] ✅ boş sonuç")
                 return top
     except Exception as e:
-        print(f"[RERANK] ❌ {e} — keyword fallback")
+        print(f"[RERANK] ❌ Servis ulaşılamıyor: {e} — keyword fallback")
+
     return _keyword_rerank(query, chunks, top_k)
 
 
 def _keyword_rerank(query: str, chunks: List[str], top_k: int) -> List[str]:
+    """Basit keyword overlap skoru — API olmadan rerank."""
     q_words = set(query.lower().split())
-    scored  = [(chunk, len(q_words & set(chunk.lower().split())) / (len(q_words) + 1))
-               for chunk in chunks]
+    scored  = []
+    for chunk in chunks:
+        c_words = set(chunk.lower().split())
+        score   = len(q_words & c_words) / (len(q_words) + 1)
+        scored.append((chunk, score))
     scored.sort(key=lambda x: x[1], reverse=True)
     return [c for c, _ in scored[:top_k]]
 
@@ -632,6 +675,10 @@ def _keyword_rerank(query: str, chunks: List[str], top_k: int) -> List[str]:
 # ═══════════════════════════════════════════════════════════════
 
 async def fetch_via_crawl4ai(url: str) -> Optional[str]:
+    """
+    Crawl4AI lokal pod — JS render, temiz markdown.
+    Jina.ai kaldırıldı — tüm scraping buradan.
+    """
     if not CRAWL4AI_URL:
         return None
     skip = ("youtube.com","youtu.be","twitter.com","x.com",
@@ -639,8 +686,12 @@ async def fetch_via_crawl4ai(url: str) -> Optional[str]:
     if any(d in url for d in skip):
         return None
     try:
-        headers = {"Authorization": f"Bearer {CRAWL4AI_TOKEN}"} if CRAWL4AI_TOKEN else {}
+        headers = {}
+        if CRAWL4AI_TOKEN:
+            headers["Authorization"] = f"Bearer {CRAWL4AI_TOKEN}"
+
         async with httpx.AsyncClient(timeout=CRAWL4AI_TIMEOUT) as client:
+            # Crawl4AI v0.4+ API — token ile
             resp = await client.post(
                 f"{CRAWL4AI_URL}/crawl",
                 headers=headers,
@@ -655,12 +706,12 @@ async def fetch_via_crawl4ai(url: str) -> Optional[str]:
                 }
             )
             if resp.status_code != 200:
-                print(f"[CRAWL4AI] HTTP {resp.status_code} — {url[:50]}")
                 return None
             data    = resp.json()
             results = data.get("results", [data] if data.get("success") else [])
             for r in results:
-                md = (r.get("markdown") or r.get("fit_markdown") or
+                md = (r.get("markdown") or
+                      r.get("fit_markdown") or
                       r.get("extracted_content") or "")
                 if md and len(md.strip()) > 100:
                     print(f"[CRAWL4AI] ✅ {url[:60]} → {len(md)} chars")
@@ -671,6 +722,7 @@ async def fetch_via_crawl4ai(url: str) -> Optional[str]:
 
 
 async def fetch_via_direct(url: str) -> Optional[str]:
+    """Direkt httpx scrape — son çare, JS render yok."""
     skip = ("youtube.com","youtu.be","twitter.com","x.com",
             "instagram.com","facebook.com","tiktok.com","reddit.com")
     if any(d in url for d in skip):
@@ -697,6 +749,10 @@ async def fetch_via_direct(url: str) -> Optional[str]:
 
 
 async def fetch_page_content(url: str) -> Optional[str]:
+    """
+    Katman 1: Crawl4AI  (lokal pod — JS render, temiz markdown)
+    Katman 2: Direkt    (son çare — JS render yok)
+    """
     if not url or not url.startswith(("http://","https://")):
         return None
     content = await fetch_via_crawl4ai(url)
@@ -710,10 +766,13 @@ async def fetch_page_content(url: str) -> Optional[str]:
 # ═══════════════════════════════════════════════════════════════
 
 async def synthesize_with_llm(
-    query: str, search_results: List[dict],
-    page_contents: List[dict], language: str = "tr",
-    context_hint: Optional[str] = None,
+    query:          str,
+    search_results: List[dict],
+    page_contents:  List[dict],
+    language:       str = "tr",
+    context_hint:   Optional[str] = None,
 ) -> str:
+    """Ham sonuçları LLM ile sentezler. API key yoksa ham döner."""
     if not DEEPINFRA_API_KEY:
         return "\n\n".join([
             f"**{r.get('title','')}**\n{r.get('content','')[:300]}"
@@ -732,22 +791,30 @@ async def synthesize_with_llm(
     lang_rule = "YANITI TÜRKÇE yaz." if language == "tr" else "Respond in ENGLISH."
     ctx       = f"\nBağlam: {context_hint}" if context_hint else ""
 
-    prompt = f"""Kullanıcı sorusu: "{query}"{ctx}
+    prompt = f"""Sen bir web araştırma asistanısın.
 
-ARAMA SONUÇLARI:
+SORU: "{query}"{ctx}
+
+━━━ WEB ARAMA SONUÇLARI (SADECE BUNLARI KULLAN) ━━━
 {search_txt}
 
-SAYFA İÇERİKLERİ:
-{page_txt if page_txt else "(sayfa içeriği alınamadı — özet kullanılıyor)"}
+━━━ SAYFA İÇERİKLERİ ━━━
+{page_txt if page_txt else "(sayfa içeriği alınamadı)"}
 
-GÖREV: Web kaynaklarını sentezle ve soruyu doğrudan yanıtla.
-
-KURALLAR:
+━━━ KESİN KURALLAR ━━━
 1. {lang_rule}
-2. Direkt başla — giriş yok
-3. Sayısal değerleri KAYNAĞA BAĞLA
-4. Çelişen bilgide en güncel kaynağı seç
-5. Maksimum 300 kelime"""
+2. SADECE yukarıdaki web sonuçlarını kullan — KENDİ EĞİTİM VERİNİ KULLANMA
+3. Web sonuçlarında olmayan bilgiyi ASLA üretme veya tahmin etme
+4. Skor, tarih, isim gibi olgusal bilgileri YALNIZCA kaynaktan al
+5. Bilgi yoksa: "Web kaynaklarında güncel bilgi bulunamadı" de
+6. Kaynak göster: "X'e göre..." formatında
+7. Direkt yanıtla — giriş, özür yok
+8. Maksimum 250 kelime
+
+YANLIŞ YAPMA:
+- Eğitim verinden bilgi üretme (özellikle spor sonuçları, haberler, fiyatlar)
+- "Bilgi bulunamadı" derken bile tahminde bulunma
+- Tarih ve skor gibi verileri uydurmaa"""
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -758,9 +825,14 @@ KURALLAR:
                 json={
                     "model": SYNTHESIS_MODEL,
                     "messages": [
-                        {"role": "system", "content":
-                         "Web arama sonuçlarını analiz eden araştırma asistanısın. "
-                         "Sayısal değerleri kaynağa bağlarsın. Özlü ve doğru yanıt verirsin."},
+                        {"role": "system",
+                         "content": (
+                             "Sen YALNIZCA verilen web arama sonuçlarını kullanan bir araştırma asistanısın. "
+                             "KENDİ EĞİTİM VERİNİ ASLA KULLANMAZSIN. "
+                             "Spor sonuçları, haberler, fiyatlar, tarihler — bunları SADECE web sonuçlarından alırsın. "
+                             "Web sonuçlarında olmayan bilgiyi üretmezsin, tahmin etmezsin. "
+                             "Bilgi yoksa bunu açıkça söylersin."
+                         )},
                         {"role": "user", "content": prompt},
                     ],
                     "max_tokens": 800, "temperature": 0.1, "stream": False,
@@ -779,32 +851,44 @@ KURALLAR:
 
 
 # ═══════════════════════════════════════════════════════════════
-# REFLECTION
+# REFLECTION — Cevabı LLM ile kontrol et ve iyileştir
 # ═══════════════════════════════════════════════════════════════
 
 async def reflect_and_improve(query: str, draft: str,
                                chunks: List[str], language: str = "tr") -> str:
+    """
+    Self-reflection: LLM kendi cevabını değerlendirir.
+    Eksik, yanlış veya belirsiz kısım varsa düzeltir.
+    API yoksa draft'ı aynen döndür.
+    """
     if not DEEPINFRA_API_KEY or not draft:
         return draft
 
     lang_rule = "TÜRKÇE yanıtla." if language == "tr" else "Respond in ENGLISH."
     context   = "\n\n".join(chunks[:3]) if chunks else ""
 
-    prompt = f"""Soru: {query}
+    prompt = f"""Aşağıda bir kullanıcı sorusu ve bir taslak cevap var.
+Taslak cevabı eleştirel gözle değerlendir:
 
-Taslak cevap:
+SORU: {query}
+
+TASLAK CEVAP:
 {draft}
 
-Kaynak (doğrulama):
-{context[:1500] if context else "(yok)"}
+KAYNAK İÇERİK (doğrulama için):
+{context[:2000] if context else "(kaynak yok)"}
 
-Değerlendir:
-- Soru yanıtlandı mı?
-- Sayısal değerler doğru mu?
-- Eksik kritik bilgi var mı?
+DEĞERLENDİRME KRİTERLERİ:
+1. Soru tam olarak yanıtlanmış mı?
+2. Sayısal değerler (tarih, fiyat, oran) doğru mu?
+3. Eksik önemli bilgi var mı?
+4. Çelişkili bir ifade var mı?
 
-Yeterli ise "ONAYLANDI" yaz sonra taslağı döndür.
-Değilse düzeltilmiş versiyonu yaz. {lang_rule} Max 350 kelime."""
+GÖREV:
+- Taslak yeterliyse: "ONAYLANDI" yaz, ardından taslağı aynen döndür.
+- Eksik/yanlış varsa: Düzeltilmiş versiyonu yaz. "ONAYLANDI" yazma.
+- {lang_rule}
+- Maksimum 350 kelime."""
 
     try:
         async with httpx.AsyncClient(timeout=25.0) as client:
@@ -815,7 +899,8 @@ Değilse düzeltilmiş versiyonu yaz. {lang_rule} Max 350 kelime."""
                 json={
                     "model": SYNTHESIS_MODEL,
                     "messages": [
-                        {"role": "system", "content": "Eleştirel AI editörüsün."},
+                        {"role": "system",
+                         "content": "Eleştirel düşünen, doğruluğa önem veren bir AI editörüsün."},
                         {"role": "user", "content": prompt},
                     ],
                     "max_tokens": 600, "temperature": 0.05, "stream": False,
@@ -824,138 +909,177 @@ Değilse düzeltilmiş versiyonu yaz. {lang_rule} Max 350 kelime."""
             result = resp.json().get("choices",[{}])[0].get("message",{}).get("content","")
             if result:
                 if result.startswith("ONAYLANDI"):
+                    # Taslak onaylandı — temizle ve döndür
                     clean = result.replace("ONAYLANDI","").strip()
-                    print(f"[REFLECT] ✅ Onaylandı")
+                    print(f"[REFLECT] ✅ Onaylandı ({len(draft)} chars)")
                     return clean if clean else draft
                 else:
-                    print(f"[REFLECT] ✅ İyileştirildi")
+                    print(f"[REFLECT] ✅ İyileştirildi ({len(draft)} → {len(result)} chars)")
                     return result
     except Exception as e:
-        print(f"[REFLECT] ❌ {e}")
+        print(f"[REFLECT] ❌ {e} — draft kullanılıyor")
 
     return draft
 
 
 # ═══════════════════════════════════════════════════════════════
-# DEEP SEARCH PIPELINE — 6 Adım
+# DEEP SEARCH PIPELINE
 # ═══════════════════════════════════════════════════════════════
 
 async def deep_search_pipeline(req: DeepSearchRequest) -> Dict:
+    """
+    Agent-level Deep Search — Gemini benzeri çoklu kaynak
+    1. SEARCH    — Paralel çoklu sorgu
+    2. SCRAPE    — Crawl4AI ile paralel sayfa çekme
+    3. CHUNK     — Sliding window
+    4. RERANK    — BGE Reranker
+    5. GENERATE  — Sadece web verisi kullan
+    6. REFLECT   — Doğrulama
+    """
     t0        = time.time()
-    cache_key = f"ds_{req.query.lower().strip()}_{req.num_results}_{req.fetch_pages}"
+    cache_key = f"ds_{req.query.lower().strip()}"
     cached    = await deep_cache.get(cache_key)
     if cached:
+        print(f"[DEEP SEARCH] Cache hit")
         return cached
 
-    print(f"\n{'━'*60}\n[DEEP SEARCH] '{req.query}'\n{'━'*60}")
+    print(f"\n{chr(9473)*60}\n[DEEP SEARCH] '{req.query}'\n{chr(9473)*60}")
 
-    # 1. SEARCH
-    sr = await async_web_search(req.query, req.num_results)
-    if not sr.get("success"):
+    # ── 1. SEARCH — Paralel çoklu sorgu ─────────────────────
+    search_queries = [req.query]
+    is_tr = any(c in req.query for c in "çğışöüÇĞİŞÖÜ")
+    if is_tr:
+        search_queries.append(f"{req.query} son dakika güncel")
+    else:
+        search_queries.append(f"{req.query} latest 2025 2026")
+
+    search_tasks = [async_web_search(q, req.num_results) for q in search_queries[:2]]
+    search_results_list = await asyncio.gather(*search_tasks, return_exceptions=True)
+
+    seen_urls = set()
+    results   = []
+    provider  = "unknown"
+    for sr in search_results_list:
+        if isinstance(sr, dict) and sr.get("success"):
+            provider = sr.get("data", {}).get("provider", provider)
+            for r in sr.get("data", {}).get("results", []):
+                url = r.get("url", "")
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    results.append(r)
+
+    if not results:
         return {"success": False, "error": "Arama başarısız", "query": req.query}
-    results  = sr.get("data", {}).get("results", [])
-    provider = sr.get("data", {}).get("provider", "?")
-    print(f"[DEEP SEARCH] 1/6 SEARCH ✅ {len(results)} sonuç ({provider})")
+    print(f"[DEEP SEARCH] 1/6 SEARCH ✅ {len(results)} unique sonuç ({provider})")
 
-    # 2. SCRAPE
+    # ── 2. SCRAPE — Paralel sayfa çekme ─────────────────────
     page_contents = []
-    if results and req.fetch_pages > 0:
-        urls    = [r.get("url","") for r in results[:req.fetch_pages] if r.get("url")]
-        fetched = await asyncio.gather(*[fetch_page_content(u) for u in urls],
-                                       return_exceptions=True)
-        for item, text in zip(results[:req.fetch_pages], fetched):
-            if isinstance(text, str) and text:
-                page_contents.append({"url": item.get("url",""),
-                                      "title": item.get("title",""), "content": text})
-    print(f"[DEEP SEARCH] 2/6 SCRAPE ✅ {len(page_contents)}/{req.fetch_pages} sayfa")
+    fetch_count   = min(req.fetch_pages + 1, len(results), 5)
+    if results and fetch_count > 0:
+        urls    = [r.get("url","") for r in results[:fetch_count] if r.get("url")]
+        fetched = await asyncio.gather(*[fetch_page_content(u) for u in urls], return_exceptions=True)
+        for item, text in zip(results[:fetch_count], fetched):
+            if isinstance(text, str) and len(text) > 200:
+                page_contents.append({
+                    "url":     item.get("url",""),
+                    "title":   item.get("title",""),
+                    "content": text,
+                })
+    print(f"[DEEP SEARCH] 2/6 SCRAPE ✅ {len(page_contents)}/{fetch_count} sayfa")
 
-    # 3. CHUNK
+    # ── 3. CHUNK ─────────────────────────────────────────────
     all_chunks: List[str] = []
     for pc in page_contents:
-        tagged = [f"[Kaynak: {pc['title'][:60]}]\n{c}"
-                  for c in chunk_text(pc["content"], CHUNK_SIZE, CHUNK_OVERLAP)]
+        chunks = chunk_text(pc["content"], CHUNK_SIZE, CHUNK_OVERLAP)
+        tagged = [f"[Kaynak: {pc['title'][:50]} | {pc['url'][:40]}]\n{c}" for c in chunks]
         all_chunks.extend(tagged)
     for r in results[:req.num_results]:
-        snippet = r.get("content","")
+        snippet = r.get("content", "")
         if snippet and len(snippet) > 80:
-            all_chunks.append(f"[Kaynak: {r.get('title','')[:60]}]\n{snippet}")
+            all_chunks.append(f"[Kaynak: {r.get('title','')[:50]}]\n{snippet}")
     print(f"[DEEP SEARCH] 3/6 CHUNK ✅ {len(all_chunks)} chunk")
 
-    # 4. RERANK
+    # ── 4. RERANK ────────────────────────────────────────────
     top_chunks: List[str] = []
     if all_chunks:
-        top_chunks = await rerank_chunks(req.query, all_chunks, TOP_CHUNKS)
+        top_chunks = await rerank_chunks(req.query, all_chunks, min(TOP_CHUNKS + 2, len(all_chunks)))
     print(f"[DEEP SEARCH] 4/6 RERANK ✅ {len(top_chunks)} chunk seçildi")
 
-    # 5. GENERATE
+    # ── 5. GENERATE ──────────────────────────────────────────
     synthesis = None
     if req.synthesize:
-        top_pc = [{"title":"","url":"","content":"\n\n".join(top_chunks)}] if top_chunks else page_contents
+        top_pc = [{"title":"Top Sources","url":"","content":"\n\n---\n\n".join(top_chunks)}] if top_chunks else page_contents
         synthesis = await synthesize_with_llm(req.query, results, top_pc, req.language, req.context_hint)
         print(f"[DEEP SEARCH] 5/6 GENERATE ✅ {len(synthesis or '')} chars")
 
-    # 6. REFLECT
-    if synthesis and req.synthesize:
+    # ── 6. REFLECT ───────────────────────────────────────────
+    if synthesis and req.synthesize and DEEPINFRA_API_KEY:
         synthesis = await reflect_and_improve(req.query, synthesis, top_chunks, req.language)
         print(f"[DEEP SEARCH] 6/6 REFLECT ✅ Final: {len(synthesis)} chars")
 
     elapsed = round(time.time() - t0, 2)
-    print(f"[DEEP SEARCH] Toplam: {elapsed}s\n")
+    print(f"[DEEP SEARCH] ✅ {elapsed}s | {len(results)} kaynak | {len(page_contents)} sayfa\n")
 
     result = {
-        "success": True, "tool_used": "deep_search",
-        "query": req.query, "provider": provider,
+        "success": True, "tool_used": "deep_search", "query": req.query, "provider": provider,
         "data": {
             "synthesis":       synthesis,
             "search_results":  [{"title": r.get("title",""), "url": r.get("url",""),
-                                  "snippet": r.get("content","")[:200]}
-                                 for r in results[:req.num_results]],
+                                  "snippet": r.get("content","")[:200]} for r in results[:req.num_results]],
             "pages_fetched":   len(page_contents),
+            "sources_count":   len(results),
             "elapsed_seconds": elapsed,
         },
     }
     await deep_cache.set(cache_key, result)
     return result
 
-
 # ═══════════════════════════════════════════════════════════════
-# ENDPOINTS
+# API ENDPOINTS
 # ═══════════════════════════════════════════════════════════════
 
 @app.get("/")
 async def root():
     return {
         "service": "Skylight Smart Tools",
-        "version": "8.0.0",
-        "page_fetching": {
-            "layer_1": f"Crawl4AI ({'aktif: '+CRAWL4AI_URL if CRAWL4AI_URL else 'hazır'})",
-            "layer_2": "Direkt scrape (fallback)",
+        "version": "7.1.0",
+        "endpoints": {
+            "POST /unified":     "Canlı veri — kur, hava, kripto, saat, haberler, web arama",
+            "POST /deep_search": "Araştırma — web arama + Jina.ai + LLM sentezi",
+            "POST /search":      "Direkt web arama",
+            "GET  /fetch":       "Tek URL içeriği çek",
         },
-        "search": {
+        "page_fetching": {
+            "layer_1": "Jina.ai Reader (aktif — ücretsiz, sınırsız)",
+            "layer_2": f"Crawl4AI ({'aktif: '+CRAWL4AI_URL if CRAWL4AI_URL else 'hazır — CRAWL4AI_URL set edilince'})",
+            "layer_3": "Direkt scrape (son çare)",
+        },
+        "search_providers": {
             "searxng":    bool(SEARXNG_URL),
             "brave":      bool(BRAVE_API_KEY),
             "duckduckgo": True,
         },
-        "llm": bool(DEEPINFRA_API_KEY),
-        "reranker": RERANKER_URL,
+        "llm_synthesis": bool(DEEPINFRA_API_KEY),
     }
 
 
 @app.get("/health")
 async def health():
     return {
-        "status":         "healthy",
-        "version":        "8.0.0",
-        "crawl4ai":       CRAWL4AI_URL or "not_configured",
-        "crawl4ai_token": bool(CRAWL4AI_TOKEN),
-        "searxng":        SEARXNG_URL or "not_configured",
-        "reranker":       RERANKER_URL,
-        "llm":            bool(DEEPINFRA_API_KEY),
+        "status":   "healthy",
+        "version":  "7.1.0",
+        "jina":     "active",
+        "crawl4ai": CRAWL4AI_URL or "not_configured",
+        "searxng":  SEARXNG_URL  or "not_configured",
     }
 
 
 @app.post("/unified")
 async def unified_endpoint(request: UnifiedRequest):
+    """
+    Ana endpoint — chat servisi bu endpointi çağırır.
+    tool_type gönderilmezse auto_detect_tool() ile belirlenir.
+    """
     query     = request.query
     tool_type = request.tool_type or auto_detect_tool(query)
 
@@ -966,28 +1090,35 @@ async def unified_endpoint(request: UnifiedRequest):
     try:
         if tool_type == ToolType.TIME:
             result = get_time()
+
         elif tool_type == ToolType.WEATHER:
             result = get_weather(query)
+
         elif tool_type == ToolType.CURRENCY:
             fc, tc = _extract_currency_pair(query)
             result = get_currency(fc, tc)
+
         elif tool_type == ToolType.NEWS:
             topic  = re.sub(r'\b(haber|haberleri|news|son|güncel)\b', '', query).strip()
             result = get_news(topic if len(topic) > 2 else None)
+
         elif tool_type == ToolType.CRYPTO:
             result = get_crypto(_extract_coin(query))
-        elif tool_type in (ToolType.PRICE_SEARCH, ToolType.WEB_SEARCH):
+
+        elif tool_type == ToolType.PRICE_SEARCH:
             result = sync_web_search(query, 5)
-        else:
+
+        else:  # WEB_SEARCH
             result = sync_web_search(query, 5)
 
         result["tool_used"] = tool_type.value
         result["query"]     = query
 
+        # Log
         data    = result.get("data", {})
         preview = (data.get("formatted") or data.get("short") or
-                   str(len(data.get('results', data.get('articles', [])))) + " items")
-        print(f"[UNIFIED] ✅ success={result.get('success')} | {str(preview)[:80]}")
+                   f"{len(data.get('results', data.get('articles', [])))} items")
+        print(f"[UNIFIED] ✅ success={result.get('success')} | {preview}")
         return result
 
     except Exception as e:
@@ -998,11 +1129,13 @@ async def unified_endpoint(request: UnifiedRequest):
 
 @app.post("/deep_search")
 async def deep_search_endpoint(request: DeepSearchRequest):
+    """Gateway bu endpointi çağırır — araştırma sorgular için."""
     return await deep_search_pipeline(request)
 
 
 @app.post("/search")
 async def search_endpoint(request: WebSearchRequest):
+    """Direkt web arama."""
     r = sync_web_search(request.query, request.num_results)
     r["tool_used"] = "web_search"
     return r
@@ -1010,6 +1143,7 @@ async def search_endpoint(request: WebSearchRequest):
 
 @app.get("/fetch")
 async def fetch_endpoint(url: str):
+    """Tek URL içeriği çek — test için. Örnek: GET /fetch?url=https://example.com"""
     if not url.startswith(("http://","https://")):
         return {"success": False, "error": "Geçersiz URL"}
     content = await fetch_page_content(url)
@@ -1019,15 +1153,18 @@ async def fetch_endpoint(url: str):
     return {"success": False, "url": url, "error": "İçerik alınamadı"}
 
 
+# ═══════════════════════════════════════════════════════════════
+# RUN
+# ═══════════════════════════════════════════════════════════════
+
 if __name__ == "__main__":
     import uvicorn
-    print("\n" + "="*60)
-    print("SKYLIGHT SMART TOOLS — v8.0")
-    print("="*60)
-    print(f"Search:   SearXNG({'ON' if SEARXNG_URL else 'OFF'}) | "
+    print("\n" + "="*70)
+    print("SKYLIGHT SMART TOOLS — v7.1")
+    print("="*70)
+    print(f"Search:  SearXNG({'ON' if SEARXNG_URL else 'OFF'}) | "
           f"Brave({'ON' if BRAVE_API_KEY else 'OFF'}) | DDG(ON)")
-    print(f"Scraping: Crawl4AI({'ON' if CRAWL4AI_URL else 'OFF'}) | Direct(ON)")
-    print(f"LLM:      {'ON — '+SYNTHESIS_MODEL[:30] if DEEPINFRA_API_KEY else 'OFF'}")
-    print(f"Reranker: {RERANKER_URL}")
-    print("="*60 + "\n")
+    print(f"Pages:   Jina.ai(ON) | Crawl4AI({'ON' if CRAWL4AI_URL else 'HAZIR'})")
+    print(f"LLM:     {'ON — '+SYNTHESIS_MODEL if DEEPINFRA_API_KEY else 'OFF'}")
+    print("="*70 + "\n")
     uvicorn.run(app, host="0.0.0.0", port=8081, workers=4)
