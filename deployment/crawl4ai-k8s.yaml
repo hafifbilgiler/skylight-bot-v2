@@ -1,0 +1,89 @@
+# ═══════════════════════════════════════════════════════════════
+# CRAWL4AI — Lokal web scraper (Jina.ai alternatifi)
+# JS render, markdown çıktı, SPA desteği
+# ═══════════════════════════════════════════════════════════════
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crawl4ai
+  namespace: skylight-bot-v2
+  labels:
+    app: crawl4ai
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: crawl4ai
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: crawl4ai
+    spec:
+      containers:
+        - name: crawl4ai
+          image: unclecode/crawl4ai:basic
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 11235
+              name: http
+          env:
+            - name: MAX_CONCURRENT_TASKS
+              value: "5"
+            - name: CRAWL4AI_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: crawl4ai-secret
+                  key: api_token
+                  optional: true
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 11235
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 11235
+            initialDelaySeconds: 20
+            periodSeconds: 10
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: crawl4ai
+  namespace: skylight-bot-v2
+  labels:
+    app: crawl4ai
+spec:
+  type: ClusterIP
+  selector:
+    app: crawl4ai
+  ports:
+    - port: 11235
+      targetPort: 11235
+      protocol: TCP
+      name: http
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: crawl4ai-secret
+  namespace: skylight-bot-v2
+type: Opaque
+stringData:
+  api_token: "skylight-crawl4ai-2026"
