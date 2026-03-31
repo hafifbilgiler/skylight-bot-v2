@@ -411,7 +411,7 @@ async def get_live_data(
                         "query":        enriched_query,
                         "num_results":  6,
                         "fetch_pages":  3,
-                        "synthesize":   True,
+                        "synthesize":   False,  # LLM sentez YOK — ham sonuçlar gelsin
                         "language":     "tr",
                     },
                 )
@@ -423,15 +423,47 @@ async def get_live_data(
                 if not data.get("success"):
                     return None
 
-                synthesis = data.get("data", {}).get("synthesis", "")
-                if synthesis:
-                    result = (
-                        f"[CANLI VERİ — BU BİLGİYİ KULLAN, EĞİTİM VERİNİ KULLANMA]\n"
-                        f"{synthesis}\n"
-                        f"[/CANLI VERİ]"
-                    )
-                    print(f"[DEEP SEARCH] ✅ {len(synthesis)} chars")
-                    return result
+                d = data.get("data", {})
+                synthesis = d.get("synthesis", "")
+                search_results = d.get("search_results", [])
+                pages_fetched  = d.get("pages_fetched", 0)
+                
+                # Ham arama sonuçlarını chat LLM'e direkt ver (Gemini grounding gibi)
+                # Synthesis LLM yok — chat LLM kendisi sentezliyor
+                parts = [
+                    "[WEB ARAŞTIRMA SONUÇLARI — SADECE BUNLARI KULLAN]",
+                    f"Sorgu: {enriched_query}",
+                    f"Kaynak sayısı: {len(search_results)} | Okunan sayfa: {pages_fetched}",
+                    "",
+                ]
+                
+                # Synthesis varsa ekle (ham format)
+                if synthesis and len(synthesis) > 50:
+                    parts.append("## Bulunan Bilgiler:")
+                    parts.append(synthesis)
+                
+                # Arama sonuçlarını da ekle
+                if search_results:
+                    parts.append("")
+                    parts.append("## Kaynaklar:")
+                    for i, r in enumerate(search_results[:6], 1):
+                        title   = r.get("title", "")[:80]
+                        snippet = r.get("snippet", r.get("content", ""))[:300]
+                        url     = r.get("url", "")
+                        if title and snippet:
+                            parts.append(f"[{i}] **{title}**")
+                            parts.append(f"{snippet}")
+                            parts.append(f"Kaynak: {url}")
+                            parts.append("")
+                
+                parts.append("[/WEB ARAŞTIRMA SONUÇLARI]")
+                parts.append("")
+                parts.append("Yukarıdaki web kaynaklarını kullanarak soruyu yanıtla.")
+                parts.append("Kaynaklarda olmayan bilgiyi ekleme.")
+                
+                result = "\n".join(parts)
+                print(f"[DEEP SEARCH] ✅ {len(search_results)} kaynak → chat LLM'e verildi")
+                return result
         except httpx.TimeoutException:
             print(f"[DEEP SEARCH] Timeout — fallback yok")
         except Exception as e:
