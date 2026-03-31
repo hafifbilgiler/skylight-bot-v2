@@ -252,16 +252,65 @@ def _detect_live_type(
     query: str,
     mode: str,
     router_decision: Dict = None,
+    history: List[Dict] = None,
 ) -> Optional[str]:
     """
-    Akıllı detection — Router LLM kararına öncelik ver.
+    Akıllı detection — Router + bağlam.
     
     Öncelik sırası:
     1. Router `needs_realtime=true` dedi → web'e git
-    2. Keyword listesi → anlık API (kur, hava, kripto)
-    3. Router yoksa → keyword ile deep_search karar
-    4. Hiçbiri → None (eğitim verisi kullan)
+    2. Kısa mesaj + önceki tool aynıysa → aynı tool
+    3. Keyword listesi → anlık API
+    4. Hiçbiri → None
     """
+    q     = query.lower().strip()
+    words = q.split()
+
+    # ── Kısa mesaj bağlam analizi ─────────────────────────
+    # "berlinde", "londonda", "euronun" gibi tek kelime takipler
+    if len(words) <= 3 and history:
+        # Son bot mesajından hangi tool kullanıldı?
+        last_live_tool = None
+        last_city      = None
+        for msg in reversed(history[-6:]):
+            c = (msg.get("content") or "").lower()
+            if msg.get("role") == "assistant":
+                if any(x in c for x in ["°c", "sıcaklık", "hava", "rüzgar", "nem"]):
+                    last_live_tool = "weather"
+                elif any(x in c for x in ["₺", "try", "usd", "eur", "kur", "dolar", "euro"]):
+                    last_live_tool = "currency"
+                elif any(x in c for x in ["btc", "bitcoin", "kripto", "$"]):
+                    last_live_tool = "crypto"
+                if last_live_tool:
+                    break
+            elif msg.get("role") == "user":
+                # Önceki şehri bul
+                for city in ["istanbul","ankara","berlin","london","paris","izmir","antalya"]:
+                    if city in c:
+                        last_city = city
+                        break
+
+        # Önceki weather ise ve yeni şehir var → weather devam
+        if last_live_tool == "weather":
+            known_cities = ["istanbul","ankara","izmir","antalya","bursa","berlin",
+                           "london","paris","tokyo","dubai","amsterdam","madrid","new york"]
+            for city in known_cities:
+                if city in q:
+                    print(f"[DETECT] Bağlam: weather devam → {city}")
+                    return "weather"
+            # Şehir suffix'i varsa da yakala: "berlinde", "londonda"
+            import re
+            m = re.search(r"\b(\w{3,})(da|de|ta|te)\b", q)
+            if m:
+                print(f"[DETECT] Bağlam: şehir suffix → weather")
+                return "weather"
+
+        # Önceki currency ise ve döviz adı var → currency devam
+        if last_live_tool == "currency":
+            if any(k in q for k in ["dolar","euro","sterlin","btc","bitcoin","frank","yen"]):
+                print(f"[DETECT] Bağlam: currency devam")
+                return "currency"
+    
     q = query.lower()
 
     # ── Router kararı varsa öncelikli kullan ──────────────
@@ -346,7 +395,7 @@ async def get_live_data(
         live_type = router_tool
         print(f"[LIVE DATA] Router tool → {live_type}")
     else:
-        live_type = _detect_live_type(query, mode, router_decision)
+        live_type = _detect_live_type(query, mode, router_decision, history or [])
     
     if not live_type:
         return None
@@ -1515,7 +1564,7 @@ async def chat(request: ChatRequest):
                 )
 
             # ── Deep search adımları — gerçek pipeline çalışırken göster ──
-            live_type_check = _detect_live_type(request.prompt, request.mode or "assistant")
+            live_type_check = _detect_live_type(request.prompt, request.mode or "assistant", None, request.history or [])
             is_deep = live_type_check == "deep_search"
             is_tr   = any(c in request.prompt for c in "çğışöüÇĞİŞÖÜ") or True
 
@@ -1622,7 +1671,7 @@ async def chat_sse(request: ChatRequest):
     async def sse_generator():
         try:
             # ── Deep search mi? ──────────────────────────────────
-            live_type = _detect_live_type(prompt, mode)
+            live_type = _detect_live_type(prompt, mode, None, history or [])
             is_deep   = live_type == "deep_search"
             is_tr     = any(c in prompt for c in "çğışöüÇĞİŞÖÜ") or True
 
