@@ -927,90 +927,82 @@ async def synthesize_with_llm(
     context_hint:   Optional[str] = None,
 ) -> str:
     """
-    Güvenli sentez:
-    1. LLM ile dene — ama sıkı kontrol et
-    2. Hallucination tespit ederse → direkt web sonuçlarını döndür
-    3. LLM yoksa → direkt web sonuçları
+    Web sonuçlarını direkt formatla — LLM synthesis kaldırıldı.
+    Neden: LLM web sonuçlarını görmezden gelip eğitim verisinden üretiyordu.
+    Şimdi: Ham web verisi → temiz format → kullanıcıya.
     """
-    # Ham web verisi her zaman hazır
-    raw_output = _format_results_directly(query, search_results, page_contents, language)
+    return _format_web_results(query, search_results, page_contents, language)
 
-    if not DEEPINFRA_API_KEY:
-        return raw_output
 
-    # Sadece spesifik olgusal verileri içeren kısa snippetleri LLM'e ver
-    # Sayfa içeriğinin sadece en alakalı ilk 300 kelimesini al
-    best_content = ""
+def _format_web_results(
+    query: str,
+    search_results: List[dict],
+    page_contents: List[dict],
+    language: str = "tr",
+) -> str:
+    """Web sonuçlarını temiz markdown formatında döndür."""
+    lines = []
+    seen_domains = set()
+
+    # Sayfa içerikleri — Crawl4AI'dan gelen tam içerik
     if page_contents:
-        best_content = page_contents[0].get("content", "")[:1500]
-    
-    snippets = "\n".join([
-        f"KAYNAK {i+1}: {r.get('title','')}\n{r.get('content','')[:400]}"
-        for i, r in enumerate(search_results[:4])
-    ])
+        for pc in page_contents[:3]:
+            url   = pc.get("url", "")
+            title = pc.get("title", "")[:100]
+            text  = pc.get("content", "")
 
-    lang_rule = "Türkçe yanıtla." if language == "tr" else "Respond in English."
-    ctx = f" (Bağlam: {context_hint})" if context_hint else ""
+            # Domain tekrar kontrolü
+            try:
+                from urllib.parse import urlparse
+                domain = urlparse(url).netloc
+            except:
+                domain = url[:30]
+            if domain in seen_domains:
+                continue
+            seen_domains.add(domain)
 
-    prompt = f"""{lang_rule}
+            if not text or len(text) < 100:
+                continue
 
-Soru: {query}{ctx}
+            # En alakalı paragrafı bul
+            q_words = set(query.lower().split())
+            paragraphs = [p.strip() for p in text.replace('\n\n', '\n').split('\n')
+                         if len(p.strip()) > 60]
 
-Aşağıdaki web kaynaklarından KOPYALAYARAK yanıtla.
-Kendi bilgini EKLEME. Kaynaklarda yoksa "Bulunamadı" de.
+            if paragraphs:
+                # Sorguyla en çok örtüşen paragrafı seç
+                best = max(
+                    paragraphs[:15],
+                    key=lambda p: sum(1 for w in q_words if w.lower() in p.lower()),
+                    default=paragraphs[0]
+                )
+                lines.append(f"**{title}**")
+                lines.append(best[:600])
+                lines.append(f"*Kaynak: {url}*")
+                lines.append("")
 
-{snippets}
+    # Arama snippet'leri — doğrudan göster
+    if search_results:
+        if lines:
+            lines.append("---")
+        for r in search_results[:5]:
+            title   = r.get("title", "")[:100]
+            snippet = r.get("content", "")[:400].strip()
+            url     = r.get("url", "")
+            if not snippet or len(snippet) < 50:
+                continue
+            lines.append(f"• **{title}**")
+            lines.append(f"  {snippet}")
+            if url:
+                lines.append(f"  *{url[:80]}*")
+            lines.append("")
 
-{"SAYFA İÇERİĞİ:" + chr(10) + best_content if best_content else ""}
+    if not lines:
+        return "Web kaynaklarında güncel bilgi bulunamadı."
 
-Kurallar:
-- Sadece yukarıdaki kaynaklardan bilgi kullan
-- Olgusal veri (skor, tarih, isim, fiyat) için KAYNAKTAN kopyala
-- Kaynaklarda yoksa: "Web kaynaklarında bu bilgi bulunamadı" yaz
-- [placeholder] içeren yanıt YAZMA
-- 200 kelimeden kısa tut"""
-
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                f"{DEEPINFRA_BASE_URL}/chat/completions",
-                headers={"Content-Type": "application/json",
-                         "Authorization": f"Bearer {DEEPINFRA_API_KEY}"},
-                json={
-                    "model":    SYNTHESIS_MODEL,
-                    "messages": [
-                        {"role": "system", "content":
-                         "Sen bir web araştırma asistanısın. "
-                         "SADECE sana verilen kaynaklardan bilgi kullanırsın. "
-                         "Kaynaklarda olmayan hiçbir olgusal bilgiyi (skor, tarih, isim, fiyat) üretmezsin. "
-                         "Eğer bilgi kaynaklarda yoksa 'Bulunamadı' dersin."},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "max_tokens": 500, "temperature": 0.0, "stream": False,
-                })
-
-        result = resp.json().get("choices",[{}])[0].get("message",{}).get("content","")
-
-        if not result:
-            print("[LLM] Boş yanıt → raw output")
-            return raw_output
-
-        # Hallucination kontrolü
-        if _has_hallucination(result):
-            print(f"[LLM] ⚠️ Hallucination tespit edildi → raw output")
-            return raw_output
-
-        print(f"[LLM] ✅ Sentez: {len(result)} chars")
-        return result
-
-    except Exception as e:
-        print(f"[LLM] ❌ {e} → ham web sonuçları gösteriliyor")
-        return raw_output
+    return "\n".join(lines)
 
 
-# ═══════════════════════════════════════════════════════════════
-# REFLECTION — Cevabı LLM ile kontrol et ve iyileştir
-# ═══════════════════════════════════════════════════════════════
 
 async def reflect_and_improve(query: str, draft: str,
                                chunks: List[str], language: str = "tr") -> str:
