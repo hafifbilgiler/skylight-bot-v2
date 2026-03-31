@@ -1073,7 +1073,6 @@ async def build_code_messages(
 
     # ── REASONING LAYER — Code mode intent ───────────────────────
     reasoning_hint = build_reasoning_hint(user_prompt, history or [], "code")
-    system_content = reasoning_hint + "\n\n" + system_content
     print(f"[INTENT/CODE] {reasoning_hint.split(chr(10))[0]}")
     # ─────────────────────────────────────────────────────────────
 
@@ -1082,7 +1081,7 @@ async def build_code_messages(
     intent_str   = classify_intent(user_prompt, history or [], "code").get("intent", "")
     task         = build_task(user_prompt, intent_str, workspace, history or [])
     task_hint    = task_to_prompt_hint(task)
-    system_content = task_hint + "\n\n" + system_content
+    # task_hint system prompt'a eklenmez — history zaten bağlamı taşıyor
     # Task'ı Redis'e kaydet — follow-up'larda bağlam korunur
     if conversation_id:
         asyncio.create_task(set_task(conversation_id, task))
@@ -1352,9 +1351,8 @@ async def build_messages(
     messages       = []
     system_content = config["system_prompt"]
 
-    # ── REASONING LAYER — Intent classification (LOCAL, 0ms) ─────
+    # ── Intent log (LOCAL, 0ms) — sadece loglama, prompt'a ekleme
     reasoning_hint = build_reasoning_hint(user_prompt, history or [], mode)
-    system_content = reasoning_hint + "\n\n" + system_content
     print(f"[INTENT] {reasoning_hint.split(chr(10))[0]}")
     # ─────────────────────────────────────────────────────────────
 
