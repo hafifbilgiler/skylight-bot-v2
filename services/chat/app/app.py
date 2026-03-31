@@ -267,48 +267,48 @@ def _detect_live_type(
     words = q.split()
 
     # ── Kısa mesaj bağlam analizi ─────────────────────────
-    # "berlinde", "londonda", "euronun" gibi tek kelime takipler
-    if len(words) <= 3 and history:
-        # Son bot mesajından hangi tool kullanıldı?
+    if len(words) <= 4 and history:
+        # Son asistan mesajından tool tipini anla
         last_live_tool = None
-        last_city      = None
-        for msg in reversed(history[-6:]):
+        for msg in reversed(history[-8:]):
+            if msg.get("role") != "assistant":
+                continue
             c = (msg.get("content") or "").lower()
-            if msg.get("role") == "assistant":
-                if any(x in c for x in ["°c", "sıcaklık", "hava", "rüzgar", "nem"]):
-                    last_live_tool = "weather"
-                elif any(x in c for x in ["₺", "try", "usd", "eur", "kur", "dolar", "euro"]):
-                    last_live_tool = "currency"
-                elif any(x in c for x in ["btc", "bitcoin", "kripto", "$"]):
-                    last_live_tool = "crypto"
-                if last_live_tool:
-                    break
-            elif msg.get("role") == "user":
-                # Önceki şehri bul
-                for city in ["istanbul","ankara","berlin","london","paris","izmir","antalya"]:
-                    if city in c:
-                        last_city = city
-                        break
+            if any(x in c for x in ["°c", "sıcaklık", "hissedilen", "rüzgar", "nem %"]):
+                last_live_tool = "weather"
+                break
+            if any(x in c for x in ["1 usd", "1 eur", "try =", "₺", "dolar kuru", "euro kuru"]):
+                last_live_tool = "currency"
+                break
+            if any(x in c for x in ["bitcoin", "btc", "ethereum", "kripto", "$"]):
+                last_live_tool = "crypto"
+                break
 
-        # Önceki weather ise ve yeni şehir var → weather devam
         if last_live_tool == "weather":
-            known_cities = ["istanbul","ankara","izmir","antalya","bursa","berlin",
-                           "london","paris","tokyo","dubai","amsterdam","madrid","new york"]
-            for city in known_cities:
-                if city in q:
-                    print(f"[DETECT] Bağlam: weather devam → {city}")
+            # Bilinen şehirleri kontrol et — suffix olmadan da yakala
+            known = ["istanbul","ankara","izmir","antalya","bursa","adana","konya",
+                     "berlin","london","paris","tokyo","dubai","amsterdam","madrid",
+                     "rome","vienna","moscow","beijing","new york","los angeles",
+                     "zurich","geneva","barcelona","milan","stockholm","oslo","helsinki"]
+            # q'da şehir var mı? (ekleri de kaldırarak)
+            q_clean = q
+            for suf in ["da","de","ta","te","'da","'de","'ta","'te",
+                        "nin","nın","nun","nün","in","ın","un","ün"]:
+                q_clean = q_clean.replace(suf, " ").strip()
+            for city in known:
+                if city in q or city in q_clean:
+                    print(f"[DETECT] Bağlam weather → {city}")
                     return "weather"
-            # Şehir suffix'i varsa da yakala: "berlinde", "londonda"
-            import re
-            m = re.search(r"\b(\w{3,})(da|de|ta|te)\b", q)
-            if m:
-                print(f"[DETECT] Bağlam: şehir suffix → weather")
+            # "peki" "ya" "ya da" ile başlayan kısa soru → devam
+            if any(q.startswith(w) for w in ["peki","ya ","ya da","orası","orada"]):
+                print(f"[DETECT] Bağlam weather devam (peki/ya)")
                 return "weather"
 
-        # Önceki currency ise ve döviz adı var → currency devam
         if last_live_tool == "currency":
-            if any(k in q for k in ["dolar","euro","sterlin","btc","bitcoin","frank","yen"]):
-                print(f"[DETECT] Bağlam: currency devam")
+            currency_words = ["dolar","euro","sterlin","gbp","usd","eur","btc",
+                              "bitcoin","frank","yen","chf","jpy"]
+            if any(k in q for k in currency_words):
+                print(f"[DETECT] Bağlam currency devam")
                 return "currency"
     
     q = query.lower()
