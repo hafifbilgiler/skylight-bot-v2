@@ -380,6 +380,7 @@ async def get_live_data(
     mode: str = "assistant",
     router_tool: str = None,
     router_decision: Dict = None,
+    history: List[Dict] = None,
 ) -> Optional[str]:
     """
     1. Router LLM kararı varsa → öncelikli kullan
@@ -1110,7 +1111,7 @@ async def build_code_messages(
         system_content += "\n\n" + "\n".join(parts)
 
     # ── Canlı veri (code modda da çalışır) ──────────────────────
-    live_context = await get_live_data(user_prompt, mode="code")
+    live_context = await get_live_data(user_prompt, mode="code", history=history or [])
     if live_context:
         system_content += f"\n\n{live_context}"
 
@@ -1691,7 +1692,7 @@ async def chat_sse(request: ChatRequest):
                     await asyncio.sleep(0.05)
 
                 # Live data çek
-                live_context = await get_live_data(prompt, mode)
+                live_context = await get_live_data(prompt, mode, history=history or [])
 
                 # Adım 4'ü tamamla
                 yield sse_event("step", {
@@ -1712,7 +1713,7 @@ async def chat_sse(request: ChatRequest):
                 })
 
             else:
-                live_context = await get_live_data(prompt, mode)
+                live_context = await get_live_data(prompt, mode, history=history or [])
 
                 # Normal thinking steps
                 show_thinking = should_show_thinking(prompt, mode, request.history or [])
