@@ -54,7 +54,7 @@ spec:
               path: /health
               port: 8087
             initialDelaySeconds: 60   # Model yüklenene kadar bekle
-            periodSeconds: 30
+            periodSeconds: 60
             failureThreshold: 3
 
           readinessProbe:
@@ -62,7 +62,7 @@ spec:
               path: /health
               port: 8087
             initialDelaySeconds: 45
-            periodSeconds: 15
+            periodSeconds: 60
             failureThreshold: 3
 
 ---
