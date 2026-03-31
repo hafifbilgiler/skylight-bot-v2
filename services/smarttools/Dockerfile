@@ -15,7 +15,7 @@ RUN pip install --no-cache-dir \
     pytz==2024.1
 
 COPY smart_tools.py /app/smart_tools_service.py
-COPY search_engine_v3.py /app/search_engine_v3.py
+COPY search_engine.py /app/search_engine_v3.py
 
 EXPOSE 8081
 
