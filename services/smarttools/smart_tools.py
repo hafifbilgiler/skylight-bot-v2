@@ -81,7 +81,7 @@ MAX_PAGE_CHARS   = 8000   # Crawl4AI daha temiz çıktı verir, daha fazla alabi
 CHUNK_SIZE       = 200    # Kelime — reranker 512 token sınırı var, küçük chunk daha iyi
 CHUNK_OVERLAP    = 30     # Örtüşme
 TOP_CHUNKS       = 8      # Rerank sonrası kaç chunk — küçük chunk, daha fazla alınabilir
-CRAWL4AI_TIMEOUT = 20
+CRAWL4AI_TIMEOUT = 10  # Timeout düşürüldü — yavaş sayfaları atla
 DIRECT_TIMEOUT   = 8
 
 # ═══════════════════════════════════════════════════════════════
@@ -698,8 +698,12 @@ async def fetch_via_crawl4ai(url: str) -> Optional[str]:
     """
     if not CRAWL4AI_URL:
         return None
-    skip = ("youtube.com","youtu.be","twitter.com","x.com",
-            "instagram.com","facebook.com","tiktok.com","reddit.com")
+    skip = (
+        "youtube.com","youtu.be","twitter.com","x.com",
+        "instagram.com","facebook.com","tiktok.com","reddit.com",
+        "apps.apple.com","play.google.com","itunes.apple.com",
+        "amazon.com/dp","ebay.com","linkedin.com","pinterest.com",
+    )
     if any(d in url for d in skip):
         return None
     try:
@@ -740,8 +744,12 @@ async def fetch_via_crawl4ai(url: str) -> Optional[str]:
 
 async def fetch_via_direct(url: str) -> Optional[str]:
     """Direkt httpx scrape — son çare, JS render yok."""
-    skip = ("youtube.com","youtu.be","twitter.com","x.com",
-            "instagram.com","facebook.com","tiktok.com","reddit.com")
+    skip = (
+        "youtube.com","youtu.be","twitter.com","x.com",
+        "instagram.com","facebook.com","tiktok.com","reddit.com",
+        "apps.apple.com","play.google.com","itunes.apple.com",
+        "amazon.com/dp","ebay.com","linkedin.com","pinterest.com",
+    )
     if any(d in url for d in skip):
         return None
     try:
@@ -879,7 +887,18 @@ def _format_results_directly(
                     lines.append(f"  {snippet}")
                     lines.append(f"  *{url}*")
 
-    return "\n".join(lines) if lines else "Web kaynaklarında güncel bilgi bulunamadı."
+    if lines:
+        return "\n".join(lines)
+    
+    # Hiç iyi sonuç yoksa ham snippet'leri döndür
+    fallback = []
+    for r in (search_results or [])[:4]:
+        t = r.get("title","")
+        c = r.get("content","")
+        u = r.get("url","")
+        if t and c:
+            fallback.append(f"**{t}**\n{c}\n*{u}*")
+    return "\n\n".join(fallback) if fallback else "Web kaynaklarında güncel bilgi bulunamadı."
 
 
 def _has_hallucination(text: str) -> bool:
@@ -952,7 +971,7 @@ Kurallar:
 - 200 kelimeden kısa tut"""
 
     try:
-        async with httpx.AsyncClient(timeout=25.0) as client:
+        async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
                 f"{DEEPINFRA_BASE_URL}/chat/completions",
                 headers={"Content-Type": "application/json",
@@ -1030,7 +1049,7 @@ GÖREV:
 - Maksimum 350 kelime."""
 
     try:
-        async with httpx.AsyncClient(timeout=25.0) as client:
+        async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
                 f"{DEEPINFRA_BASE_URL}/chat/completions",
                 headers={"Authorization": f"Bearer {DEEPINFRA_API_KEY}",
