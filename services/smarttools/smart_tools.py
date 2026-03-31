@@ -43,6 +43,17 @@ import os
 import time
 import asyncio
 import json
+
+# ── Web Search Engine v3 (API key gerekmez) ─────────────────
+try:
+    from search_engine_v3 import web_search as _web_search_v3
+    from search_engine_v3 import web_search_sync as _web_search_sync_v3
+    _SEARCH_V3 = True
+    print("[SEARCH] ✅ search_engine_v3 yüklendi")
+except ImportError:
+    _SEARCH_V3 = False
+    print("[SEARCH] ⚠️ search_engine_v3 bulunamadı — eski sistem")
+
 from enum import Enum
 
 # ═══════════════════════════════════════════════════════════════
@@ -447,6 +458,9 @@ def get_news(query: Optional[str] = None) -> Dict:
 # ═══════════════════════════════════════════════════════════════
 
 def sync_web_search(query: str, num: int = 5) -> Dict:
+    if _SEARCH_V3:
+        return _web_search_sync_v3(query, num)
+
     """SearXNG → Brave → DuckDuckGo + 3dk cache."""
     key    = f"s_{query.lower().strip()}"
     cached = search_cache.get(key)
@@ -519,6 +533,9 @@ def sync_web_search(query: str, num: int = 5) -> Dict:
 # ═══════════════════════════════════════════════════════════════
 
 async def async_web_search(query: str, num: int = 5) -> Dict:
+    if _SEARCH_V3:
+        return await _web_search_v3(query, num)
+
     """Async waterfall — non-blocking."""
     key    = f"as_{query.lower().strip()}"
     cached = await deep_cache.get(key)
