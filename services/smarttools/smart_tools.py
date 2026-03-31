@@ -76,6 +76,8 @@ DEEPINFRA_BASE_URL = os.getenv("DEEPINFRA_BASE_URL", "https://api.deepinfra.com/
 SYNTHESIS_MODEL    = os.getenv("SYNTHESIS_MODEL",    "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8")
 RERANK_MODEL       = os.getenv("RERANK_MODEL",       "BAAI/bge-reranker-v2-m3")
 RERANKER_URL       = os.getenv("RERANKER_URL",       "http://skylight-reranker:8087")
+# K8s service IP fallback — DNS resolve geç olursa direkt IP
+RERANKER_IP        = os.getenv("RERANKER_IP",        "")
 
 MAX_PAGE_CHARS   = 8000   # Crawl4AI daha temiz çıktı verir, daha fazla alabiliriz
 CHUNK_SIZE       = 200    # Kelime — reranker 512 token sınırı var, küçük chunk daha iyi
@@ -651,27 +653,43 @@ async def rerank_chunks(query: str, chunks: List[str],
     if not chunks:
         return []
 
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.post(
-                f"{RERANKER_URL}/rerank",
-                json={
-                    "query":     query,
-                    "documents": [c[:512] for c in chunks],
-                    "top_k":     top_k,
-                    "normalize": True,
-                },
-            )
-            if resp.status_code == 200:
-                data    = resp.json()
-                results = data.get("results", [])
-                model   = data.get("model", "?")
-                top     = [r["document"] for r in results]
-                print(f"[RERANK] ✅ {len(chunks)} → {len(top)} chunk | model={model} | best={results[0]['score']:.3f}" if results else f"[RERANK] ✅ boş sonuç")
-                return top
-    except Exception as e:
-        print(f"[RERANK] ❌ Servis ulaşılamıyor: {e} — keyword fallback")
+    # Retry mantığı — reranker meşgulse tekrar dene
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0)
+            ) as client:
+                resp = await client.post(
+                    f"{RERANKER_URL}/rerank",
+                    json={
+                        "query":     query,
+                        "documents": [c[:512] for c in chunks],
+                        "top_k":     top_k,
+                        "normalize": True,
+                    },
+                )
+                if resp.status_code == 200:
+                    data    = resp.json()
+                    results = data.get("results", [])
+                    top     = [r["document"] for r in results]
+                    best    = results[0]["score"] if results else 0
+                    print(f"[RERANK] ✅ {len(chunks)} → {len(top)} chunk | best={best:.3f}")
+                    return top
+                else:
+                    print(f"[RERANK] HTTP {resp.status_code} (deneme {attempt+1}/3)")
+        except httpx.ConnectError as e:
+            print(f"[RERANK] Bağlantı hatası (deneme {attempt+1}/3): {e}")
+            if attempt < 2:
+                await asyncio.sleep(1.0)
+        except httpx.TimeoutException:
+            print(f"[RERANK] Timeout (deneme {attempt+1}/3)")
+            if attempt < 2:
+                await asyncio.sleep(0.5)
+        except Exception as e:
+            print(f"[RERANK] Hata (deneme {attempt+1}/3): {type(e).__name__}: {e}")
+            break
 
+    print(f"[RERANK] ⚠️ Keyword fallback kullanılıyor")
     return _keyword_rerank(query, chunks, top_k)
 
 
