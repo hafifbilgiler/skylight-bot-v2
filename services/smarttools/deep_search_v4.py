@@ -294,9 +294,14 @@ async def deep_search(
         if isinstance(sr, dict) and sr.get("success"):
             provider = sr["data"].get("provider", provider)
             for r in sr["data"].get("results", []):
-                if r["url"] not in seen_urls:
-                    seen_urls.add(r["url"])
-                    merged.append(r)
+                url = r.get("url", "")
+                if not url or url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                # web_search_v4 "snippet" key kullanıyor — "content"e normalize et
+                if "snippet" in r and "content" not in r:
+                    r["content"] = r["snippet"]
+                merged.append(r)
 
     print(f"[DEEP SEARCH] 1/4 SEARCH ✅ {len(merged)} unique ({provider})")
 

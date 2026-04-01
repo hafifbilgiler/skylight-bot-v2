@@ -354,33 +354,49 @@ async def web_search(
     print(f"\n[SEARCH] '{query[:60]}' (lang={language})")
 
     # Waterfall — stop at first source with good results
-    for name, coro in [
-        ("SearXNG",       _searxng(query, num, language)),
-        ("Bing/Crawl4AI", _bing_scrape(query, num, language)),
+    sources = [
+        ("SearXNG",        _searxng(query, num, language)),
+        ("Bing/Crawl4AI",  _bing_scrape(query, num, language)),
         ("Google/Crawl4AI",_google_scrape(query, num, language)),
-        ("DDG HTML",      _ddg_html(query, num)),
-    ]:
+        ("DDG HTML",       _ddg_html(query, num)),
+    ]
+
+    for name, coro in sources:
         try:
-            raw = await coro
+            result = await coro
         except Exception as e:
             print(f"[SEARCH] {name} error: {e}")
             continue
 
-        if not raw:
+        if not result or not result.get("success"):
             print(f"[SEARCH] {name}: no results → next")
             continue
 
-        # Score and sort
-        for r in raw:
-            r.score = _score(r, query)
-        raw = _dedupe(sorted(raw, key=lambda r: r.score, reverse=True))
-        raw = [r for r in raw if r.score >= 0.0][:num]
+        # Dict sonuçları SearchResult'a çevir, score hesapla
+        raw_dicts = result.get("data", {}).get("results", [])
+        if not raw_dicts:
+            continue
 
-        if raw:
-            print(f"[SEARCH] ✅ {name}: {len(raw)} results (best score={raw[0].score:.2f})")
+        results_sr = []
+        for d in raw_dicts:
+            sr = SearchResult(
+                title=d.get("title", ""),
+                url=d.get("url", ""),
+                snippet=d.get("content", d.get("snippet", "")),
+                source=name,
+            )
+            sr.score = _score(sr, query)
+            results_sr.append(sr)
+
+        results_sr = _dedupe(sorted(results_sr, key=lambda r: r.score, reverse=True))
+        results_sr = [r for r in results_sr][:num]
+
+        if results_sr:
+            best = results_sr[0].score
+            print(f"[SEARCH] ✅ {name}: {len(results_sr)} results (best={best:.2f})")
             if use_cache:
-                _cache_set(ck, raw)
-            return _wrap(raw, name.lower().replace("/", "_"), query)
+                _cache_set(ck, results_sr)
+            return _wrap(results_sr, name.lower().replace("/", "_"), query)
 
     print(f"[SEARCH] ❌ All sources failed: {query[:40]}")
     return {"success": False, "provider": "none",
