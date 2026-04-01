@@ -158,12 +158,15 @@ class ChatRequest(BaseModel):
     context:         Optional[str]        = None
     session_summary: Optional[str]        = None
     file_id:         Optional[str]        = None
+    # Görsel analiz
+    image_data:      Optional[str]        = None  # base64 encoded image
+    image_type:      Optional[str]        = None  # image/png, image/jpeg vs.
     # Smart Router v4 — Gateway'den gelir
-    live_type_hint:  Optional[str]        = None  # currency/weather/deep_search/web
-    router_intent:   Optional[str]        = None  # code_debug/how_to/web_search
-    router_thinking: Optional[str]        = None  # Router'ın düşüncesi
-    user_level:      Optional[str]        = None  # beginner/intermediate/expert
-    needs_realtime:  Optional[bool]       = None  # Router realtime lazım dedi mi
+    live_type_hint:  Optional[str]        = None
+    router_intent:   Optional[str]        = None
+    router_thinking: Optional[str]        = None
+    user_level:      Optional[str]        = None
+    needs_realtime:  Optional[bool]       = None
 
 class ThinkingStep(BaseModel):
     emoji:   str
@@ -535,7 +538,12 @@ async def get_live_data(
                 return None
 
             data      = resp.json()
+
+            # Şehir belirtilmemişse → LLM'e sormayı ilet, uydurmasın
             if not data.get("success"):
+                err = data.get("error", "")
+                if err == "city_not_specified":
+                    return "[BİLGİ: Kullanıcı hava durumu sordu ama şehir belirtmedi. Hangi şehir için bakayım diye sor. Uydurma veri verme.]"
                 return None
 
             tool_used = data.get("tool_used", live_type)
@@ -1329,6 +1337,8 @@ async def build_messages(
     context:         Optional[str] = None,
     session_summary: Optional[str] = None,
     config:          Dict           = None,
+    image_data:      Optional[str] = None,
+    image_type:      Optional[str] = None,
     **kwargs,
 ) -> List[Dict]:
     """
@@ -1500,7 +1510,21 @@ Kullanıcı bağlam sorarsa özete başvur, tekrar sormadan yanıtla."""
     for msg in selected_history:
         messages.append({"role": msg["role"], "content": msg["content"]})
 
-    messages.append({"role": "user", "content": user_prompt})
+    # Görsel varsa multimodal content oluştur
+    if image_data and image_type:
+        media_type = image_type if image_type.startswith("image/") else f"image/{image_type}"
+        user_content = [
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:{media_type};base64,{image_data}"},
+            },
+            {"type": "text", "text": user_prompt},
+        ]
+        print(f"[VISION] Multimodal mesaj oluşturuldu ({media_type}, {len(image_data)} chars)")
+    else:
+        user_content = user_prompt
+
+    messages.append({"role": "user", "content": user_content})
 
     return messages
 
@@ -1544,6 +1568,8 @@ async def chat(request: ChatRequest):
         context=request.context,
         session_summary=request.session_summary,
         config=config,
+        image_data      = request.image_data,
+        image_type      = request.image_type,
         live_type_hint  = request.live_type_hint,
         router_intent   = request.router_intent,
         router_thinking = request.router_thinking,
