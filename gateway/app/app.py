@@ -2233,13 +2233,11 @@ async def chat_endpoint(
     if request_body.image_data:
         print(f"[SMART ROUTING] Image uploaded → Image Analysis Service")
         try:
-            # Zenginleştirilmiş prompt: metin yoksa konuşma bağlamından otomatik oluştur
             enriched_analysis_prompt = build_image_analysis_context_prompt(
                 request_body.prompt,
                 conversation_id,
                 conv_ctx,
             )
-            # Konuşma history'sini de gönder — image analysis service daha iyi bağlam kurar
             analysis_history = []
             if conversation_id:
                 try:
@@ -2251,7 +2249,6 @@ async def chat_endpoint(
                             ORDER BY created_at DESC LIMIT 10
                         """, (conversation_id,))
                         for row in reversed(cur.fetchall()):
-                            # image_data içeren mesajları atla (çok büyük)
                             if row[1] and "[IMAGE_B64]" not in row[1]:
                                 analysis_history.append({"role": row[0], "content": row[1]})
                     finally:
@@ -2331,13 +2328,9 @@ async def chat_endpoint(
                     return StreamingResponse(stream_and_collect(), media_type="text/plain; charset=utf-8")
                 else:
                     print(f"[IMAGE ANALYSIS ERROR] Status {response.status_code}: {response.text}")
-        except httpx.TimeoutException:
-            print(f"[IMAGE ANALYSIS ERROR] Timeout (>60s)")
-        except httpx.RequestError as e:
-            print(f"[IMAGE ANALYSIS ERROR] Request failed: {e}")
+
         except Exception as e:
-            print(f"[IMAGE ANALYSIS ERROR] Unexpected error: {e}")
-        print(f"[IMAGE ANALYSIS] Failed — routing to Chat Service with image context")
+            print(f"[IMAGE ANALYSIS] Error: {e}")
         # Image analysis başarısız → chat service'e düş (image_data ile birlikte)
 
     # Görsel yüklendiyse modifikasyon/generation OLMAZ (analysis veya chat)
@@ -2719,9 +2712,11 @@ async def chat_endpoint(
         "session_summary": request_body.session_summary,
     }
 
-    # Görsel varsa (image analysis başarısız → fallback) chat service'e de gönder
+    # Görsel varsa → chat service'e gönder (multimodal)
     if request_body.image_data:
         chat_data["image_data"] = request_body.image_data
+        chat_data["image_type"] = request_body.image_type or "image/png"
+        print(f"[GATEWAY] ✅ image_data → chat service ({len(request_body.image_data)} chars)")
 
     async def stream_response():
         assistant_response = ""
