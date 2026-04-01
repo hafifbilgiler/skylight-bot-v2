@@ -994,11 +994,46 @@ async def synthesize_with_llm(
     context_hint:   Optional[str] = None,
 ) -> str:
     """
-    Web sonuçlarını direkt formatla — LLM synthesis kaldırıldı.
-    Neden: LLM web sonuçlarını görmezden gelip eğitim verisinden üretiyordu.
-    Şimdi: Ham web verisi → temiz format → kullanıcıya.
+    Search sonuçlarını temiz formata çevir — direkt chat LLM'e gidiyor.
+    Chat LLM bunları context olarak görüp kısa cevap üretiyor.
     """
-    return _format_web_results(query, search_results, page_contents, language)
+    lines = []
+
+    # Önce snippet'leri ekle — bunlar her zaman var
+    good = [r for r in search_results if r.get("content") and len(r.get("content","")) > 40]
+    if good:
+        for r in good[:6]:
+            title   = r.get("title", "")[:100]
+            snippet = r.get("content", "")[:400].strip()
+            url     = r.get("url", "")
+            lines.append(f"**{title}**")
+            lines.append(snippet)
+            if url:
+                lines.append(f"*{url}*")
+            lines.append("")
+
+    # Sayfa içerikleri varsa en alakalı paragrafı ekle
+    if page_contents:
+        q_words = set(query.lower().split())
+        for pc in page_contents[:2]:
+            text = pc.get("content", "")
+            if len(text) < 100:
+                continue
+            paragraphs = [p.strip() for p in text.split("\n") if len(p.strip()) > 60]
+            if paragraphs:
+                best = max(paragraphs[:20],
+                    key=lambda p: sum(1 for w in q_words if w in p.lower()),
+                    default=paragraphs[0])
+                if best not in "\n".join(lines):
+                    lines.append(f"**{pc.get('title','')}**")
+                    lines.append(best[:500])
+                    lines.append(f"*{pc.get('url','')}*")
+                    lines.append("")
+
+    if not lines:
+        return "Web kaynaklarında güncel bilgi bulunamadı."
+
+    return "\n".join(lines)
 
 
 def _format_web_results(
