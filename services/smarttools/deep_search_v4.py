@@ -232,15 +232,27 @@ def _format_grounding(query: str, chunks: list[Chunk],
                 lines.append(f"{chunk.text[:500]}")
                 lines.append(f"*{chunk.url}*")
 
-    # Snippet fallback if no scraped content
-    remaining = [r for r in search_results
-                 if r.get("url") not in seen_urls and r.get("content")][:4]
-    if remaining:
-        lines.append("\n## Ek Kaynaklar")
-        for r in remaining:
-            lines.append(f"• **{r.get('title','')[:80]}**")
-            lines.append(f"  {r.get('content','')[:300]}")
-            lines.append(f"  *{r.get('url','')}*")
+    # Snippet fallback — chunks yoksa doğrudan arama snippet'lerini göster
+    if not chunks:
+        lines.append("\n## Arama Sonuçları")
+        for r in search_results[:6]:
+            title   = r.get("title", "")[:100]
+            content = r.get("content", r.get("snippet", ""))[:400]
+            url     = r.get("url", "")
+            if title and content:
+                lines.append(f"\n**{title}**")
+                lines.append(content)
+                lines.append(f"*{url}*")
+    else:
+        # Chunk'lardan görünmeyen URL'lerin snippet'lerini ekle
+        remaining = [r for r in search_results
+                     if r.get("url") not in seen_urls and r.get("content", r.get("snippet"))][:3]
+        if remaining:
+            lines.append("\n## Ek Kaynaklar")
+            for r in remaining:
+                lines.append(f"• **{r.get('title','')[:80]}**")
+                lines.append(f"  {r.get('content', r.get('snippet',''))[:300]}")
+                lines.append(f"  *{r.get('url','')}*")
 
     lines.extend([
         "",

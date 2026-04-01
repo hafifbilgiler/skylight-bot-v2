@@ -354,16 +354,17 @@ async def web_search(
     print(f"\n[SEARCH] '{query[:60]}' (lang={language})")
 
     # Waterfall — stop at first source with good results
+    # Lazy — coroutine sadece sıra gelince oluşturulur, await edilmeden bırakılmaz
     sources = [
-        ("SearXNG",        _searxng(query, num, language)),
-        ("Bing/Crawl4AI",  _bing_scrape(query, num, language)),
-        ("Google/Crawl4AI",_google_scrape(query, num, language)),
-        ("DDG HTML",       _ddg_html(query, num)),
+        ("SearXNG",        lambda: _searxng(query, num, language)),
+        ("Bing/Crawl4AI",  lambda: _bing_scrape(query, num, language)),
+        ("Google/Crawl4AI",lambda: _google_scrape(query, num, language)),
+        ("DDG HTML",       lambda: _ddg_html(query, num)),
     ]
 
-    for name, coro in sources:
+    for name, fn in sources:
         try:
-            result = await coro
+            result = await fn()
         except Exception as e:
             print(f"[SEARCH] {name} error: {e}")
             continue
