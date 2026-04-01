@@ -4,8 +4,8 @@ SKYLIGHT SMART TOOLS SERVICE — v7.1
 ═══════════════════════════════════════════════════════════════
 Görev:
   - Canlı veri API'leri (kur, hava, kripto, saat, haberler)
-  - Deep Search pipeline (SearXNG → Jina.ai → LLM sentezi)
-  - Web arama (SearXNG → Brave → DuckDuckGo waterfall)
+  - Deep Search pipeline (SearXNG → Crawl4AI → BGE Reranker → LLM)
+  - Web arama (SearXNG → Bing/Google scrape → DuckDuckGo waterfall)
 
 Detection (canlı veri lazım mı?) → chat_service ve gateway'de LOCAL yapılır.
 Bu servis sadece veriyi getirir, karar vermez.
@@ -19,12 +19,12 @@ Endpoints:
   GET  /
 
 Sayfa çekme:
-  1. Jina.ai   → r.jina.ai/URL (ücretsiz, sınırsız, JS render)
+  1. Crawl4AI  → lokal scraping (JS render)
   2. Crawl4AI  → CRAWL4AI_URL set edilince devreye girer
   3. Direkt    → Son çare
 
 Arama:
-  SearXNG → Brave → DuckDuckGo
+  SearXNG → Bing/Google scrape → DuckDuckGo
 ═══════════════════════════════════════════════════════════════
 """
 
@@ -78,7 +78,6 @@ app.add_middleware(
 )
 
 SEARXNG_URL        = os.getenv("SEARXNG_URL",        None)
-BRAVE_API_KEY      = os.getenv("BRAVE_API_KEY",      None)
 CRAWL4AI_URL       = os.getenv("CRAWL4AI_URL",       "http://crawl4ai:11235")
 CRAWL4AI_TOKEN     = os.getenv("CRAWL4AI_TOKEN",     "skylight-crawl4ai-2026")
 DEEPINFRA_API_KEY  = os.getenv("DEEPINFRA_API_KEY",  "")
@@ -285,15 +284,40 @@ def _extract_city(query: str) -> Optional[str]:
 
 
 def _extract_currency_pair(query: str) -> tuple:
+    """
+    "euro ne kadar" → (EUR, TRY)
+    "dolar euro" → (USD, EUR)
+    "dolar kaç tl" → (USD, TRY)
+    """
     q = query.lower()
-    cmap = {
-        "dolar":"USD","usd":"USD","euro":"EUR","eur":"EUR",
-        "pound":"GBP","sterlin":"GBP","gbp":"GBP",
-        "tl":"TRY","try":"TRY","lira":"TRY",
-        "yen":"JPY","frank":"CHF",
-    }
-    found = [v for k, v in cmap.items() if k in q]
-    return (found[0] if found else "USD", found[1] if len(found) > 1 else "TRY")
+    
+    # Uzun eşleşmeler önce — "sterlin" önce, "gbp" sonra vs.
+    cmap = [
+        ("sterlin", "GBP"), ("pound", "GBP"), ("gbp", "GBP"),
+        ("euro",    "EUR"), ("eur",   "EUR"),
+        ("dolar",   "USD"), ("usd",   "USD"),
+        ("frank",   "CHF"), ("chf",   "CHF"),
+        ("yen",     "JPY"), ("jpy",   "JPY"),
+        ("lira",    "TRY"), ("try",   "TRY"), ("tl", "TRY"),
+    ]
+    
+    found = []
+    seen  = set()
+    for kw, code in cmap:
+        if kw in q and code not in seen:
+            found.append(code)
+            seen.add(code)
+    
+    # İlk para birimi → from, ikincisi → to
+    # Eğer tek para birimi varsa → TRY karşılığı
+    from_c = found[0] if found else "USD"
+    to_c   = found[1] if len(found) > 1 else "TRY"
+    
+    # from == to olmamalı
+    if from_c == to_c:
+        to_c = "TRY" if from_c != "TRY" else "USD"
+    
+    return (from_c, to_c)
 
 
 def _extract_coin(query: str) -> str:
@@ -391,125 +415,90 @@ def get_weather(query: str) -> Dict:
 def get_currency(from_c: str = "USD", to_c: str = "TRY") -> Dict:
     """
     Kur çekme — kaynak önceliği:
-    1. TCMB XML (Türkiye Merkez Bankası) — TRY çiftleri için en doğru
-    2. Frankfurter (ECB verileri) — EUR bazlı çiftler
-    3. Google Finance scrape — fallback
-    4. exchangerate-api — son çare
+    1. Google Finance scrape (hızlı, güvenilir)
+    2. TCMB XML (Türkiye Merkez Bankası)
+    3. exchangerate-api (son çare)
     """
     key    = f"currency_{from_c}_{to_c}"
     cached = currency_cache.get(key)
     if cached:
         return cached
 
-    def _make_result(rate, source=""):
+    def _ok(rate, src):
         r = {"success": True, "data": {
             "from": from_c, "to": to_c, "rate": round(rate, 4),
             "formatted": f"1 {from_c} = {round(rate, 4)} {to_c}",
-            "source": source,
+            "source": src,
         }}
         currency_cache.set(key, r)
-        print(f"[CURRENCY] {from_c}/{to_c} = {round(rate,4)} ({source})")
+        print(f"[CURRENCY] ✅ {from_c}/{to_c} = {round(rate,4)} ({src})")
         return r
 
-    def _validate(rate):
-        """Makul aralıkta mı? Açıkça yanlış değerleri filtrele."""
-        if not rate or rate <= 0:
-            return False
-        # TRY çiftleri için makul aralık kontrolü
+    def _sane(rate):
+        if not rate or rate <= 0: return False
         if to_c == "TRY":
-            if from_c == "USD" and not (30 < rate < 60):
-                return False
-            if from_c == "EUR" and not (33 < rate < 70):
-                return False
-            if from_c == "GBP" and not (38 < rate < 80):
-                return False
+            ranges = {"USD":(30,70), "EUR":(33,80), "GBP":(38,90)}
+            lo, hi = ranges.get(from_c, (0, 1e9))
+            return lo < rate < hi
         return True
 
-    # ── Method 1: TCMB XML — TRY çiftleri için resmi kaynak ──
-    if to_c == "TRY" or from_c == "TRY":
-        try:
-            r = requests.get(
-                "https://www.tcmb.gov.tr/kurlar/today.xml",
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=6,
-            )
-            if r.status_code == 200:
-                # XML parse
-                import xml.etree.ElementTree as ET
-                root = ET.fromstring(r.content)
-                rates = {}
-                for cur in root.findall(".//Currency"):
-                    code = cur.get("CurrencyCode", "")
-                    forex_buying = cur.findtext("ForexBuying")
-                    forex_selling = cur.findtext("ForexSelling")
-                    # Satış kurunu kullan (daha gerçekçi)
-                    val = forex_selling or forex_buying
-                    if code and val:
-                        try:
-                            rates[code] = float(val.replace(",", "."))
-                        except ValueError:
-                            pass
-
-                if from_c == "TRY":
-                    # TRY → başka para: ters çevir
-                    base_rate = rates.get(to_c)
-                    if base_rate and _validate(1/base_rate):
-                        return _make_result(round(1/base_rate, 6), "TCMB")
-                elif to_c == "TRY":
-                    rate = rates.get(from_c)
-                    if rate and _validate(rate):
-                        return _make_result(rate, "TCMB")
-        except Exception as e:
-            print(f"[CURRENCY] TCMB hata: {e}")
-
-    # ── Method 2: Frankfurter (ECB) — EUR bazlı ──
-    try:
-        if from_c == "EUR":
-            r = requests.get(
-                f"https://api.frankfurter.app/latest?from={from_c}&to={to_c}",
-                timeout=5,
-            )
-        else:
-            r = requests.get(
-                f"https://api.frankfurter.app/latest?from={from_c}&to={to_c}",
-                timeout=5,
-            )
-        if r.status_code == 200:
-            rate = r.json().get("rates", {}).get(to_c)
-            if rate and _validate(rate):
-                return _make_result(rate, "ECB/Frankfurter")
-    except Exception as e:
-        print(f"[CURRENCY] Frankfurter hata: {e}")
-
-    # ── Method 3: Google Finance scrape ──
+    # ── 1. Google Finance — hızlı ve doğru ──
     try:
         r = requests.get(
             f"https://www.google.com/finance/quote/{from_c}-{to_c}",
             headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
-            timeout=6,
+            timeout=7,
         )
         soup = BeautifulSoup(r.text, "html.parser")
-        el = soup.find("div", {"class": "YMlKec fxKbKc"})
-        if el:
-            rate = float(el.text.strip().replace(",", "."))
-            if _validate(rate):
-                return _make_result(rate, "Google Finance")
+        for cls in ["YMlKec fxKbKc", "YMlKec"]:
+            el = soup.find("div", {"class": cls})
+            if el:
+                txt = el.text.strip().replace(",", ".")
+                # Binlik ayracı olabilir: 1.234,56 → 1234.56
+                if txt.count(".") > 1:
+                    txt = txt.replace(".", "", txt.count(".")-1)
+                rate = float(txt)
+                if _sane(rate):
+                    return _ok(rate, "Google Finance")
+                break
     except Exception as e:
-        print(f"[CURRENCY] Google Finance hata: {e}")
+        print(f"[CURRENCY] Google hata: {e}")
 
-    # ── Method 4: exchangerate-api (son çare) ──
+    # ── 2. TCMB XML — resmi Türkiye kaynağı ──
+    if "TRY" in (from_c, to_c):
+        try:
+            import xml.etree.ElementTree as ET
+            r = requests.get("https://www.tcmb.gov.tr/kurlar/today.xml",
+                             headers={"User-Agent": "Mozilla/5.0"}, timeout=6)
+            if r.status_code == 200:
+                root = ET.fromstring(r.content)
+                rates = {}
+                for cur in root.findall(".//Currency"):
+                    code = cur.get("CurrencyCode", "")
+                    val  = cur.findtext("ForexSelling") or cur.findtext("ForexBuying")
+                    if code and val:
+                        try: rates[code] = float(val.replace(",", "."))
+                        except: pass
+                if to_c == "TRY":
+                    rate = rates.get(from_c)
+                    if rate and _sane(rate):
+                        return _ok(rate, "TCMB")
+                elif from_c == "TRY":
+                    base = rates.get(to_c)
+                    if base: return _ok(round(1/base, 6), "TCMB")
+        except Exception as e:
+            print(f"[CURRENCY] TCMB hata: {e}")
+
+    # ── 3. exchangerate-api ──
     try:
-        r = requests.get(
-            f"https://api.exchangerate-api.com/v4/latest/{from_c}",
-            timeout=5,
-        )
+        r    = requests.get(f"https://api.exchangerate-api.com/v4/latest/{from_c}", timeout=5)
         rate = r.json()["rates"].get(to_c)
-        if rate and _validate(rate):
-            return _make_result(rate, "exchangerate-api")
+        if rate and _sane(rate):
+            return _ok(rate, "exchangerate-api")
     except Exception as e:
-        print(f"[CURRENCY] exchangerate-api hata: {e}")
+        print(f"[CURRENCY] exchangerate hata: {e}")
 
-    return {"success": False, "error": f"{from_c}/{to_c} kur bilgisi alınamadı"}
+    return {"success": False, "error": f"{from_c}/{to_c} kur alınamadı"}
 
 
 def get_crypto(coin: str = "bitcoin") -> Dict:
@@ -558,7 +547,7 @@ def sync_web_search(query: str, num: int = 5) -> Dict:
     if _SEARCH_V4 and _web_search_sync_v4:
         return _web_search_sync_v4(query, num)
 
-    """SearXNG → Brave → DuckDuckGo + 3dk cache."""
+    """SearXNG → Bing/Google scrape → DuckDuckGo + 3dk cache."""
     key    = f"s_{query.lower().strip()}"
     cached = search_cache.get(key)
     if cached:
@@ -581,23 +570,6 @@ def sync_web_search(query: str, num: int = 5) -> Dict:
         except Exception:
             pass
 
-    # Brave
-    if BRAVE_API_KEY:
-        try:
-            data    = requests.get("https://api.search.brave.com/res/v1/web/search",
-                params={"q": query, "count": num, "search_lang": "tr"},
-                headers={"Accept": "application/json",
-                         "X-Subscription-Token": BRAVE_API_KEY},
-                timeout=10).json()
-            results = data.get("web", {}).get("results", [])[:num]
-            if results:
-                r = {"success": True, "data": {"query": query, "provider": "brave",
-                    "results": [{"title": x.get("title",""), "url": x.get("url",""),
-                                 "content": x.get("description","")[:400]} for x in results]}}
-                search_cache.set(key, r)
-                return r
-        except Exception:
-            pass
 
     # DuckDuckGo
     for ua in ["Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -658,24 +630,6 @@ async def async_web_search(query: str, num: int = 5) -> Dict:
             except Exception as e:
                 print(f"[SEARCH] SearXNG: {e}")
 
-        # Brave
-        if BRAVE_API_KEY:
-            try:
-                resp    = await client.get("https://api.search.brave.com/res/v1/web/search",
-                    params={"q": query, "count": num, "search_lang": "tr"},
-                    headers={"Accept": "application/json",
-                             "X-Subscription-Token": BRAVE_API_KEY})
-                results = resp.json().get("web", {}).get("results", [])[:num]
-                if results:
-                    r = {"success": True, "data": {"query": query, "provider": "brave",
-                        "results": [{"title": x.get("title",""), "url": x.get("url",""),
-                                     "content": x.get("description","")[:400]} for x in results]}}
-                    await deep_cache.set(key, r)
-                    print(f"[SEARCH] Brave: {len(results)} sonuç")
-                    return r
-            except Exception as e:
-                print(f"[SEARCH] Brave: {e}")
-
         # DuckDuckGo
         for ua in ["Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"]:
@@ -706,7 +660,7 @@ async def async_web_search(query: str, num: int = 5) -> Dict:
 
 
 # ═══════════════════════════════════════════════════════════════
-# SAYFA ÇEKME — Jina → Crawl4AI → Direkt
+# SAYFA ÇEKME — Crawl4AI → Direkt
 # ═══════════════════════════════════════════════════════════════
 
 # ═══════════════════════════════════════════════════════════════
@@ -807,7 +761,7 @@ def _keyword_rerank(query: str, chunks: List[str], top_k: int) -> List[str]:
 async def fetch_via_crawl4ai(url: str) -> Optional[str]:
     """
     Crawl4AI lokal pod — JS render, temiz markdown.
-    Jina.ai kaldırıldı — tüm scraping buradan.
+    Crawl4AI öncelikli, direkt scrape fallback.
     """
     if not CRAWL4AI_URL:
         return None
@@ -1350,20 +1304,21 @@ async def root():
         "version": "7.1.0",
         "endpoints": {
             "POST /unified":     "Canlı veri — kur, hava, kripto, saat, haberler, web arama",
-            "POST /deep_search": "Araştırma — web arama + Jina.ai + LLM sentezi",
+            "POST /deep_search": "Araştırma — web arama + Crawl4AI scrape + BGE Reranker",
             "POST /search":      "Direkt web arama",
             "GET  /fetch":       "Tek URL içeriği çek",
         },
         "page_fetching": {
-            "layer_1": "Jina.ai Reader (aktif — ücretsiz, sınırsız)",
-            "layer_2": f"Crawl4AI ({'aktif: '+CRAWL4AI_URL if CRAWL4AI_URL else 'hazır — CRAWL4AI_URL set edilince'})",
-            "layer_3": "Direkt scrape (son çare)",
+            "layer_1": f"Crawl4AI ({'aktif: '+CRAWL4AI_URL if CRAWL4AI_URL else 'YOK — CRAWL4AI_URL eksik'})",
+            "layer_2": "Direkt scrape (fallback)",
         },
         "search_providers": {
-            "searxng":    bool(SEARXNG_URL),
-            "brave":      bool(BRAVE_API_KEY),
-            "duckduckgo": True,
+            "searxng":     bool(SEARXNG_URL),
+            "bing_scrape": True,
+            "google_scrape": True,
+            "duckduckgo":  True,
         },
+        "reranker":      bool(RERANKER_URL),
         "llm_synthesis": bool(DEEPINFRA_API_KEY),
     }
 
@@ -1468,7 +1423,7 @@ if __name__ == "__main__":
     print("SKYLIGHT SMART TOOLS — v7.1")
     print("="*70)
     print(f"Search:  SearXNG({'ON' if SEARXNG_URL else 'OFF'}) | "
-          f"Brave({'ON' if BRAVE_API_KEY else 'OFF'}) | DDG(ON)")
+          f"DDG(ON)")
     print(f"Pages:   Jina.ai(ON) | Crawl4AI({'ON' if CRAWL4AI_URL else 'HAZIR'})")
     print(f"LLM:     {'ON — '+SYNTHESIS_MODEL if DEEPINFRA_API_KEY else 'OFF'}")
     print("="*70 + "\n")
