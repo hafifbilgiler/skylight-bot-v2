@@ -1123,7 +1123,7 @@ async def build_code_messages(
     # ── Canlı veri (code modda da çalışır) ──────────────────────
     live_context = await get_live_data(user_prompt, mode="code", history=history or [])
     if live_context:
-        system_content += f"\n\n{live_context}"
+        kwargs["live_context"] = live_context
 
     # RAG + web context
     if kwargs.get('rag_context'):
@@ -1339,6 +1339,7 @@ async def build_messages(
     config:          Dict           = None,
     image_data:      Optional[str] = None,
     image_type:      Optional[str] = None,
+    live_context:    Optional[str] = None,
     **kwargs,
 ) -> List[Dict]:
     """
@@ -1441,10 +1442,12 @@ async def build_messages(
         mode=mode,
         router_tool=kwargs.get("live_type_hint"),
         router_decision=_router_dec,
+        history=history or [],
     )
+    # live_context → user mesajına geçir (system'e değil)
     if live_context:
-        system_content += f"\n\n{live_context}"
-        print(f"[CHAT] Live data injected: {len(live_context)} chars")
+        kwargs["live_context"] = live_context
+        print(f"[CHAT] Live data → user msg: {len(live_context)} chars")
 
     # 4. RAG CONTEXT
     if rag_context:
@@ -1510,6 +1513,14 @@ Kullanıcı bağlam sorarsa özete başvur, tekrar sormadan yanıtla."""
     for msg in selected_history:
         messages.append({"role": msg["role"], "content": msg["content"]})
 
+    # Live context varsa user mesajına ekle — system'e değil
+    # Gemini grounding mantığı: web verisi = user turn context
+    live_ctx = live_context or kwargs.get("live_context", "") or ""
+    if live_ctx:
+        enriched_prompt = f"{live_ctx}\n\nKullanıcı sorusu: {user_prompt}"
+    else:
+        enriched_prompt = user_prompt
+
     # Görsel varsa multimodal content oluştur
     if image_data and image_type:
         media_type = image_type if image_type.startswith("image/") else f"image/{image_type}"
@@ -1518,11 +1529,11 @@ Kullanıcı bağlam sorarsa özete başvur, tekrar sormadan yanıtla."""
                 "type": "image_url",
                 "image_url": {"url": f"data:{media_type};base64,{image_data}"},
             },
-            {"type": "text", "text": user_prompt},
+            {"type": "text", "text": enriched_prompt},
         ]
         print(f"[VISION] Multimodal mesaj oluşturuldu ({media_type}, {len(image_data)} chars)")
     else:
-        user_content = user_prompt
+        user_content = enriched_prompt
 
     messages.append({"role": "user", "content": user_content})
 
