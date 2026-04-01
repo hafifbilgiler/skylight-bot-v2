@@ -2710,6 +2710,12 @@ async def chat_endpoint(
         "history":         final_history,
         "context":         final_context if final_context else None,
         "session_summary": request_body.session_summary,
+        # Router kararları — chat servisinin keyword'e ihtiyacı olmasın
+        "live_type_hint":  request_body.live_type_hint  if hasattr(request_body, "live_type_hint")  else None,
+        "router_intent":   request_body.router_intent   if hasattr(request_body, "router_intent")   else None,
+        "router_thinking": request_body.router_thinking if hasattr(request_body, "router_thinking") else None,
+        "user_level":      request_body.user_level      if hasattr(request_body, "user_level")      else None,
+        "needs_realtime":  request_body.needs_realtime  if hasattr(request_body, "needs_realtime")  else None,
     }
 
     # Görsel varsa → chat service'e gönder (multimodal)
