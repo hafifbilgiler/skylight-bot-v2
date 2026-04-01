@@ -14,8 +14,9 @@ RUN pip install --no-cache-dir \
     lxml==5.1.0 \
     pytz==2024.1
 
-COPY smart_tools.py /app/smart_tools_service.py
-COPY search_engine.py /app/search_engine_v3.py
+COPY smart_tools.py    /app/smart_tools_service.py
+COPY web_search_v4.py  /app/web_search_v4.py
+COPY deep_search_v4.py /app/deep_search_v4.py
 
 EXPOSE 8081
 
