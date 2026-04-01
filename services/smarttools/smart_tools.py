@@ -44,15 +44,25 @@ import time
 import asyncio
 import json
 
-# ── Web Search Engine v3 (API key gerekmez) ─────────────────
+# ── Web Search Engine v4 + Deep Search Pipeline v4 ───────────
 try:
-    from search_engine_v3 import web_search as _web_search_v3
-    from search_engine_v3 import web_search_sync as _web_search_sync_v3
-    _SEARCH_V3 = True
-    print("[SEARCH] ✅ search_engine_v3 yüklendi")
-except ImportError:
-    _SEARCH_V3 = False
-    print("[SEARCH] ⚠️ search_engine_v3 bulunamadı — eski sistem")
+    from web_search_v4 import web_search as _web_search_v4
+    from web_search_v4 import web_search_sync as _web_search_sync_v4
+    from deep_search_v4 import deep_search as _deep_search_v4
+    _SEARCH_V4 = True
+    print("[SEARCH] ✅ web_search_v4 + deep_search_v4 loaded")
+except ImportError as _e:
+    _SEARCH_V4 = False
+    print(f"[SEARCH] ⚠️ v4 not found ({_e}) — legacy fallback")
+    # Legacy v3 fallback
+    try:
+        from search_engine_v3 import web_search as _web_search_v4
+        from search_engine_v3 import web_search_sync as _web_search_sync_v4
+        _deep_search_v4 = None
+    except ImportError:
+        _web_search_v4 = None
+        _web_search_sync_v4 = None
+        _deep_search_v4 = None
 
 from enum import Enum
 
@@ -379,42 +389,127 @@ def get_weather(query: str) -> Dict:
 
 
 def get_currency(from_c: str = "USD", to_c: str = "TRY") -> Dict:
+    """
+    Kur çekme — kaynak önceliği:
+    1. TCMB XML (Türkiye Merkez Bankası) — TRY çiftleri için en doğru
+    2. Frankfurter (ECB verileri) — EUR bazlı çiftler
+    3. Google Finance scrape — fallback
+    4. exchangerate-api — son çare
+    """
     key    = f"currency_{from_c}_{to_c}"
     cached = currency_cache.get(key)
     if cached:
         return cached
-    # Method 1: exchangerate-api
+
+    def _make_result(rate, source=""):
+        r = {"success": True, "data": {
+            "from": from_c, "to": to_c, "rate": round(rate, 4),
+            "formatted": f"1 {from_c} = {round(rate, 4)} {to_c}",
+            "source": source,
+        }}
+        currency_cache.set(key, r)
+        print(f"[CURRENCY] {from_c}/{to_c} = {round(rate,4)} ({source})")
+        return r
+
+    def _validate(rate):
+        """Makul aralıkta mı? Açıkça yanlış değerleri filtrele."""
+        if not rate or rate <= 0:
+            return False
+        # TRY çiftleri için makul aralık kontrolü
+        if to_c == "TRY":
+            if from_c == "USD" and not (30 < rate < 60):
+                return False
+            if from_c == "EUR" and not (33 < rate < 70):
+                return False
+            if from_c == "GBP" and not (38 < rate < 80):
+                return False
+        return True
+
+    # ── Method 1: TCMB XML — TRY çiftleri için resmi kaynak ──
+    if to_c == "TRY" or from_c == "TRY":
+        try:
+            r = requests.get(
+                "https://www.tcmb.gov.tr/kurlar/today.xml",
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=6,
+            )
+            if r.status_code == 200:
+                # XML parse
+                import xml.etree.ElementTree as ET
+                root = ET.fromstring(r.content)
+                rates = {}
+                for cur in root.findall(".//Currency"):
+                    code = cur.get("CurrencyCode", "")
+                    forex_buying = cur.findtext("ForexBuying")
+                    forex_selling = cur.findtext("ForexSelling")
+                    # Satış kurunu kullan (daha gerçekçi)
+                    val = forex_selling or forex_buying
+                    if code and val:
+                        try:
+                            rates[code] = float(val.replace(",", "."))
+                        except ValueError:
+                            pass
+
+                if from_c == "TRY":
+                    # TRY → başka para: ters çevir
+                    base_rate = rates.get(to_c)
+                    if base_rate and _validate(1/base_rate):
+                        return _make_result(round(1/base_rate, 6), "TCMB")
+                elif to_c == "TRY":
+                    rate = rates.get(from_c)
+                    if rate and _validate(rate):
+                        return _make_result(rate, "TCMB")
+        except Exception as e:
+            print(f"[CURRENCY] TCMB hata: {e}")
+
+    # ── Method 2: Frankfurter (ECB) — EUR bazlı ──
     try:
-        r    = requests.get(f"https://api.exchangerate-api.com/v4/latest/{from_c}", timeout=5)
-        rate = r.json()["rates"].get(to_c)
-        if rate:
-            result = {"success": True, "data": {
-                "from": from_c, "to": to_c, "rate": rate,
-                "formatted": f"1 {from_c} = {rate:.4f} {to_c}",
-            }}
-            currency_cache.set(key, result)
-            print(f"[CURRENCY] {from_c}/{to_c} = {rate}")
-            return result
-    except Exception:
-        pass
-    # Method 2: Google Finance fallback
+        if from_c == "EUR":
+            r = requests.get(
+                f"https://api.frankfurter.app/latest?from={from_c}&to={to_c}",
+                timeout=5,
+            )
+        else:
+            r = requests.get(
+                f"https://api.frankfurter.app/latest?from={from_c}&to={to_c}",
+                timeout=5,
+            )
+        if r.status_code == 200:
+            rate = r.json().get("rates", {}).get(to_c)
+            if rate and _validate(rate):
+                return _make_result(rate, "ECB/Frankfurter")
+    except Exception as e:
+        print(f"[CURRENCY] Frankfurter hata: {e}")
+
+    # ── Method 3: Google Finance scrape ──
     try:
-        r    = requests.get(
+        r = requests.get(
             f"https://www.google.com/finance/quote/{from_c}-{to_c}",
-            headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
-        soup = BeautifulSoup(r.text, 'html.parser')
-        el   = soup.find("div", {"class": "YMlKec fxKbKc"})
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+            timeout=6,
+        )
+        soup = BeautifulSoup(r.text, "html.parser")
+        el = soup.find("div", {"class": "YMlKec fxKbKc"})
         if el:
-            rate   = float(el.text.replace(',', '.'))
-            result = {"success": True, "data": {
-                "from": from_c, "to": to_c, "rate": round(rate, 4),
-                "formatted": f"1 {from_c} = {round(rate, 4)} {to_c}",
-            }}
-            currency_cache.set(key, result)
-            return result
-    except Exception:
-        pass
-    return {"success": False, "error": "Kur bilgisi alınamadı"}
+            rate = float(el.text.strip().replace(",", "."))
+            if _validate(rate):
+                return _make_result(rate, "Google Finance")
+    except Exception as e:
+        print(f"[CURRENCY] Google Finance hata: {e}")
+
+    # ── Method 4: exchangerate-api (son çare) ──
+    try:
+        r = requests.get(
+            f"https://api.exchangerate-api.com/v4/latest/{from_c}",
+            timeout=5,
+        )
+        rate = r.json()["rates"].get(to_c)
+        if rate and _validate(rate):
+            return _make_result(rate, "exchangerate-api")
+    except Exception as e:
+        print(f"[CURRENCY] exchangerate-api hata: {e}")
+
+    return {"success": False, "error": f"{from_c}/{to_c} kur bilgisi alınamadı"}
 
 
 def get_crypto(coin: str = "bitcoin") -> Dict:
@@ -460,8 +555,8 @@ def get_news(query: Optional[str] = None) -> Dict:
 # ═══════════════════════════════════════════════════════════════
 
 def sync_web_search(query: str, num: int = 5) -> Dict:
-    if _SEARCH_V3:
-        return _web_search_sync_v3(query, num)
+    if _SEARCH_V4 and _web_search_sync_v4:
+        return _web_search_sync_v4(query, num)
 
     """SearXNG → Brave → DuckDuckGo + 3dk cache."""
     key    = f"s_{query.lower().strip()}"
@@ -535,8 +630,8 @@ def sync_web_search(query: str, num: int = 5) -> Dict:
 # ═══════════════════════════════════════════════════════════════
 
 async def async_web_search(query: str, num: int = 5) -> Dict:
-    if _SEARCH_V3:
-        return await _web_search_v3(query, num)
+    if _SEARCH_V4 and _web_search_v4:
+        return await _web_search_v4(query, num)
 
     """Async waterfall — non-blocking."""
     key    = f"as_{query.lower().strip()}"
