@@ -81,7 +81,7 @@ data:
         shortcut: g
         weight: 1.5
         categories: general
-        disabled: false
+        disabled: true
         timeout: 10.0
  
       - name: startpage
@@ -123,7 +123,10 @@ data:
         engine: torch
         shortcut: to
         disabled: true
- 
+      - name: brave
+        engine: brave
+        shortcut: br
+        disabled: true
     limiter:
       enabled: false
  
