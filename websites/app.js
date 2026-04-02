@@ -213,7 +213,7 @@ async function checkCodeModeStatus() {
     }
 }
 
-function showToast(msg, type) {
+function showToast(msg, type, duration) {
     const ex = document.getElementById("toast-notification");
     if (ex) ex.remove();
     const t = document.createElement("div");
@@ -227,8 +227,9 @@ function showToast(msg, type) {
     t.style.cssText = `position:fixed;top:20px;left:50%;transform:translateX(-50%);padding:10px 20px;border-radius:10px;font-size:12px;font-weight:600;color:${c.text};background:${c.bg};border:1px solid ${c.border};z-index:99999;font-family:inherit;backdrop-filter:blur(8px);animation:msg-in 0.3s ease;`;
     t.textContent = msg;
     document.body.appendChild(t);
-    setTimeout(() => { t.style.opacity = "0"; t.style.transition = "opacity 0.3s"; }, 2500);
-    setTimeout(() => t.remove(), 2900);
+    const d = duration || 2500;
+    setTimeout(() => { t.style.opacity = "0"; t.style.transition = "opacity 0.3s"; }, d);
+    setTimeout(() => t.remove(), d + 400);
 }
 
 const ASSISTANT_HINTS = [
@@ -284,6 +285,22 @@ function cleanAutofill() {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
+    // ── Ödeme sonucu URL param kontrolü ──────────────────────
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('premium') === '1') {
+        // URL'den temizle
+        window.history.replaceState({}, '', window.location.pathname);
+        // Kısa gecikme ile toast göster
+        setTimeout(() => {
+            showToast('🎉 Premium üyeliğiniz aktif edildi! Hoş geldiniz.', 'info', 6000);
+        }, 800);
+    }
+    if (urlParams.get('payment') === 'failed') {
+        window.history.replaceState({}, '', window.location.pathname);
+        setTimeout(() => {
+            showToast('Ödeme başarısız. Lütfen tekrar deneyin.', 'error', 5000);
+        }, 500);
+    }
     const savedName  = localStorage.getItem('user_name');
     const savedToken = localStorage.getItem('token');
 
@@ -1005,13 +1022,107 @@ async function handleChat() {
     userInput.style.height = 'auto';
 
     const botMsg = createMessage(false);
-    // Mode badge kaldırıldı — tek asistan deneyimi
-    botMsg.content.innerHTML = `<div class="typing-indicator"><span></span><span></span><span></span></div>`;
-
+    botMsg.content.innerHTML = '';
     showStopButton();
 
-    // Kullanıcıya görünmeyen arka plan modu — gateway kendi routing yapıyor
-    // Frontend sadece "assistant" gönderir, gateway intent'e göre model seçer
+    // ── CLIENT-SIDE ADIM SİMÜLASYONU — Proxy bağımsız ──────────
+    // Deep search sinyali var mı? → adımları hemen göster
+    const _deepSearchKw = ['araştır','bul','son gelişme','güncel','ne oldu','neler oluyor',
+        'haber','analiz','incele','dünyada','gündem','son durum','açıkla detaylı',
+        'research','latest','find me','what happened'];
+    const _liveKw = ['dolar','euro','bitcoin','btc','hava durumu','borsa','hisse',
+        'kripto','sıcaklık','kur kaç'];
+    const _codeKw = ['çalışmıyor','hata var','error','traceback','debug','düzelt',
+        'fix','broken','crash'];
+
+    const promptLower = prompt.toLowerCase();
+    const isDeepSearch = _deepSearchKw.some(k => promptLower.includes(k));
+    const isLiveData   = _liveKw.some(k => promptLower.includes(k));
+    const isDebug      = _codeKw.some(k => promptLower.includes(k));
+
+    let clientStepsContainer = null;
+    let clientStepActive     = null;
+    let clientStepInterval   = null;
+
+    function _clientAddStep(emoji, text, status='running') {
+        if (!clientStepsContainer) {
+            clientStepsContainer = document.createElement('div');
+            clientStepsContainer.className = 'thinking-steps';
+            botMsg.content.appendChild(clientStepsContainer);
+        }
+        // Önceki adımı tamamla
+        if (clientStepActive) {
+            clientStepActive.classList.remove('active');
+            clientStepActive.classList.add('done');
+            const sp = clientStepActive.querySelector('.step-spinner');
+            if (sp) sp.outerHTML = '<span class="step-check">✓</span>';
+        }
+        const el = document.createElement('div');
+        el.className = 'thinking-step active';
+        el.innerHTML = `
+            <div class="step-spinner"></div>
+            <span class="step-emoji">${emoji}</span>
+            <span class="step-text">${text}</span>
+        `;
+        clientStepsContainer.appendChild(el);
+        clientStepActive = el;
+        el.scrollIntoView({behavior:'smooth', block:'nearest'});
+        return el;
+    }
+
+    function _clientFinishSteps() {
+        if (clientStepActive) {
+            clientStepActive.classList.remove('active');
+            clientStepActive.classList.add('done');
+            const sp = clientStepActive.querySelector('.step-spinner');
+            if (sp) sp.outerHTML = '<span class="step-check">✓</span>';
+            clientStepActive = null;
+        }
+        if (clientStepsContainer) {
+            setTimeout(() => {
+                if (!clientStepsContainer) return;
+                clientStepsContainer.style.transition = 'all 0.5s ease';
+                clientStepsContainer.style.opacity    = '0.3';
+                clientStepsContainer.style.maxHeight  = '28px';
+                clientStepsContainer.style.overflow   = 'hidden';
+                clientStepsContainer.style.cursor     = 'pointer';
+                clientStepsContainer.title = 'Araştırma adımlarını görmek için tıkla';
+                clientStepsContainer.onclick = () => {
+                    clientStepsContainer.style.maxHeight = '';
+                    clientStepsContainer.style.opacity   = '0.8';
+                    clientStepsContainer.onclick = null;
+                };
+            }, 4000);
+        }
+    }
+
+    // Deep search adımlarını sırayla göster
+    if (isDeepSearch) {
+        // Claude gibi düşünce adımları — önce ne yapacağını göster
+        const thinkText = `Kullanıcı "${prompt.slice(0,50)}${prompt.length>50?'...':''}" soruyor. Web'de araştırıyorum.`;
+        _clientAddStep('🧠', thinkText);
+        
+        const steps = [
+            ['🔍', "Web'de aranıyor...", 1200],
+            ['📄', 'Kaynaklar okunuyor...', 2400],
+            ['⚡', 'En alakalı bilgiler seçiliyor...', 3600],
+            ['✍️', 'Yanıt hazırlanıyor...', 4800],
+        ];
+        steps.forEach(([emoji, text, delay]) => {
+            setTimeout(() => {
+                if (currentAbortController && !currentAbortController.signal.aborted) {
+                    _clientAddStep(emoji, text);
+                }
+            }, delay);
+        });
+    } else if (isLiveData) {
+        _clientAddStep('📡', 'Güncel veri alınıyor...');
+    } else if (isDebug) {
+        _clientAddStep('🔍', 'Hata analiz ediliyor...');
+    } else {
+        botMsg.content.innerHTML = `<div class="typing-indicator"><span></span><span></span><span></span></div>`;
+    }
+
     const requestBody = { action: "chat", prompt, mode: "assistant", conversation_id: currentConversationId, token: localStorage.getItem('token') };
     // Dosya: bu mesajda yüklendiyse veya konuşmada daha önce yüklendiyse gönder
     const activeFile = fileForThisMsg || window._activeConvFile;
@@ -1025,6 +1136,93 @@ async function handleChat() {
         const reader = response.body.getReader();
         const decoder = new TextDecoder("utf-8");
         let fullText = "";
+        let stepsContainer = null;
+        let _stepActive = null;
+
+        // İlk gerçek içerik gelince client adımlarını tamamla
+        let clientStepsDone = false;
+        function _doneClientSteps() {
+            if (!clientStepsDone) {
+                clientStepsDone = true;
+                // Reflect adımı ekle
+                if (isDeepSearch && clientStepsContainer) {
+                    setTimeout(() => _clientAddStep('🔎', 'Yanıt doğrulanıyor...'), 100);
+                    setTimeout(() => _clientFinishSteps(), 800);
+                } else {
+                    _clientFinishSteps();
+                }
+                // Typing indicator temizle
+                const ti = botMsg.content.querySelector('.typing-indicator');
+                if (ti) ti.remove();
+            }
+        }
+
+        // ── Step kartları — Claude gibi araç adımları ──────────
+        const _steps = []; // {el, name}
+
+        function _addStep(line) {
+            const inner = line.replace('[STEP]','').replace('[/STEP]','').trim();
+            const match = inner.match(/^(\S+)\s+(.*)/);
+            const emoji = match?.[1] || '⚙️';
+            const text  = match?.[2] || inner;
+
+            if (!stepsContainer) {
+                stepsContainer = document.createElement('div');
+                stepsContainer.className = 'thinking-steps';
+                botMsg.content.innerHTML = '';
+                botMsg.content.appendChild(stepsContainer);
+            }
+
+            // Önceki adımı tamamlandı yap
+            if (_stepActive) {
+                _stepActive.classList.remove('active');
+                _stepActive.classList.add('done');
+                const sp = _stepActive.querySelector('.step-spinner');
+                if (sp) sp.outerHTML = '<span class="step-check">✓</span>';
+            }
+
+            const el = document.createElement('div');
+            el.className = 'thinking-step active';
+            el.innerHTML = `
+                <div class="step-spinner"></div>
+                <span class="step-emoji">${emoji}</span>
+                <span class="step-text">${text}</span>
+            `;
+            stepsContainer.appendChild(el);
+            _stepActive = el;
+            _steps.push(el);
+
+            // Scroll
+            el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+
+        function _finishSteps() {
+            if (_stepActive) {
+                _stepActive.classList.remove('active');
+                _stepActive.classList.add('done');
+                const sp = _stepActive.querySelector('.step-spinner');
+                if (sp) sp.outerHTML = '<span class="step-check">✓</span>';
+                _stepActive = null;
+            }
+            // 5sn sonra adımları kapat — küçült ve soluklaştır
+            if (stepsContainer) {
+                setTimeout(() => {
+                    if (!stepsContainer) return;
+                    stepsContainer.style.transition = 'all 0.5s ease';
+                    stepsContainer.style.opacity    = '0.3';
+                    stepsContainer.style.maxHeight  = '28px';
+                    stepsContainer.style.overflow   = 'hidden';
+                    stepsContainer.title = 'Araştırma adımlarını görmek için tıklayın';
+                    stepsContainer.style.cursor = 'pointer';
+                    stepsContainer.onclick = () => {
+                        stepsContainer.style.maxHeight  = '';
+                        stepsContainer.style.opacity    = '0.7';
+                        stepsContainer.style.cursor     = '';
+                        stepsContainer.onclick = null;
+                    };
+                }, 5000);
+            }
+        }
         const IMAGE_LOADING_PLACEHOLDER = `
         <div class="onebune-image-loading">
             <div class="onebune-image-loading-wrap">
@@ -1042,11 +1240,60 @@ while (true) {
     const { value, done } = await reader.read();
     if (done) break;
 
-    fullText += decoder.decode(value, { stream: true });
+    const chunk = decoder.decode(value, { stream: true });
 
-    if (firstChunk) {
-        botMsg.content.innerHTML = "";
+    // STEP tag buffer — chunk sınırında bölünme sorununu çöz
+    // [STEP] ve [/STEP] farklı chunk'larda gelebilir, buffer'da biriktir
+    if (!window._stepBuffer) window._stepBuffer = '';
+    window._stepBuffer += chunk;
+
+    let remainingChunk = '';
+    let buf = window._stepBuffer;
+
+    // Tam [STEP]...[/STEP] blokları işle
+    const regex = /\[STEP\][^\[\]]*\[\/STEP\]/g;
+    let lastIndex = 0;
+    let match;
+    while ((match = regex.exec(buf)) !== null) {
+        // Step'ten önce gelen normal metin
+        remainingChunk += buf.slice(lastIndex, match.index);
+        // Step'i işle
+        _addStep(match[0]);
+        lastIndex = match.index + match[0].length;
+        if (buf[lastIndex] === '\n') lastIndex++;
+    }
+
+    // İşlenmemiş kısmı kontrol et
+    const unprocessed = buf.slice(lastIndex);
+
+    // Yarım [STEP] var mı? (henüz [/STEP] gelmedi) → buffer'da tut
+    if (unprocessed.includes('[STEP]') && !unprocessed.includes('[/STEP]')) {
+        const stepStart = unprocessed.indexOf('[STEP]');
+        remainingChunk += unprocessed.slice(0, stepStart);
+        window._stepBuffer = unprocessed.slice(stepStart);
+    } else {
+        remainingChunk += unprocessed;
+        window._stepBuffer = '';
+    }
+
+    // [STEPS_DONE] kontrolü
+    if (remainingChunk.includes('[STEPS_DONE]')) {
+        remainingChunk = remainingChunk.replace('[STEPS_DONE]', '');
+        _finishSteps();
+    }
+
+    // [CANLI VERİ] taglerini temizle — frontend'e yansımasın
+    remainingChunk = remainingChunk
+        .replace(/\[CANLI VERİ[^\]]*\]/g, '')
+        .replace(/\[\/CANLI VERİ\]/g, '')
+        .replace(/\[NOT:[^\]]*\]/g, '');
+
+    // Normal metni ekle
+    fullText += remainingChunk;
+
+    if (firstChunk && fullText.trim()) {
         firstChunk = false;
+        _doneClientSteps();  // İlk içerik geldi → adımları tamamla
     }
 
  let renderText = fullText;
@@ -1099,8 +1346,18 @@ botMsg.content.innerHTML = renderText.includes("onebune-image-loading")
         .replace("Görsel oluşturuluyor...", "")
         .trim();
     
-    botMsg.content.innerHTML = renderMarkdown(cleanedFinalText);
-    if (firstChunk) botMsg.content.innerHTML = "";
+    // Typing indicator temizle — stream bitti
+    const typingEl = botMsg.content.querySelector('.typing-indicator');
+    if (typingEl) typingEl.remove();
+
+    // Buffer temizle
+    window._stepBuffer = '';
+
+    if (fullText.trim()) {
+        botMsg.content.innerHTML = renderMarkdown(cleanedFinalText);
+    } else if (firstChunk) {
+        botMsg.content.innerHTML = "";
+    }
 
         if (botMsg.copyBtn) {
             botMsg.copyBtn.onclick = () => {

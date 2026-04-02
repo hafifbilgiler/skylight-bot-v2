@@ -406,6 +406,70 @@
             align-items: center;
         }
 
+        /* ── Deep Search Step Kartları — Claude gibi ─── */
+        .thinking-steps {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            padding: 2px 0 14px;
+            max-width: 380px;
+        }
+        .thinking-step {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 7px 13px;
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.07);
+            border-radius: 9px;
+            font-size: 13px;
+            color: rgba(255,255,255,0.5);
+            animation: stepFadeIn 0.25s ease both;
+            transition: all 0.3s ease;
+        }
+        .thinking-step.active {
+            background: rgba(0,242,254,0.06);
+            border-color: rgba(0,242,254,0.2);
+            color: rgba(255,255,255,0.85);
+        }
+        .thinking-step.done {
+            background: transparent;
+            border-color: rgba(255,255,255,0.05);
+            color: rgba(255,255,255,0.3);
+        }
+        .step-emoji {
+            font-size: 14px;
+            flex-shrink: 0;
+        }
+        .step-text {
+            flex: 1;
+            font-size: 12.5px;
+            line-height: 1.4;
+        }
+        .step-spinner {
+            width: 13px; height: 13px;
+            border: 1.5px solid rgba(0,242,254,0.15);
+            border-top-color: #00f2fe;
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+            flex-shrink: 0;
+        }
+        .step-check {
+            width: 13px; height: 13px;
+            color: rgba(0,242,254,0.5);
+            font-size: 11px;
+            flex-shrink: 0;
+            text-align: center;
+            line-height: 13px;
+        }
+        @keyframes stepFadeIn {
+            from { opacity: 0; transform: translateY(5px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
         .conv-delete {
             color: var(--text-muted);
             cursor: pointer;
