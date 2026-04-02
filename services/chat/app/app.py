@@ -484,24 +484,29 @@ async def get_live_data(
                 search_results = d.get("search_results", [])
                 pages_fetched  = d.get("pages_fetched", 0)
                 
-                # Ham arama sonuçlarını chat LLM'e direkt ver (Gemini grounding gibi)
+                # ── Grounding context — LLM'e verilecek web verisi ──────
                 # Synthesis LLM yok — chat LLM kendisi sentezliyor
+                # queries_used: keyword generator'ın ürettiği sorgular
+                queries_used  = d.get("queries_used", [enriched_query])
+                sources_block = d.get("sources_block", "")  # Kullanıcıya gösterilecek linkler
+
                 parts = [
                     "[WEB ARAŞTIRMA SONUÇLARI — SADECE BUNLARI KULLAN]",
-                    f"Sorgu: {enriched_query}",
+                    f"Asıl soru: {enriched_query}",
+                    f"Kullanılan sorgular: {', '.join(queries_used)}",
                     f"Kaynak sayısı: {len(search_results)} | Okunan sayfa: {pages_fetched}",
                     "",
                 ]
-                
+
                 # Synthesis varsa ekle (ham format)
                 if synthesis and len(synthesis) > 50:
                     parts.append("## Bulunan Bilgiler:")
                     parts.append(synthesis)
-                
-                # Arama sonuçlarını da ekle
+
+                # Arama sonuçlarını da LLM'e ver (grounding için)
                 if search_results:
                     parts.append("")
-                    parts.append("## Kaynaklar:")
+                    parts.append("## Kaynaklar (alıntı yapabilirsin):")
                     for i, r in enumerate(search_results[:6], 1):
                         title   = r.get("title", "")[:80]
                         snippet = r.get("snippet", r.get("content", ""))[:300]
@@ -509,16 +514,21 @@ async def get_live_data(
                         if title and snippet:
                             parts.append(f"[{i}] **{title}**")
                             parts.append(f"{snippet}")
-                            parts.append(f"Kaynak: {url}")
+                            parts.append(f"URL: {url}")
                             parts.append("")
-                
+
                 parts.append("[/WEB ARAŞTIRMA SONUÇLARI]")
                 parts.append("")
-                parts.append("Yukarıdaki web kaynaklarını kullanarak soruyu yanıtla.")
-                parts.append("Kaynaklarda olmayan bilgiyi ekleme.")
-                
+                parts.append("GÖREV: Yukarıdaki web kaynaklarını kullanarak soruyu yanıtla.")
+                parts.append("- Kaynaklardaki bilgiyi kullan, tahmin etme")
+                parts.append("- Sayı/tarih/skor → kaynaktan al")
+                parts.append("- Yanıtının SONUNA aşağıdaki kaynak bloğunu AYNEN ekle (değiştirme):")
+                parts.append("")
+                if sources_block:
+                    parts.append(f"SOURCES_BLOCK_PLACEHOLDER:{sources_block}")
+
                 result = "\n".join(parts)
-                print(f"[DEEP SEARCH] ✅ {len(search_results)} kaynak → chat LLM'e verildi")
+                print(f"[DEEP SEARCH] ✅ {len(search_results)} kaynak | sorgular: {queries_used}")
                 return result
         except httpx.TimeoutException:
             print(f"[DEEP SEARCH] Timeout — fallback yok")
@@ -592,6 +602,44 @@ async def get_live_data(
     except Exception as e:
         print(f"[LIVE DATA] Error: {e}")
     return None
+
+
+# ── get_live_data wrapper — sources_block ayıklar ─────────────
+_SOURCES_SENTINEL = "SOURCES_BLOCK_PLACEHOLDER:"
+
+async def get_live_data_with_sources(
+    query: str,
+    mode: str = "assistant",
+    router_tool: str = None,
+    router_decision: Dict = None,
+    history: List[Dict] = None,
+) -> tuple:
+    """
+    get_live_data'yı çağırır, dönen metinden SOURCES_BLOCK_PLACEHOLDER'ı ayıklar.
+
+    Returns:
+        (grounding_context: Optional[str], sources_block: str)
+        grounding_context → LLM'e gidecek temiz grounding metni
+        sources_block     → Kullanıcıya gösterilecek Markdown kaynak listesi
+    """
+    raw = await get_live_data(
+        query,
+        mode=mode,
+        router_tool=router_tool,
+        router_decision=router_decision,
+        history=history,
+    )
+    if not raw:
+        return raw, ""
+
+    if _SOURCES_SENTINEL in raw:
+        idx = raw.find(_SOURCES_SENTINEL)
+        sources_block = raw[idx + len(_SOURCES_SENTINEL):].strip()
+        context       = raw[:idx].rstrip()
+        return context or None, sources_block
+
+    return raw, ""
+
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1437,17 +1485,18 @@ async def build_messages(
         "intent":         kwargs.get("router_intent", ""),
     } if kwargs.get("live_type_hint") or kwargs.get("needs_realtime") else None
 
-    live_context = await get_live_data(
+    live_context, _sources_block = await get_live_data_with_sources(
         user_prompt,
         mode=mode,
         router_tool=kwargs.get("live_type_hint"),
         router_decision=_router_dec,
         history=history or [],
     )
-    # live_context → user mesajına geçir (system'e değil)
+    # live_context → user mesajına geçir (system'e değil), sources_block ayrı taşınır
     if live_context:
-        kwargs["live_context"] = live_context
-        print(f"[CHAT] Live data → user msg: {len(live_context)} chars")
+        kwargs["live_context"]   = live_context
+        kwargs["sources_block"]  = _sources_block  # SSE/streaming endpoint alır
+        print(f"[CHAT] Live data → user msg: {len(live_context)} chars | sources: {bool(_sources_block)}")
 
     # 4. RAG CONTEXT
     if rag_context:
@@ -1516,6 +1565,9 @@ Kullanıcı bağlam sorarsa özete başvur, tekrar sormadan yanıtla."""
     # Live context varsa user mesajına ekle — system'e değil
     # Gemini grounding mantığı: web verisi = user turn context
     live_ctx = live_context or kwargs.get("live_context", "") or ""
+    # SOURCES_BLOCK_PLACEHOLDER LLM'e gitmemeli — temizle
+    if live_ctx and "SOURCES_BLOCK_PLACEHOLDER:" in live_ctx:
+        live_ctx = live_ctx[:live_ctx.find("SOURCES_BLOCK_PLACEHOLDER:")].rstrip()
     if live_ctx:
         enriched_prompt = f"{live_ctx}\n\nKullanıcı sorusu: {user_prompt}"
     else:
@@ -1646,6 +1698,20 @@ async def chat(request: ChatRequest):
                 full_text += buffer
                 yield buffer
 
+            # Kaynak listesi — LLM yanıtının hemen ardından gönder
+            _sb = kwargs.get("sources_block", "") if "kwargs" in dir() else ""
+            if not _sb:
+                # build_messages'den gelen sources_block'u messages'dan çıkar
+                for _m in messages:
+                    _mc = _m.get("content", "")
+                    if isinstance(_mc, str) and "SOURCES_BLOCK_PLACEHOLDER:" in _mc:
+                        _idx = _mc.find("SOURCES_BLOCK_PLACEHOLDER:")
+                        _sb  = _mc[_idx + len("SOURCES_BLOCK_PLACEHOLDER:"):].strip()
+                        break
+            if _sb:
+                yield f"\n\n{_sb}"
+                full_text += f"\n\n{_sb}"
+
             # Periodic summary (background)
             if request.conversation_id:
                 asyncio.create_task(check_and_create_summary_async(
@@ -1658,7 +1724,7 @@ async def chat(request: ChatRequest):
                     user_id=request.user_id,
                     prompt=request.prompt,
                     response=full_text,
-                    intent=request.mode,   # gateway'den gelen mode intent proxy
+                    intent=request.mode,
                     mode=request.mode,
                 ))
 
@@ -1729,8 +1795,10 @@ async def chat_sse(request: ChatRequest):
                     })
                     await asyncio.sleep(0.05)
 
-                # Live data çek
-                live_context = await get_live_data(prompt, mode, history=history or [])
+                # Live data çek (sources_block ayrı alınır — LLM'e gitmez)
+                live_context, sources_block = await get_live_data_with_sources(
+                    prompt, mode, history=history or []
+                )
 
                 # Adım 4'ü tamamla
                 yield sse_event("step", {
@@ -1751,7 +1819,9 @@ async def chat_sse(request: ChatRequest):
                 })
 
             else:
-                live_context = await get_live_data(prompt, mode, history=history or [])
+                live_context, sources_block = await get_live_data_with_sources(
+                    prompt, mode, history=history or []
+                )
 
                 # Normal thinking steps
                 show_thinking = should_show_thinking(prompt, mode, request.history or [])
@@ -1801,10 +1871,15 @@ async def chat_sse(request: ChatRequest):
                     "status": "done",
                 })
 
+            # Kaynak listesi — ayrı event olarak gönder (LLM yanıtına bağımlı değil)
+            if sources_block:
+                yield sse_event("sources", sources_block)
+
             # Tüm adımları done yap
             yield sse_event("done", {
                 "total_chars": len(full_text),
                 "mode":        mode,
+                "has_sources": bool(sources_block),
             })
 
             # Background tasks

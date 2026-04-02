@@ -1197,15 +1197,19 @@ async def deep_search_pipeline(req: DeepSearchRequest) -> Dict:
 
     print(f"\n{chr(9473)*60}\n[DEEP SEARCH] '{req.query}'\n{chr(9473)*60}")
 
-    # ── 1. SEARCH — Paralel çoklu sorgu ─────────────────────
-    search_queries = [req.query]
-    is_tr = any(c in req.query for c in "çğışöüÇĞİŞÖÜ")
-    if is_tr:
-        search_queries.append(f"{req.query} son dakika güncel")
+    # ── 1. SEARCH — AI keyword generator + paralel çoklu sorgu ─
+    language = "tr" if any(c in req.query for c in "çğışöüÇĞİŞÖÜ") else "en"
+    if _web_search_v4:
+        from web_search_v4 import generate_search_queries, format_sources_for_user
+        search_queries = await generate_search_queries(req.query, language, max_queries=3)
+        if req.query not in search_queries:
+            search_queries.insert(0, req.query)
+        search_queries = search_queries[:3]
     else:
-        search_queries.append(f"{req.query} latest 2025 2026")
+        search_queries = [req.query]
+    print(f"[DEEP SEARCH] Sorgular: {search_queries}")
 
-    search_tasks = [async_web_search(q, req.num_results) for q in search_queries[:2]]
+    search_tasks = [async_web_search(q, req.num_results) for q in search_queries]
     search_results_list = await asyncio.gather(*search_tasks, return_exceptions=True)
 
     seen_urls = set()
@@ -1314,6 +1318,17 @@ async def deep_search_pipeline(req: DeepSearchRequest) -> Dict:
     elapsed = round(time.time() - t0, 2)
     print(f"[DEEP SEARCH] ✅ {elapsed}s | {len(results)} kaynak | {len(page_contents)} sayfa\n")
 
+    # Kullanıcıya gösterilecek kaynak bloğu
+    if _web_search_v4:
+        from web_search_v4 import format_sources_for_user
+        sources_block = format_sources_for_user(
+            [{"title": r.get("title",""), "url": r.get("url",""),
+              "content": r.get("content","")[:120]} for r in results[:8]],
+            max_show=5,
+        )
+    else:
+        sources_block = ""
+
     result = {
         "success": True, "tool_used": "deep_search", "query": req.query, "provider": provider,
         "data": {
@@ -1323,6 +1338,8 @@ async def deep_search_pipeline(req: DeepSearchRequest) -> Dict:
             "pages_fetched":   len(page_contents),
             "sources_count":   len(results),
             "elapsed_seconds": elapsed,
+            "queries_used":    search_queries,    # Hangi sorgular kullanıldı
+            "sources_block":   sources_block,     # Kullanıcıya gösterilecek linkler
         },
     }
     await deep_cache.set(cache_key, result)

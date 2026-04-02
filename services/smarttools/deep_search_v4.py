@@ -34,7 +34,7 @@ from typing import Optional
 import httpx
 from bs4 import BeautifulSoup
 
-from web_search_v4 import web_search, SearchResult
+from web_search_v4 import web_search, SearchResult, generate_search_queries, format_sources_for_user
 
 # ── Config ────────────────────────────────────────────────────
 CRAWL4AI_URL    = os.getenv("CRAWL4AI_URL",    "http://crawl4ai:11235")
@@ -287,15 +287,15 @@ async def deep_search(
     print(f"[DEEP SEARCH] {query}")
     print(f"{'━'*56}")
 
-    # 1. Query expansion for better recall
-    queries = [query]
-    if language == "tr":
-        queries.append(f"{query} son dakika güncel")
-    else:
-        queries.append(f"{query} latest 2025 2026")
+    # 1. AI-powered query expansion
+    queries = await generate_search_queries(query, language, max_queries=3)
+    if query not in queries:
+        queries.insert(0, query)
+    queries = queries[:3]
+    print(f"[DEEP SEARCH] Sorgular: {queries}")
 
-    # 2. Parallel search
-    search_tasks   = [web_search(q, num, language) for q in queries[:2]]
+    # 2. Parallel search — tüm sorgular aynı anda
+    search_tasks   = [web_search(q, num, language, skip_keywords=True) for q in queries]
     search_results = await asyncio.gather(*search_tasks, return_exceptions=True)
 
     # Merge & dedupe results
@@ -355,13 +355,16 @@ async def deep_search(
     elapsed = round(time.time() - t0, 2)
     print(f"[DEEP SEARCH] Done in {elapsed}s\n")
 
-    context = _format_grounding(query, top_chunks, merged)
+    context       = _format_grounding(query, top_chunks, merged)
+    sources_block = format_sources_for_user(merged[:8], max_show=5)
     meta    = {
-        "elapsed":      elapsed,
-        "provider":     provider,
-        "search_hits":  len(merged),
-        "pages_scraped": len(pages),
-        "chunks_total": len(all_chunks),
-        "chunks_used":  len(top_chunks),
+        "elapsed":        elapsed,
+        "provider":       provider,
+        "search_hits":    len(merged),
+        "pages_scraped":  len(pages),
+        "chunks_total":   len(all_chunks),
+        "chunks_used":    len(top_chunks),
+        "queries_used":   queries,
+        "sources_block":  sources_block,   # Kullanıcıya gösterilecek kaynak listesi
     }
     return context, meta
