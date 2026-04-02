@@ -460,7 +460,7 @@ async def get_live_data(
                     enriched_query = f"{query} {recent.strip()}"[:200]
                     print(f"[DEEP SEARCH] Enriched: {enriched_query[:80]}")
 
-            async with httpx.AsyncClient(timeout=35.0) as client:
+            async with httpx.AsyncClient(timeout=55.0) as client:  # Keyword gen eklendi — ekstra sure gerekli
                 resp = await client.post(
                     f"{SMART_TOOLS_URL}/deep_search",
                     json={
@@ -1485,18 +1485,24 @@ async def build_messages(
         "intent":         kwargs.get("router_intent", ""),
     } if kwargs.get("live_type_hint") or kwargs.get("needs_realtime") else None
 
-    live_context, _sources_block = await get_live_data_with_sources(
-        user_prompt,
-        mode=mode,
-        router_tool=kwargs.get("live_type_hint"),
-        router_decision=_router_dec,
-        history=history or [],
-    )
-    # live_context → user mesajına geçir (system'e değil), sources_block ayrı taşınır
-    if live_context:
-        kwargs["live_context"]   = live_context
-        kwargs["sources_block"]  = _sources_block  # SSE/streaming endpoint alır
-        print(f"[CHAT] Live data → user msg: {len(live_context)} chars | sources: {bool(_sources_block)}")
+    # context zaten dışarıdan sağlandıysa (SSE pre-fetch) → internal fetch atla (double-fetch önlemi)
+    _skip_internal_fetch = bool(context)
+    if not _skip_internal_fetch:
+        live_context, _sources_block = await get_live_data_with_sources(
+            user_prompt,
+            mode=mode,
+            router_tool=kwargs.get("live_type_hint"),
+            router_decision=_router_dec,
+            history=history or [],
+        )
+        # live_context → user mesajına geçir (system'e değil), sources_block ayrı taşınır
+        if live_context:
+            kwargs["live_context"]   = live_context
+            kwargs["sources_block"]  = _sources_block
+            print(f"[CHAT] Live data → user msg: {len(live_context)} chars | sources: {bool(_sources_block)}")
+    else:
+        live_context   = None   # context param'dan geliyor — user msg'e ayrıca eklenmeyecek
+        _sources_block = ""
 
     # 4. RAG CONTEXT
     if rag_context:
