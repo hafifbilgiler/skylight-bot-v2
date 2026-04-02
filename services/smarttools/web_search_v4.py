@@ -171,7 +171,7 @@ async def generate_search_queries(
     # LLM ile akıllı keyword üretimi
     if DEEPINFRA_KEY:
         try:
-            async with httpx.AsyncClient(timeout=6.0) as c:
+            async with httpx.AsyncClient(timeout=2.5) as c:
                 r = await c.post(
                     f"{DEEPINFRA_URL}/chat/completions",
                     headers={
