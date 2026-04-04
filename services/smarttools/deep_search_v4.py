@@ -79,6 +79,34 @@ class DeepSearchResult:
 
 
 # ── Page fetcher ──────────────────────────────────────────────
+
+# ── Jina Reader — ücretsiz, hızlı URL→Markdown ───────────────
+# r.jina.ai öneki ile herhangi bir URL'yi LLM-ready markdown'a çevirir
+# Crawl4AI'ya alternatif, key gerekmez, ücretsiz tier yeterli
+JINA_API_KEY = os.getenv("JINA_API_KEY", "")  # opsiyonel, ücretsiz tier için boş bırak
+
+async def _fetch_jina(url: str) -> Optional[str]:
+    """Jina Reader ile URL içeriğini Markdown'a çevir."""
+    try:
+        headers = {
+            "Accept": "text/plain",
+            "X-Return-Format": "markdown",
+            "X-Timeout": "10",
+        }
+        if JINA_API_KEY:
+            headers["Authorization"] = f"Bearer {JINA_API_KEY}"
+
+        async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as c:
+            r = await c.get(
+                f"https://r.jina.ai/{url}",
+                headers=headers,
+            )
+            if r.status_code == 200 and len(r.text) > 200:
+                return r.text[:8000]
+    except Exception as e:
+        print(f"[JINA] {e}")
+    return None
+
 async def _fetch_crawl4ai(url: str) -> Optional[str]:
     if not CRAWL4AI_URL:
         return None
@@ -137,6 +165,11 @@ async def _fetch_page(url: str) -> Optional[str]:
             return None
     except Exception:
         pass
+    # Jina Reader önce dene — ücretsiz, hızlı, Crawl4AI pod yükü olmaz
+    content = await _fetch_jina(url)
+    if content:
+        return content
+    # Crawl4AI fallback — Jina başarısız olursa
     content = await _fetch_crawl4ai(url)
     if content:
         return content
@@ -166,10 +199,10 @@ async def _rerank(query: str, chunks: list[Chunk]) -> list[Chunk]:
 
     texts = [c.text[:512] for c in chunks]
 
-    for attempt in range(3):
+    for attempt in range(1):  # 1 deneme yeter — timeout'ta keyword fallback'e geç
         try:
             async with httpx.AsyncClient(
-                timeout=httpx.Timeout(connect=5.0, read=35.0, write=10.0, pool=5.0)
+                timeout=httpx.Timeout(connect=3.0, read=8.0, write=5.0, pool=3.0)
             ) as c:
                 r = await c.post(f"{RERANKER_URL}/rerank", json={
                     "query":     query,

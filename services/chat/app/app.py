@@ -491,7 +491,7 @@ async def get_live_data(
                 sources_block = d.get("sources_block", "")  # Kullanıcıya gösterilecek linkler
 
                 parts = [
-                    "[WEB ARAŞTIRMA SONUÇLARI — SADECE BUNLARI KULLAN]",
+                    "[ARAŞTIRMA SONUÇLARI]",
                     f"Asıl soru: {enriched_query}",
                     f"Kullanılan sorgular: {', '.join(queries_used)}",
                     f"Kaynak sayısı: {len(search_results)} | Okunan sayfa: {pages_fetched}",
@@ -517,7 +517,7 @@ async def get_live_data(
                             parts.append(f"URL: {url}")
                             parts.append("")
 
-                parts.append("[/WEB ARAŞTIRMA SONUÇLARI]")
+                parts.append("[/ARAŞTIRMA SONUÇLARI]")
                 parts.append("")
                 parts.append("GÖREV: Yukarıdaki web kaynaklarını kullanarak soruyu yanıtla.")
                 parts.append("- Kaynaklardaki bilgiyi kullan, tahmin etme")
@@ -560,7 +560,7 @@ async def get_live_data(
             tool_data = data.get("data", {})
 
             # Format — LLM'e beslenecek temiz metin
-            parts = [f"[Canlı Veri — {tool_used.upper()}]"]
+            parts = []  # Tag yok — LLM sadece veriyi görsün, tag'ı kullanıcıya yansıtmasın
 
             if tool_used == "weather":
                 parts.append(
@@ -591,8 +591,7 @@ async def get_live_data(
 
             formatted = (
                 "\n".join(parts) +
-                "\n\n[NOT: Sadece bu veriyi kullan. "
-                "Önceki konulardan bahsetme, sadece bu soruyu cevapla.]"
+                "\n\n[SADECE BU VERİYİ KULLAN — ÖNCEKI KONUYU BIRAK]"
             )
             print(f"[LIVE DATA] ✅ {tool_used} — {len(formatted)} chars")
             return formatted
@@ -693,7 +692,7 @@ async def load_conversation_summary(conversation_id: str) -> Optional[str]:
         async with db_pool.acquire() as conn:
             summary = await conn.fetchval(
                 "SELECT get_conversation_summary($1::uuid)", conversation_id)
-            return summary or "[CONVERSATION SUMMARY]\nNew conversation\n[/CONVERSATION SUMMARY]"
+            return summary if summary and "New conversation" not in summary else None
     except Exception as e:
         print(f"[SUMMARY ERROR] {e}")
         return None
@@ -1466,7 +1465,7 @@ async def build_messages(
 
     # 2. CONVERSATION SUMMARY
     conv_summary = await load_conversation_summary(conversation_id)
-    if conv_summary:
+    if conv_summary and len(conv_summary) > 60:  # Yeni/boş summary ekleme
         system_content += f"\n\n{conv_summary}"
 
     # 2b. CONVERSATION STATE — Redis'ten bağlam

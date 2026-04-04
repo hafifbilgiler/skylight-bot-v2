@@ -41,6 +41,16 @@ KEYWORD_MODEL   = os.getenv("KEYWORD_MODEL",   "meta-llama/Meta-Llama-3.1-8B-Ins
 
 SEARXNG_ENGINES = "bing,startpage"
 
+# SearchCans Standard plan = 2 parallel lane
+# 3 sorgu aynı anda → 429. Semaphore ile max 2'ye sınırla.
+_searchcans_semaphore = None
+
+def _get_searchcans_semaphore():
+    global _searchcans_semaphore
+    if _searchcans_semaphore is None:
+        _searchcans_semaphore = asyncio.Semaphore(2)
+    return _searchcans_semaphore
+
 _SKIP_DOMAINS = frozenset({
     "youtube.com", "youtu.be", "twitter.com", "x.com",
     "instagram.com", "facebook.com", "tiktok.com", "reddit.com",
@@ -220,52 +230,54 @@ def _should_skip(url: str) -> bool:
 async def _searchcans(query: str, num: int, lang: str) -> list[SearchResult]:
     if not SEARCHCANS_KEY:
         return []
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as c:
-            r = await c.post(
-                SEARCHCANS_URL,
-                headers={
-                    "Authorization": f"Bearer {SEARCHCANS_KEY}",
-                    "Content-Type":  "application/json",
-                },
-                json={
-                    "s": query,
-                    "t": "google",
-                    "d": 9000,
-                    "p": 1,
-                },
-            )
-            if r.status_code != 200:
-                print(f"[SEARCHCANS] HTTP {r.status_code}")
-                return []
+    async with _get_searchcans_semaphore():
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as c:
+                r = await c.post(
+                    SEARCHCANS_URL,
+                    headers={
+                        "Authorization": f"Bearer {SEARCHCANS_KEY}",
+                        "Content-Type":  "application/json",
+                    },
+                    json={
+                        "s": query,
+                        "t": "google",
+                        "d": 9000,
+                        "p": 1,
+                    },
+                )
+                if r.status_code == 429:
+                    print(f"[SEARCHCANS] HTTP 429 — rate limit, fallback'e geç")
+                    return []
+                if r.status_code != 200:
+                    print(f"[SEARCHCANS] HTTP {r.status_code}")
+                    return []
 
-            data = r.json()
-            if data.get("code") != 0:
-                print(f"[SEARCHCANS] API hata: {data.get('msg', 'unknown')}")
-                return []
+                data = r.json()
+                if data.get("code") != 0:
+                    print(f"[SEARCHCANS] API hata: {data.get('msg', 'unknown')}")
+                    return []
 
-            items = data.get("data", [])
-            results = []
-            for item in items[:num + 2]:
-                url = item.get("url", "")
-                if _should_skip(url):
-                    continue
-                results.append(SearchResult(
-                    title=item.get("title", "")[:120],
-                    url=url,
-                    snippet=item.get("snippet", item.get("description", ""))[:500],
-                    source="searchcans",
-                ))
-            if results:
-                print(f"[SEARCHCANS] {len(results)} results")
-            return results
+                items = data.get("data", [])
+                results = []
+                for item in items[:num + 2]:
+                    url = item.get("url", "")
+                    if _should_skip(url):
+                        continue
+                    results.append(SearchResult(
+                        title=item.get("title", "")[:120],
+                        url=url,
+                        snippet=item.get("snippet", item.get("description", ""))[:500],
+                        source="searchcans",
+                    ))
+                if results:
+                    print(f"[SEARCHCANS] {len(results)} results")
+                return results
+        except Exception as e:
+            print(f"[SEARCHCANS] {e}")
+            return []
 
-    except Exception as e:
-        print(f"[SEARCHCANS] {e}")
-        return []
 
-
-# ── Source 2: SearXNG (FALLBACK) ─────────────────────────────
 async def _searxng(query: str, num: int, lang: str) -> list[SearchResult]:
     if not SEARXNG_URL:
         return []
@@ -466,11 +478,8 @@ async def web_search(
             break
 
         sources = [
-            ("SearchCans",      lambda q=sq: _searchcans(q, num, language)),
-            ("SearXNG",         lambda q=sq: _searxng(q, num, language)),
-            ("Bing/Crawl4AI",   lambda q=sq: _bing_scrape(q, num, language)),
-            ("Google/Crawl4AI", lambda q=sq: _google_scrape(q, num, language)),
-            ("DDG HTML",        lambda q=sq: _ddg_html(q, num)),
+            ("SearchCans", lambda q=sq: _searchcans(q, num, language)),
+            ("DDG HTML",   lambda q=sq: _ddg_html(q, num)),
         ]
 
         for name, fn in sources:
