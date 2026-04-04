@@ -8,6 +8,7 @@ data:
   DEEPINFRA_BASE_URL: "https://api.deepinfra.com/v1/openai"
   SYNTHESIS_MODEL: "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"
   REDIS_URL: "redis://skylight-redis:6379/2"
+  SEARCHCANS_API_URL: "https://www.searchcans.com/api/search"
 
 ---
 apiVersion: apps/v1
@@ -71,6 +72,11 @@ spec:
               name: smart-tools-secret
               key: BRAVE_API_KEY
               optional: true
+        - name: SEARCHCANS_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: smart-tools-secret
+              key: SEARCHCANS_API_KEY
         - name: CRAWL4AI_URL
           value: "http://crawl4ai:11235"
         - name: RERANKER_URL
