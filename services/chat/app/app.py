@@ -1,3 +1,4 @@
+import re
 """
 ═══════════════════════════════════════════════════════════════
 SKYLIGHT CHAT SERVICE — v3.1 (LiveDataRouter entegrasyonu)
@@ -119,6 +120,31 @@ db_pool: Optional[asyncpg.Pool] = None
 # ═══════════════════════════════════════════════════════════════
 
 @app.on_event("startup")
+def _strip_internal_tags(text: str) -> str:
+    """SSE chunk'tan LLM grounding taglarini temizle."""
+    if "[" not in text:
+        return text
+    # Bracket tag'lari string replace ile temizle
+    replacements = [
+        ("[WEB ARAŞTIRMA SONUÇLARI]", ""),
+        ("[WEB ARAŞTIRMA SONUÇLARI — SADECE BUNLARI KULLAN]", ""),
+        ("[/WEB ARAŞTIRMA SONUÇLARI]", ""),
+        ("[ARAŞTIRMA SONUÇLARI]", ""),
+        ("[/ARAŞTIRMA SONUÇLARI]", ""),
+        ("[CANLI VERİ]", ""),
+        ("[/CANLI VERİ]", ""),
+        ("[Canlı Veri]", ""),
+        ("[LIVE DATA]", ""),
+    ]
+    for old, new in replacements:
+        text = text.replace(old, new)
+    # [NOT: ...] ve benzeri dinamik tag'lar icin basit parser
+    import re
+    text = re.sub(r"\[NOT:[^\]]{0,200}\]", "", text)
+    text = re.sub(r"\[SADECE[^\]]{0,100}\]", "", text)
+    return text
+
+
 async def startup_db():
     global db_pool
     try:
@@ -179,7 +205,10 @@ class ThinkingStep(BaseModel):
 # KURAL: Detection LOCAL (0ms, network yok)
 #        Veri çekme → smart_tools /unified (sadece lazımsa)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# ═══════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════b(pat, repl, text)
+    return text
+
+
 
 # ── Anlık API sinyalleri — smart tools /unified'a gider ────────
 _CURRENCY_KW  = ("dolar","euro","eur","usd","gbp","sterlin","pound","jpy","yen","chf",
@@ -1697,11 +1726,14 @@ async def chat(request: ChatRequest):
                 buffer    += chunk
                 full_text += chunk
                 if any(c in buffer for c in [' ','.','!','?','\n',',']) or len(buffer) > 10:
-                    yield buffer
+                    # SSE chunk'tan bracket tag'ları temizle — frontend'e sızmaz
+                    clean_buf = _strip_internal_tags(buffer)
+                    yield clean_buf
                     buffer = ""
             if buffer:
                 full_text += buffer
-                yield buffer
+                clean_buf = _strip_internal_tags(buffer)
+                yield clean_buf
 
             # Kaynak listesi — LLM yanıtının hemen ardından gönder
             _sb = kwargs.get("sources_block", "") if "kwargs" in dir() else ""
