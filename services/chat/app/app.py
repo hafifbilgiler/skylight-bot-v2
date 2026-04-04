@@ -205,10 +205,6 @@ class ThinkingStep(BaseModel):
 # KURAL: Detection LOCAL (0ms, network yok)
 #        Veri çekme → smart_tools /unified (sadece lazımsa)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# ═══════════════════════════════════════════════════════════════b(pat, repl, text)
-    return text
-
-
 
 # ── Anlık API sinyalleri — smart tools /unified'a gider ────────
 _CURRENCY_KW  = ("dolar","euro","eur","usd","gbp","sterlin","pound","jpy","yen","chf",
