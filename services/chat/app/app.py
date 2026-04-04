@@ -119,7 +119,6 @@ db_pool: Optional[asyncpg.Pool] = None
 # DATABASE
 # ═══════════════════════════════════════════════════════════════
 
-@app.on_event("startup")
 def _strip_internal_tags(text: str) -> str:
     """SSE chunk'tan LLM grounding taglarini temizle."""
     if "[" not in text:
