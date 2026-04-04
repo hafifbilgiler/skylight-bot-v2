@@ -32,7 +32,7 @@ spec:
     spec:
       containers:
       - name: smart-tools
-        image: docker.io/hafifbilgiler/smarttols:4.3 #2.2,2.3, 2.4, 2.8
+        image: docker.io/hafifbilgiler/smarttols:4.4 #2.2,2.3, 2.4, 2.8
         imagePullPolicy: Always
         ports:
         - containerPort: 8081
