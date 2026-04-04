@@ -8,6 +8,8 @@
 #   ✅ limiter.toml ConfigMap'e eklendi — missing config uyarısı gider
 #   ✅ forwarded_allow_ips: "*" — X-Forwarded-For uyarısı gider
 #   ✅ Ahmia, Torch disabled — zaten fail oluyordu
+#   ✅ use_default_settings: false — client engine override'ı engellendi
+#   ✅ Google/Brave tamamen kaldırıldı — 403/429 hataları biter
 # ═══════════════════════════════════════════════════════════════
  
 ---
@@ -32,7 +34,11 @@ metadata:
     app: searxng
 data:
   settings.yml: |
-    use_default_settings: true
+    # use_default_settings: false yapıyoruz çünkü true olduğunda
+    # client API'den engines=google,brave gönderince disabled:true'yu
+    # görmezden gelip yine çağırıyor. false ile sadece buradaki
+    # engine'ler aktif olur — client override çalışmaz.
+    use_default_settings: false
  
     general:
       debug: false
@@ -68,27 +74,30 @@ data:
         simple_style: "dark"
  
     engines:
+      # ── AÇIK OLAN ENGINE'LER ─────────────────────────────────
+      # Sadece bunlar çalışır — google/brave bu listede YOK
+ 
       - name: bing
         engine: bing
         shortcut: b
+        weight: 1.5
+        categories: general
+        disabled: false
+        timeout: 8.0
+ 
+      - name: startpage
+        engine: startpage
+        shortcut: sp
         weight: 1.2
         categories: general
         disabled: false
         timeout: 8.0
  
-      - name: google
-        engine: google
-        shortcut: g
-        weight: 1.5
-        categories: general
-        disabled: true
-        timeout: 10.0
- 
-      - name: startpage
-        engine: startpage
-        shortcut: sp
+      - name: bing news
+        engine: bing_news
+        shortcut: bn
+        categories: news
         weight: 1.0
-        categories: general
         disabled: false
         timeout: 8.0
  
@@ -101,18 +110,25 @@ data:
         timeout: 5.0
         language: tr
  
-      - name: bing news
-        engine: bing_news
-        shortcut: bn
-        categories: news
-        weight: 1.0
-        disabled: false
-        timeout: 8.0
+      # ── KAPALI ENGINE'LER ────────────────────────────────────
+      # NOT: use_default_settings:false ile bunlar zaten
+      # tanımlanmamış gibi davranır ama yine de ekledik
+      # gelecekte "bu neden kapalı?" sorusuna cevap olsun diye
+ 
+      - name: google
+        engine: google
+        shortcut: g
+        disabled: true        # 403 — sunucu IP bloklanıyor
+ 
+      - name: brave
+        engine: brave
+        shortcut: br
+        disabled: true        # 429 — rate limit
  
       - name: duckduckgo
         engine: duckduckgo
         shortcut: d
-        disabled: true
+        disabled: true        # parser hatası: list index out of range
  
       - name: ahmia
         engine: ahmia
@@ -123,10 +139,7 @@ data:
         engine: torch
         shortcut: to
         disabled: true
-      - name: brave
-        engine: brave
-        shortcut: br
-        disabled: true
+ 
     limiter:
       enabled: false
  
@@ -294,9 +307,3 @@ type: Opaque
 stringData:
   DEEPINFRA_API_KEY: "4hcNLCkZvisyP6wuD2sdY5NPFU2GjBSn"
   BRAVE_API_KEY: ""
-
-
-
-
-
-  

@@ -55,7 +55,7 @@ DEEPINFRA_URL  = os.getenv("DEEPINFRA_BASE_URL", "https://api.deepinfra.com/v1/o
 DEEPINFRA_KEY  = os.getenv("DEEPINFRA_API_KEY", "")
 KEYWORD_MODEL  = os.getenv("KEYWORD_MODEL",   "meta-llama/Meta-Llama-3.1-8B-Instruct")
 
-SEARXNG_ENGINES = "bing,google,brave"
+SEARXNG_ENGINES = "bing,startpage"   # google=403 brave=429 ddg=parser error — bunlar kapalı
 
 _SKIP_DOMAINS = frozenset({
     "youtube.com", "youtu.be", "twitter.com", "x.com",
