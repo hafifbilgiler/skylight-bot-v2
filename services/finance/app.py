@@ -369,7 +369,7 @@ Son Whale: {len(whales)} işlem {'| En büyük: $' + f"{max((w.get('usd',0) for 
                     "model":       FINANS_LLM_MODEL,
                     "messages":    [
                         {"role": "system", "content": COMMENTARY_PROMPT},
-                        {"role": "user",   "content": f"Şu anki {symbol} piyasa verilerini yorumla:\n{data_summary}"},
+                        {"role": "user",   "content": f"/no_think\nŞu anki {symbol} piyasa verilerini yorumla:\n{data_summary}"},
                     ],
                     "max_tokens":  350,
                     "temperature": 0.4,
@@ -645,7 +645,7 @@ Whale: {len(whales)} büyük işlem"""
                         "model":       FINANS_LLM_MODEL,
                         "messages":    [
                             {"role": "system", "content": COMMENTARY_PROMPT},
-                            {"role": "user",   "content": f"{symbol} piyasa verisi:\n{data_summary}"},
+                            {"role": "user",   "content": f"/no_think\n{symbol} piyasa verisi:\n{data_summary}"},
                         ],
                         "max_tokens":  350,
                         "temperature": 0.4,
