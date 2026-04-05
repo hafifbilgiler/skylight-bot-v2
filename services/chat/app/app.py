@@ -65,8 +65,11 @@ DEEPINFRA_BASE_URL = os.getenv("DEEPINFRA_BASE_URL", "https://api.deepinfra.com/
 SMART_TOOLS_URL    = os.getenv("SMART_TOOLS_URL",    "http://skylight-smart-tools:8081")
 
 # ── Gemini — canlı veri / web arama için ──────────────────────
-GEMINI_API_KEY   = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL     = os.getenv("GEMINI_MODEL",   "gemini-2.5-flash-lite")
+GEMINI_API_KEY     = os.getenv("GEMINI_API_KEY", "")      # AI Studio fallback
+GEMINI_PROJECT     = os.getenv("GEMINI_PROJECT", "")       # Vertex AI proje ID
+GEMINI_LOCATION    = os.getenv("GEMINI_LOCATION", "us-central1")
+GEMINI_SA_KEY_PATH = "/etc/vertex-sa/key.json"             # K8s secret mount
+GEMINI_MODEL       = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
 # Bu live_type'lar → Gemini'ye gider, DeepInfra'ya gitmez
 _GEMINI_TYPES    = {
     "web_search",
@@ -428,28 +431,42 @@ def _detect_live_type(
 # DeepInfra'ya gitmez, tag enjeksiyonu yok, kullanıcıya düz gider
 # ──────────────────────────────────────────────────────────────
 async def gemini_live_stream(query: str, live_type: str):
-    """google-genai SDK + Google Search Grounding. asyncio.to_thread kullanır."""
-    if not GEMINI_API_KEY:
-        yield "Gemini API key tanımlı değil."
-        return
-
+    """
+    Vertex AI Gemini + Google Search Grounding.
+    Service Account JSON key ile kimlik doğrulama — datacenter IP sorunu yok.
+    """
     instructions = {
         "weather":      "Güncel hava durumu bilgisini ver. Sıcaklık, nem, rüzgar. Türkçe.",
         "currency":     "Güncel döviz/kur bilgisini ver. Sayıları net yaz. Türkçe.",
         "crypto":       "Güncel kripto para fiyatını ver. USD ve TL karşılığını yaz. Türkçe.",
         "time":         "Güncel tarih ve saati ver. Türkçe.",
         "news":         "Son dakika haberlerini özetle. Madde madde yaz. Türkçe.",
-        "price_search": "Güncel fiyat bilgisini bul ve ver. Türkçe.",
+        "price_search": "Güncel fiyat bilgisini bul ve ver. Net rakamlar yaz. Türkçe.",
         "web_search":   "Soruyu Google'da ara, güncel ve doğru yanıt ver. Türkçe.",
         "deep_search":  "Soruyu derinlemesine araştır. Kapsamlı, kaynaklı yanıt ver. Türkçe.",
     }
     instruction = instructions.get(live_type, "Güncel bilgiyi Google'dan ara ve ver. Türkçe.")
 
     try:
+        import os as _os
         from google import genai
         from google.genai import types
 
-        client = genai.Client(api_key=GEMINI_API_KEY)
+        # Vertex AI — Service Account key ile
+        if _os.path.exists(GEMINI_SA_KEY_PATH) and GEMINI_PROJECT:
+            _os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = GEMINI_SA_KEY_PATH
+            client = genai.Client(
+                vertexai=True,
+                project=GEMINI_PROJECT,
+                location=GEMINI_LOCATION,
+            )
+            print(f"[GEMINI] Vertex AI | project={GEMINI_PROJECT}")
+        elif GEMINI_API_KEY:
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            print(f"[GEMINI] AI Studio fallback")
+        else:
+            yield "⚠️ Gemini yapılandırması eksik."
+            return
 
         def _call():
             return client.models.generate_content(
@@ -497,7 +514,7 @@ async def gemini_live_stream(query: str, live_type: str):
         import traceback
         print(f"[GEMINI] ❌ {type(e).__name__}: {e}")
         print(traceback.format_exc()[-400:])
-        yield f"Hata: {type(e).__name__}: {e}"
+        yield "Üzgünüm, şu an yanıt üretemiyorum. Lütfen tekrar deneyin."
 
 async def load_user_memory(user_id: int) -> Optional[str]:
     if not db_pool:
