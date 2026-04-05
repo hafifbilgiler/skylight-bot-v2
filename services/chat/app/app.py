@@ -64,6 +64,22 @@ DEEPINFRA_API_KEY  = os.getenv("DEEPINFRA_API_KEY",  "")
 DEEPINFRA_BASE_URL = os.getenv("DEEPINFRA_BASE_URL", "https://api.deepinfra.com/v1/openai")
 SMART_TOOLS_URL    = os.getenv("SMART_TOOLS_URL",    "http://skylight-smart-tools:8081")
 
+# ── Gemini — canlı veri / web arama için ──────────────────────
+GEMINI_API_KEY   = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL     = os.getenv("GEMINI_MODEL",   "gemini-2.5-flash-lite")
+# Bu live_type'lar → Gemini'ye gider, DeepInfra'ya gitmez
+_GEMINI_TYPES    = {
+    "web_search",
+    "news",
+    "price_search",
+    "weather",
+    "currency",
+    "crypto",
+    "time",
+    "deep_search",  # Crawl4AI + Reranker yerine Gemini — daha hızlı, tek API
+}
+# borsa → özel BIST API (daha doğru)
+
 DB_HOST     = os.getenv("DB_HOST",     "postgres")
 DB_PORT     = int(os.getenv("DB_PORT", "5432"))
 DB_NAME     = os.getenv("DB_NAME",     "skylight_db")
@@ -404,6 +420,88 @@ def _detect_live_type(
 
     return None
 
+
+
+# ──────────────────────────────────────────────────────────────
+# GEMINI LIVE STREAM
+# web_search / news / price_search → Gemini direkt yanıtlar,
+# DeepInfra'ya gitmez, tag enjeksiyonu yok, kullanıcıya düz gider
+# ──────────────────────────────────────────────────────────────
+async def gemini_live_stream(query: str, live_type: str):
+    """
+    Gemini 2.5 Flash Lite + Google Search Grounding ile canlı yanıt üretir.
+    AsyncGenerator[str, None] — doğrudan SSE'ye yield edilir.
+    """
+    if not GEMINI_API_KEY:
+        yield "[GEMINI] API key yok\n"
+        return
+
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=GEMINI_API_KEY)
+
+        # live_type'a göre instruction ayarla
+        type_instructions = {
+            "weather":      "Güncel hava durumu bilgisini ver. Sıcaklık, nem, rüzgar. Türkçe.",
+            "currency":     "Güncel döviz/kur bilgisini ver. Sayıları net yaz. Türkçe.",
+            "crypto":       "Güncel kripto para fiyatını ver. USD ve TL karşılığını yaz. Türkçe.",
+            "time":         "Güncel tarih ve saati ver. Varsa timezone bilgisini ekle. Türkçe.",
+            "news":         "Son dakika haberlerini özetle. Madde madde yaz. Türkçe.",
+            "price_search": "Güncel fiyat bilgisini bul ve ver. Net rakamlar yaz. Türkçe.",
+            "web_search":   "Soruyu Google'da ara, güncel ve doğru yanıt ver. Türkçe.",
+            "deep_search":  (
+                "Soruyu derinlemesine araştır. Birden fazla kaynaktan bilgi topla. "
+                "Kapsamlı, detaylı ve doğru bir yanıt ver. "
+                "Kaynakları alıntı yaparak belirt. Türkçe yanıt ver."
+            ),
+        }
+        instruction = type_instructions.get(
+            live_type,
+            "Güncel bilgiyi Google'dan ara ve ver. Kısa ve net. Türkçe."
+        )
+
+        model = genai.GenerativeModel(
+            model_name=GEMINI_MODEL,
+            tools="google_search_retrieval",
+            system_instruction=(
+                f"Sen ONE-BUNE AI asistanısın. {instruction} "
+                "Kaynakları yanıtın sonuna ekle. Markdown kullan."
+            ),
+        )
+
+        response = model.generate_content(
+            contents=query,
+            generation_config=genai.types.GenerationConfig(
+                temperature=0.1,
+                max_output_tokens=2048 if live_type == "deep_search" else 1024,
+            ),
+            stream=True,
+        )
+
+        print(f"[GEMINI] ✅ Streaming başladı | model={GEMINI_MODEL} | type={live_type}")
+
+        for chunk in response:
+            if chunk.text:
+                yield chunk.text
+
+        # Kaynakları ekle
+        try:
+            sources = []
+            for candidate in response.candidates:
+                meta = candidate.grounding_metadata
+                if meta and hasattr(meta, "grounding_chunks"):
+                    for c in meta.grounding_chunks:
+                        if hasattr(c, "web") and c.web.uri:
+                            sources.append(f"- [{c.web.title or c.web.uri}]({c.web.uri})")
+            if sources:
+                yield "\n\n---\n**Kaynaklar:**\n" + "\n".join(sources[:5])
+        except Exception:
+            pass
+
+    except Exception as e:
+        print(f"[GEMINI] ❌ {e}")
+        # Hata durumunda boş yield — caller fallback yapar
+        yield ""
 
 async def get_live_data(
     query: str,
@@ -1314,10 +1412,10 @@ async def generate_thinking_steps(
 
 
 def get_deep_search_steps(is_tr: bool = True) -> List[ThinkingStep]:
-    """Deep search pipeline adımları — 6 adım, gerçek zamanlı gösterilir."""
+    """Deep search pipeline adımları — Gemini ile 3 adım."""
     return [
-        ThinkingStep(emoji="🔍", message="Web'de aranıyor..." if is_tr else "Searching the web..."),
-        ThinkingStep(emoji="📄", message="Sayfalar okunuyor..." if is_tr else "Reading pages..."),
+        ThinkingStep(emoji="🔍", message="Google'da aranıyor..." if is_tr else "Searching Google..."),
+        ThinkingStep(emoji="📖", message="Kaynaklar okunuyor..." if is_tr else "Reading sources..."),
         ThinkingStep(emoji="✂️",  message="İçerik parçalanıyor..." if is_tr else "Chunking content..."),
         ThinkingStep(emoji="⚡", message="En alakalı kaynaklar seçiliyor..." if is_tr else "Selecting best sources..."),
         ThinkingStep(emoji="✍️",  message="Yanıt hazırlanıyor..." if is_tr else "Generating answer..."),
@@ -1686,6 +1784,22 @@ async def chat(request: ChatRequest):
             # ── Deep search adımları — gerçek pipeline çalışırken göster ──
             live_type_check = _detect_live_type(request.prompt, request.mode or "assistant", None, request.history or [])
             is_deep = live_type_check == "deep_search"
+
+            # ── Gemini Live Search — web_search/news/price_search ─────────
+            # Gemini Google Search Grounding ile direkt yanıt verir.
+            # DeepInfra'ya gitmez, tag enjeksiyonu yok, sonuç direkt kullanıcıya.
+            if GEMINI_API_KEY and live_type_check in _GEMINI_TYPES:
+                print(f"[GEMINI LIVE] '{request.prompt[:50]}' → {live_type_check}")
+                has_content = False
+                async for chunk in gemini_live_stream(request.prompt, live_type_check):
+                    if chunk:
+                        has_content = True
+                        yield chunk
+                if has_content:
+                    return  # Gemini yanıtladı — DeepInfra'ya gitme
+                # Gemini başarısız → normal akışa devam et
+                print("[GEMINI LIVE] Başarısız — normal akışa geçiliyor")
+            # ─────────────────────────────────────────────────────────────
             is_tr   = any(c in request.prompt for c in "çğışöüÇĞİŞÖÜ") or True
 
             if is_deep:
