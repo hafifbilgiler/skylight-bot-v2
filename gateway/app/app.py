@@ -38,6 +38,7 @@ from contextlib import asynccontextmanager
 
 import jwt
 import httpx
+import websockets
 import clamd
 import psycopg2
 import psycopg2.pool
@@ -45,7 +46,7 @@ from fastapi import FastAPI
 import aiosmtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from fastapi import HTTPException, Header, Request, BackgroundTasks, File, UploadFile, Body
+from fastapi import HTTPException, WebSocket, Header, Request, BackgroundTasks, File, UploadFile, Body
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, EmailStr
@@ -81,6 +82,7 @@ IMAGE_GEN_SERVICE_URL = os.getenv("IMAGE_GEN_SERVICE_URL", "http://skylight-imag
 IMAGE_ANALYSIS_SERVICE_URL = os.getenv("IMAGE_ANALYSIS_SERVICE_URL", "http://skylight-image-analysis:8002")
 SMART_TOOLS_URL = os.getenv("SMART_TOOLS_URL", "http://skylight-smart-tools:8081")
 BORSA_URL       = os.getenv("BORSA_URL",       "http://skylight-borsa:8086")
+FINANS_URL      = os.getenv("FINANS_URL",      "http://skylight-finans:8090")
 ABUSE_CONTROL_URL = os.getenv("ABUSE_CONTROL_URL", "http://skylight-bot-abuse-control:8010")
 
 JWT_SECRET = os.getenv("JWT_SECRET", "31aad766798d891f4c587d7f3bc925cd7e1e14989c421ae3c38eb80c1d4ede05")
@@ -3682,6 +3684,174 @@ async def admin_verify_otp(req: AdminOTPVerifyRequest,
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
+# ═══════════════════════════════════════════════════════════════
+# FİNANS SERVİSİ PROXY ENDPOINTS
+# Premium kontrolü yapılır, sonra finans servisine proxy edilir.
+# ═══════════════════════════════════════════════════════════════
+
+@app.get("/finans/coins")
+async def finans_coins(authorization: str = Header(None)):
+    """Desteklenen coin listesi ve anlık fiyatlar — tüm kullanıcılar."""
+    get_user_from_token(authorization)
+    async with httpx.AsyncClient(timeout=10.0) as c:
+        r = await c.get(f"{FINANS_URL}/coins")
+        return r.json()
+
+
+@app.get("/finans/signals/{symbol}")
+async def finans_signals(
+    symbol:   str,
+    interval: str = "1h",
+    authorization: str = Header(None),
+):
+    """Teknik analiz sinyalleri — Premium."""
+    user_id = get_user_from_token(authorization)
+    sub = get_user_subscription(user_id)
+    if not sub.get("is_premium", False):
+        raise HTTPException(status_code=403, detail="Finans modülü Premium abonelikte mevcut.")
+    async with httpx.AsyncClient(timeout=15.0) as c:
+        r = await c.get(f"{FINANS_URL}/signals/{symbol}", params={"interval": interval})
+        return r.json()
+
+
+@app.get("/finans/signals/{symbol}/interpret")
+async def finans_interpret(
+    symbol:   str,
+    interval: str = "1h",
+    authorization: str = Header(None),
+):
+    """LLM ile teknik analiz yorumu — Premium."""
+    user_id = get_user_from_token(authorization)
+    sub = get_user_subscription(user_id)
+    if not sub.get("is_premium", False):
+        raise HTTPException(status_code=403, detail="LLM yorum özelliği Premium abonelikte mevcut.")
+    async with httpx.AsyncClient(timeout=30.0) as c:
+        r = await c.get(f"{FINANS_URL}/signals/{symbol}/interpret", params={"interval": interval})
+        return r.json()
+
+
+@app.get("/finans/history/{symbol}")
+async def finans_history(
+    symbol:   str,
+    interval: str = "1h",
+    limit:    int = 200,
+    authorization: str = Header(None),
+):
+    """Geçmiş mum verileri — Premium."""
+    user_id = get_user_from_token(authorization)
+    sub = get_user_subscription(user_id)
+    if not sub.get("is_premium", False):
+        raise HTTPException(status_code=403, detail="Finans modülü Premium abonelikte mevcut.")
+    async with httpx.AsyncClient(timeout=15.0) as c:
+        r = await c.get(f"{FINANS_URL}/history/{symbol}",
+                        params={"interval": interval, "limit": limit})
+        return r.json()
+
+
+@app.get("/finans/whales/{symbol}")
+async def finans_whales(symbol: str, authorization: str = Header(None)):
+    """Son whale işlemleri — Premium."""
+    user_id = get_user_from_token(authorization)
+    sub = get_user_subscription(user_id)
+    if not sub.get("is_premium", False):
+        raise HTTPException(status_code=403, detail="Finans modülü Premium abonelikte mevcut.")
+    async with httpx.AsyncClient(timeout=10.0) as c:
+        r = await c.get(f"{FINANS_URL}/whales/{symbol}")
+        return r.json()
+
+
+@app.get("/finans/commentary/{symbol}")
+async def finans_commentary(
+    symbol:   str,
+    interval: str = "1h",
+    authorization: str = Header(None),
+):
+    """Otomatik finans yorumu — Premium."""
+    user_id = get_user_from_token(authorization)
+    sub = get_user_subscription(user_id)
+    if not sub.get("is_premium", False):
+        raise HTTPException(status_code=403, detail="Finans modülü Premium abonelikte mevcut.")
+    async with httpx.AsyncClient(timeout=30.0) as c:
+        r = await c.get(f"{FINANS_URL}/commentary/{symbol}", params={"interval": interval})
+        return r.json()
+
+
+@app.get("/finans/commentary/{symbol}/stream")
+async def finans_commentary_stream(
+    symbol:   str,
+    interval: str = "1h",
+    authorization: str = Header(None),
+):
+    """Streaming finans yorumu — Premium."""
+    user_id = get_user_from_token(authorization)
+    sub = get_user_subscription(user_id)
+    if not sub.get("is_premium", False):
+        raise HTTPException(status_code=403, detail="Premium gerekli.")
+
+    async def _proxy():
+        async with httpx.AsyncClient(timeout=35.0) as c:
+            async with c.stream("GET",
+                f"{FINANS_URL}/commentary/{symbol}/stream",
+                params={"interval": interval}
+            ) as resp:
+                async for chunk in resp.aiter_text():
+                    yield chunk
+
+    return StreamingResponse(_proxy(), media_type="text/plain; charset=utf-8")
+
+
+@app.websocket("/finans/ws/{symbol}")
+async def finans_ws_proxy(
+    websocket: WebSocket,
+    symbol:    str,
+):
+    """
+    Gateway WebSocket → Finans Servisi WebSocket köprüsü.
+    Frontend bağlanır, gateway premium kontrolü yapar, sonra finans'a iletir.
+    """
+    await websocket.accept()
+
+    # Token query param'dan al (WS auth standardı)
+    token = websocket.query_params.get("token", "")
+    try:
+        user_id = get_user_from_token(f"Bearer {token}")
+        sub = get_user_subscription(user_id)
+        if not sub.get("is_premium", False):
+            await websocket.send_text(json.dumps({"error": "Premium abonelik gerekli"}))
+            await websocket.close()
+            return
+    except Exception:
+        await websocket.send_text(json.dumps({"error": "Yetkisiz"}))
+        await websocket.close()
+        return
+
+    # Finans servisi WS'e bağlan
+    target = FINANS_URL.replace("http://", "ws://") + f"/ws/{symbol.upper()}"
+    try:
+        async with websockets.connect(target) as fw:
+            async def fwd_to_finans():
+                try:
+                    while True:
+                        msg = await websocket.receive_text()
+                        await fw.send(msg)
+                except Exception:
+                    pass
+
+            async def fwd_to_client():
+                try:
+                    async for msg in fw:
+                        await websocket.send_text(msg)
+                except Exception:
+                    pass
+
+            await asyncio.gather(fwd_to_finans(), fwd_to_client())
+    except Exception as e:
+        print(f"[FINANS WS PROXY] {e}")
+    finally:
+        try: await websocket.close()
+        except Exception: pass
+
 @app.get("/health")
 async def health_check():
     return {
@@ -3695,6 +3865,7 @@ async def health_check():
             "image_analysis_service": bool(IMAGE_ANALYSIS_SERVICE_URL),
             "rag_service":          bool(RAG_SERVICE_URL),
             "smart_tools":          bool(SMART_TOOLS_URL),
+            "finans_service":       bool(FINANS_URL),
             "abuse_control":        "configured" if ABUSE_CONTROL_URL else "not_configured",
             "clamav":               "enabled" if CLAMAV_ENABLED else "disabled",
             "smtp":                 "configured" if SMTP_USER else "not_configured",

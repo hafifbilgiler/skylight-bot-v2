@@ -302,6 +302,145 @@ def _rule_based_comment(analysis: Dict) -> str:
     return "\n".join(lines)
 
 # ──────────────────────────────────────────────────────────────
+# OTOMATİK FİNANS YORUMCUSU
+# Kullanıcı sormaz — sistem her N dakikada bir yorum üretir.
+# Kesin öneri değil, olasılıksal yorum.
+# ──────────────────────────────────────────────────────────────
+
+COMMENTARY_PROMPT = """Sen ONE-BUNE'nin kripto finans yorumcususun.
+Sana gelen SADECE bu sistem verilerini kullan — dışarıdan bilgi ekleme.
+Yorumunu şu kurallara göre yap:
+
+DÜRÜSTLÜK KURALLARI:
+• "Kesinlikle" veya "mutlaka" kullanma — piyasa tahmin edilemez
+• "Yüksek ihtimalle", "%X olasılıkla", "güçlü sinyal" gibi ifadeler kullan
+• Çelişkili sinyaller varsa bunu belirt
+• Yorumun kısa olsun — max 4 madde, emoji ile başlasın
+
+FORMAT:
+📊 [Genel Durum — 1 cümle]
+📈 veya 📉 [Trend yorumu — ihtimalle]
+⚡ [RSI/MACD yorumu — ne anlama geliyor]
+🐋 [Whale aktivitesi varsa — varsa belirt, yoksa yazma]
+🎯 [Olası senaryo — "eğer X olursa Y ihtimali artar" formatında]
+
+Türkçe yaz. Finansal tavsiye değil, veri yorumu yap."""
+
+async def generate_commentary(symbol: str, interval: str = "1h") -> str:
+    """
+    Mevcut teknik analizi DeepInfra ile yorumla.
+    Otomatik olarak çalışır — kullanıcı sormaz.
+    """
+    if not DEEPINFRA_API_KEY:
+        return _auto_commentary(symbol, interval)
+
+    analysis = detect_signals(symbol, interval)
+    if "error" in analysis:
+        return "⏳ Veri yükleniyor..."
+
+    sig      = analysis.get("signal", {})
+    rsi      = analysis.get("rsi", {})
+    macd     = analysis.get("macd", {})
+    vol      = analysis.get("volume", {})
+    patterns = analysis.get("candle_patterns", [])
+    whales   = analysis.get("whales_recent", [])
+    bb       = analysis.get("bollinger", {})
+
+    data_summary = f"""
+{symbol} | {interval} | Fiyat: ${analysis.get('price', 0):,.4f}
+Trend: {analysis.get('trend')}
+RSI: {rsi.get('value')} ({rsi.get('comment')})
+MACD: {macd.get('trend')} | Histogram: {macd.get('histogram', 0):+.6f}
+Bollinger: {bb.get('position', 'N/A')} | Genişlik: {bb.get('width', 0):.1f}%
+Hacim: {vol.get('ratio', 1):.1f}x ortalama {'⚠️ ANOMALİ' if vol.get('alert') else ''}
+Mum Formasyonları: {', '.join(p['name'] + '(' + p['direction'] + ')' for p in patterns) or 'Yok'}
+Sinyal Skoru: {sig.get('score', 0):+d} → {sig.get('overall')}
+Sebepler: {', '.join(sig.get('reasons', []))}
+Son Whale: {len(whales)} işlem {'| En büyük: $' + f"{max((w.get('usd',0) for w in whales), default=0):,.0f}" if whales else ''}
+"""
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            r = await client.post(
+                f"{DEEPINFRA_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {DEEPINFRA_API_KEY}",
+                         "Content-Type": "application/json"},
+                json={
+                    "model":       FINANS_LLM_MODEL,
+                    "messages":    [
+                        {"role": "system", "content": COMMENTARY_PROMPT},
+                        {"role": "user",   "content": f"Şu anki {symbol} piyasa verilerini yorumla:\n{data_summary}"},
+                    ],
+                    "max_tokens":  350,
+                    "temperature": 0.4,
+                }
+            )
+            text = r.json()["choices"][0]["message"]["content"].strip()
+            print(f"[COMMENTARY] ✅ {symbol} | {len(text)} chars")
+            return text
+    except Exception as e:
+        print(f"[COMMENTARY] ❌ {e}")
+        return _auto_commentary(symbol, interval)
+
+
+def _auto_commentary(symbol: str, interval: str) -> str:
+    """LLM yoksa kural tabanlı otomatik yorum."""
+    analysis = detect_signals(symbol, interval)
+    if "error" in analysis:
+        return "⏳ Veri bekleniyor..."
+
+    sig      = analysis.get("signal", {})
+    rsi      = analysis.get("rsi", {})
+    vol      = analysis.get("volume", {})
+    whales   = analysis.get("whales_recent", [])
+    patterns = analysis.get("candle_patterns", [])
+    price    = analysis.get("price", 0)
+    trend    = analysis.get("trend", "nötr")
+    score    = sig.get("score", 0)
+
+    lines = [f"📊 **{symbol}** ${price:,.4f} — {trend}"]
+
+    # Trend ihtimali
+    if "güçlü yükseliş" in trend:
+        lines.append("📈 Yüksek ihtimalle (%70+) yükseliş momentum'u devam ediyor")
+    elif "güçlü düşüş" in trend:
+        lines.append("📉 %65+ ihtimalle düşüş baskısı sürüyor")
+    elif "kısa vadeli yükseliş" in trend:
+        lines.append("📈 Kısa vadede %55-60 ihtimalle alıcı baskısı var")
+    else:
+        lines.append("↔️ Trend belirsiz, kararsızlık dönemi (%50-50)")
+
+    # RSI
+    rsi_val = rsi.get("value", 50) or 50
+    if rsi_val > 70:
+        lines.append(f"⚡ RSI {rsi_val} — Aşırı alım bölgesi, düzeltme ihtimali %60-70")
+    elif rsi_val < 30:
+        lines.append(f"⚡ RSI {rsi_val} — Aşırı satım, toparlanma ihtimali %65+")
+    else:
+        lines.append(f"⚡ RSI {rsi_val} — Nötr bölge, yön için ek sinyal gerekiyor")
+
+    # Whale
+    if whales:
+        buy  = sum(1 for w in whales if w.get("side") == "BUY")
+        sell = len(whales) - buy
+        if buy > sell:
+            lines.append(f"🐋 {buy} büyük alım vs {sell} satım — kurumsal ilgi sinyali")
+        elif sell > buy:
+            lines.append(f"🐋 {sell} büyük satım — dikkatli ol, baskı artabilir")
+
+    # Senaryo
+    if score >= 2:
+        lines.append("🎯 Eğer hacim artmaya devam ederse yükseliş senaryosu güçlenir (%60-65)")
+    elif score <= -2:
+        lines.append("🎯 Destek kırılırsa düşüş hızlanabilir — stop-loss önemli")
+    else:
+        lines.append("🎯 Net yön için mum kapanışı beklenmeli")
+
+    return "\n".join(lines)
+
+
+
+# ──────────────────────────────────────────────────────────────
 # WHALE TESPİTİ
 # ──────────────────────────────────────────────────────────────
 
@@ -424,6 +563,109 @@ async def fetch_historical(symbol: str, interval: str = "1h", limit: int = 300):
 # ──────────────────────────────────────────────────────────────
 # STARTUP
 # ──────────────────────────────────────────────────────────────
+
+
+
+@app.get("/commentary/{symbol}")
+async def get_commentary(
+    symbol:   str,
+    interval: str = Query("1h", enum=INTERVALS),
+):
+    """
+    Otomatik finans yorumu — kullanıcı sormaz, sistem üretir.
+    Olasılıksal dil kullanır, kesin tavsiye vermez.
+    """
+    symbol = symbol.upper()
+    if symbol not in SUPPORTED_COINS:
+        raise HTTPException(404, f"{symbol} desteklenmiyor")
+
+    if symbol not in kline_cache or interval not in kline_cache.get(symbol, {}):
+        await fetch_historical(symbol, interval, 300)
+
+    commentary = await generate_commentary(symbol, interval)
+    return {
+        "symbol":     symbol,
+        "interval":   interval,
+        "commentary": commentary,
+        "timestamp":  datetime.now(timezone.utc).isoformat(),
+        "disclaimer": "Bu yorum otomatik oluşturulmuştur. Yatırım tavsiyesi değildir.",
+    }
+
+
+@app.get("/commentary/{symbol}/stream")
+async def stream_commentary(
+    symbol:   str,
+    interval: str = Query("1h", enum=INTERVALS),
+):
+    """
+    Yorum akışı — frontend'e token token gönderir.
+    Kullanıcı sormadan otomatik çalışır.
+    """
+    symbol = symbol.upper()
+    if symbol not in SUPPORTED_COINS:
+        raise HTTPException(404)
+
+    if symbol not in kline_cache or interval not in kline_cache.get(symbol, {}):
+        await fetch_historical(symbol, interval, 300)
+
+    analysis = detect_signals(symbol, interval)
+    if "error" in analysis or not DEEPINFRA_API_KEY:
+        commentary = _auto_commentary(symbol, interval)
+        return StreamingResponse(
+            iter([commentary]),
+            media_type="text/plain; charset=utf-8"
+        )
+
+    sig      = analysis.get("signal", {})
+    rsi      = analysis.get("rsi", {})
+    macd     = analysis.get("macd", {})
+    vol      = analysis.get("volume", {})
+    patterns = analysis.get("candle_patterns", [])
+    whales   = analysis.get("whales_recent", [])
+    bb       = analysis.get("bollinger", {})
+
+    data_summary = f"""{symbol} | {interval} | ${analysis.get('price', 0):,.4f}
+Trend: {analysis.get('trend')} | RSI: {rsi.get('value')} ({rsi.get('comment')})
+MACD: {macd.get('trend')} | Histogram: {macd.get('histogram', 0):+.6f}
+Bollinger: {bb.get('position', 'N/A')} | Genişlik: {bb.get('width', 0):.1f}%
+Hacim: {vol.get('ratio', 1):.1f}x {'ANOMALİ' if vol.get('alert') else 'normal'}
+Formasyonlar: {', '.join(p['name'] for p in patterns) or 'Yok'}
+Sinyal: {sig.get('score', 0):+d} ({sig.get('overall')}) | Sebepler: {', '.join(sig.get('reasons', []))}
+Whale: {len(whales)} büyük işlem"""
+
+    async def _stream():
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                async with client.stream(
+                    "POST",
+                    f"{DEEPINFRA_BASE_URL}/chat/completions",
+                    headers={"Authorization": f"Bearer {DEEPINFRA_API_KEY}",
+                             "Content-Type": "application/json"},
+                    json={
+                        "model":       FINANS_LLM_MODEL,
+                        "messages":    [
+                            {"role": "system", "content": COMMENTARY_PROMPT},
+                            {"role": "user",   "content": f"{symbol} piyasa verisi:\n{data_summary}"},
+                        ],
+                        "max_tokens":  350,
+                        "temperature": 0.4,
+                        "stream":      True,
+                    }
+                ) as resp:
+                    async for line in resp.aiter_lines():
+                        if line.startswith("data: ") and line != "data: [DONE]":
+                            try:
+                                chunk = json.loads(line[6:])
+                                text  = chunk["choices"][0]["delta"].get("content", "")
+                                if text:
+                                    yield text
+                            except Exception:
+                                pass
+        except Exception as e:
+            print(f"[COMMENTARY STREAM] ❌ {e}")
+            yield _auto_commentary(symbol, interval)
+
+    return StreamingResponse(_stream(), media_type="text/plain; charset=utf-8")
 
 @app.on_event("startup")
 async def startup():
