@@ -58,8 +58,11 @@ spec:
               key: api-token
         
         # SMTP (OTP için)
+        #- name: SMTP_SERVER
+        # value: "smtp.hostinger.com"
         - name: SMTP_SERVER
-          value: "smtp.hostinger.com"
+          value: "in-v3.mailjet.com"
+        
         - name: SMTP_PORT
           value: "587"
         - name: SMTP_USER
