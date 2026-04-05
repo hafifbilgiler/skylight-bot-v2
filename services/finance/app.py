@@ -393,6 +393,7 @@ async def process_msg(symbol: str, data: Dict):
         await broadcast(symbol, push)
 
 async def broadcast(symbol: str, data: Dict):
+    global all_clients
     msg  = json.dumps(data, default=str)
     dead = set()
     for ws in subscribers[symbol]:
