@@ -69,7 +69,7 @@ spec:
 
         # Vertex AI — Google Search Grounding
         - name: GEMINI_PROJECT
-          value: "tenacious-camp-315521"
+          value: "gen-lang-client-0907571701"
         - name: GEMINI_LOCATION
           value: "us-central1"
         - name: GEMINI_MODEL
