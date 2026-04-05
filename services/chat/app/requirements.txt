@@ -1,7 +1,3 @@
-# ═══════════════════════════════════════════════════════════════
-# CHAT SERVICE REQUIREMENTS
-# ═══════════════════════════════════════════════════════════════
-
 # FastAPI & Server
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
@@ -17,8 +13,8 @@ psycopg2-binary==2.9.9
 # Redis
 redis>=5.0.0
 
-# Gemini AI — canlı veri / web arama için
-google-generativeai>=0.8.0
+# Gemini AI (yeni SDK — google-generativeai deprecated)
+google-genai>=1.0.0
 
 # Utilities
 python-multipart==0.0.6
