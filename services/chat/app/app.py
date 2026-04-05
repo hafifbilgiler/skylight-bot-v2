@@ -1207,6 +1207,27 @@ async def stream_deepinfra_completion(
 # MESSAGE BUILDER — Ana sistem prompt oluşturma
 # ═══════════════════════════════════════════════════════════════
 
+
+def _extract_active_commands(history: list) -> list:
+    """Konuşma geçmişinden kullanıcının verdiği aktif komutları çıkar."""
+    commands = []
+    seen = set()
+    command_signals = [
+        "türkçe konuş", "türkçe yaz", "ingilizce konuş", "kısa cevap ver",
+        "uzun cevap ver", "kod yazma", "bana sormadan", "markdown kullanma",
+        "liste yapma", "madde madde", "sadece kod", "açıklama yapma",
+    ]
+    for msg in history:
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content", "").lower().strip()
+        for sig in command_signals:
+            if sig in content and content not in seen:
+                seen.add(content)
+                commands.append(content[:100])
+                break
+    return commands
+
 async def build_messages(
     mode:            str,
     user_id:         int,
