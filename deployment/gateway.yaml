@@ -91,7 +91,9 @@ spec:
           value: "http://skylight-bot-abuse-control:8010"
         - name: ABUSE_CONTROL_ENABLED
           value: "true"
-        
+        - name: FINANS_URL
+          value: "http://skylight-finans:8090"
+
         # Microservices URLs (YENİ!)
         - name: CHAT_SERVICE_URL
           value: "http://skylight-chat:8082"
