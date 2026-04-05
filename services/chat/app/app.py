@@ -66,21 +66,13 @@ SMART_TOOLS_URL    = os.getenv("SMART_TOOLS_URL",    "http://skylight-smart-tool
 
 # ── Gemini — canlı veri / web arama için ──────────────────────
 GEMINI_API_KEY     = os.getenv("GEMINI_API_KEY", "")      # AI Studio fallback
-GEMINI_PROJECT     = os.getenv("GEMINI_PROJECT", "")       # Vertex AI proje ID
+GEMINI_PROJECT     = os.getenv("GEMINI_PROJECT", "gen-lang-client-0907571701")       # Vertex AI proje ID
 GEMINI_LOCATION    = os.getenv("GEMINI_LOCATION", "us-central1")
 GEMINI_SA_KEY_PATH = "/etc/vertex-sa/key.json"             # K8s secret mount
 GEMINI_MODEL       = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
 # Bu live_type'lar → Gemini'ye gider, DeepInfra'ya gitmez
-_GEMINI_TYPES    = {
-    "web_search",
-    "news",
-    "price_search",
-    "weather",
-    "currency",
-    "crypto",
-    "time",
-    "deep_search",  # Crawl4AI + Reranker yerine Gemini — daha hızlı, tek API
-}
+_GEMINI_TYPES = {"web_search", "news", "deep_search", "price_search"}
+_FREE_API_TYPES = {"weather", "currency", "crypto", "time"}
 # borsa → özel BIST API (daha doğru)
 
 DB_HOST     = os.getenv("DB_HOST",     "postgres")
@@ -1461,36 +1453,47 @@ async def chat(request: ChatRequest):
     if request.mode not in MODE_CONFIGS:
         raise HTTPException(status_code=400, detail=f"Invalid mode: {request.mode}")
 
-    # ── GEMINI FAST PATH ──────────────────────────────────────
-    # Canlı veri / web araması → Gemini direkt stream eder.
-    # build_messages / get_live_data / smart_tools çağrılmaz.
-    # Araya hiçbir şey girmez.
-    if GEMINI_API_KEY:
-        _live_type = _detect_live_type(
-            request.prompt,
-            request.mode or "assistant",
-            None,
-            request.history or [],
-        )
-        if _live_type in _GEMINI_TYPES:
-            print(f"[GEMINI FAST] '{request.prompt[:50]}' → {_live_type}")
+    # ── FAST PATH — Canlı veri ────────────────────────────────
+    _lt = _detect_live_type(request.prompt, request.mode or "assistant",
+                            None, request.history or [])
 
-            async def _gemini_stream():
-                has_content = False
-                async for chunk in gemini_live_stream(request.prompt, _live_type):
-                    if chunk:
-                        has_content = True
-                        yield chunk
-                if not has_content:
-                    yield "Üzgünüm, şu an yanıt üretemiyorum."
+    # Ücretsiz API: weather, currency, crypto, time → smart_tools (limit yok)
+    if _lt in _FREE_API_TYPES and SMART_TOOLS_URL:
+        print(f"[FREE API] '{request.prompt[:50]}' → {_lt}")
+        async def _free_api_stream():
+            try:
+                async with httpx.AsyncClient(timeout=6.0) as _c:
+                    _r = await _c.post(
+                        f"{SMART_TOOLS_URL}/unified",
+                        json={"query": request.prompt, "tool_type": _lt},
+                    )
+                    if _r.status_code == 200:
+                        _d = _r.json()
+                        if _d.get("success"):
+                            _data = _d.get("data", {})
+                            text = (_data.get("formatted") or
+                                    _data.get("formatted_tr") or
+                                    _data.get("short") or "")
+                            if text:
+                                print(f"[FREE API] ✅ {_lt} | {len(text)} chars")
+                                yield text
+                                return
+            except Exception as _e:
+                print(f"[FREE API] ❌ {_e} — Gemini fallback")
+            async for chunk in gemini_live_stream(request.prompt, _lt):
+                if chunk: yield chunk
+        return StreamingResponse(_free_api_stream(), media_type="text/plain; charset=utf-8")
 
-            return StreamingResponse(
-                _gemini_stream(),
-                media_type="text/plain; charset=utf-8",
-            )
-    # ─────────────────────────────────────────────────────────
-
-    config        = MODE_CONFIGS[request.mode]
+    # Gemini: web_search, news, deep_search, price_search → Google Search Grounding
+    if _lt in _GEMINI_TYPES:
+        print(f"[GEMINI FAST] '{request.prompt[:50]}' → {_lt}")
+        async def _gs():
+            has = False
+            async for chunk in gemini_live_stream(request.prompt, _lt):
+                if chunk: has = True; yield chunk
+            if not has: yield "Üzgünüm, yanıt üretemiyorum."
+        return StreamingResponse(_gs(), media_type="text/plain; charset=utf-8")
+    # ─────────────────────────────────────────────────────────config        = MODE_CONFIGS[request.mode]
     show_thinking = should_show_thinking(request.prompt, request.mode, request.history or [])
 
     messages = await build_messages(
