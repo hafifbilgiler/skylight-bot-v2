@@ -72,6 +72,16 @@ spec:
               name: smart-tools-secret
               key: BRAVE_API_KEY
               optional: true
+        - name: GEMINI_API_KEY          
+          valueFrom:
+            secretKeyRef:
+              name: smart-tools-secret
+              key: GEMINI_API_KEY
+        - name: GEMINI_MODEL           
+          valueFrom:
+            secretKeyRef:
+              name: smart-tools-secret
+              key: GEMINI_MODEL
         - name: SEARCHCANS_API_KEY
           valueFrom:
             secretKeyRef:
