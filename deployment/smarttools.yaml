@@ -32,7 +32,7 @@ spec:
     spec:
       containers:
       - name: smart-tools
-        image: docker.io/hafifbilgiler/smarttols:4.5 #2.2,2.3, 2.4, 2.8
+        image: docker.io/hafifbilgiler/smarttols:4.5
         imagePullPolicy: Always
         ports:
         - containerPort: 8081
@@ -72,21 +72,19 @@ spec:
               name: smart-tools-secret
               key: BRAVE_API_KEY
               optional: true
-        - name: GEMINI_API_KEY          
-          valueFrom:
-            secretKeyRef:
-              name: smart-tools-secret
-              key: GEMINI_API_KEY
-        - name: GEMINI_MODEL           
-          valueFrom:
-            secretKeyRef:
-              name: smart-tools-secret
-              key: GEMINI_MODEL
         - name: SEARCHCANS_API_KEY
           valueFrom:
             secretKeyRef:
               name: smart-tools-secret
               key: SEARCHCANS_API_KEY
+        - name: GEMINI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: smart-tools-secret
+              key: GEMINI_API_KEY
+        # ── Direkt değer ───────────────────────────────────
+        - name: GEMINI_MODEL
+          value: "gemini-2.5-flash-lite"
         - name: CRAWL4AI_URL
           value: "http://crawl4ai:11235"
         - name: RERANKER_URL
