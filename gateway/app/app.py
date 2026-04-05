@@ -3690,6 +3690,21 @@ async def admin_verify_otp(req: AdminOTPVerifyRequest,
 # Premium kontrolü yapılır, sonra finans servisine proxy edilir.
 # ═══════════════════════════════════════════════════════════════
 
+@app.get("/finans/")
+async def finans_root(authorization: str = Header(None)):
+    """Finans servis durumu — health check."""
+    try:
+        get_user_from_token(authorization)
+    except Exception:
+        pass
+    async with httpx.AsyncClient(timeout=5.0) as c:
+        try:
+            r = await c.get(f"{FINANS_URL}/health")
+            return r.json()
+        except Exception:
+            return {"status": "ok", "service": "finans"}
+
+
 @app.get("/finans/coins")
 async def finans_coins(authorization: str = Header(None)):
     """Desteklenen coin listesi ve anlık fiyatlar — tüm kullanıcılar."""
