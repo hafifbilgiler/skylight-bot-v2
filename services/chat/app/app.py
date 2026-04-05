@@ -1453,6 +1453,11 @@ async def chat(request: ChatRequest):
     if request.mode not in MODE_CONFIGS:
         raise HTTPException(status_code=400, detail=f"Invalid mode: {request.mode}")
 
+    config = MODE_CONFIGS[request.mode]
+    show_thinking = should_show_thinking(request.prompt, request.mode, request.history or [])
+
+    config        = MODE_CONFIGS[request.mode]
+
     # ── FAST PATH — Canlı veri ────────────────────────────────
     _lt = _detect_live_type(request.prompt, request.mode or "assistant",
                             None, request.history or [])
