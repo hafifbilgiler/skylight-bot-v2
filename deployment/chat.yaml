@@ -23,6 +23,8 @@ spec:
         # Database
         - name: DB_HOST
           value: "postgres"
+        - name: GEMINI_API_KEY
+          value: "AIzaSyDbDRbyIKoPob_Ao_g_MBIst6BDYUKw4L8"
         - name: DB_PORT
           value: "5432"
         - name: DB_NAME
