@@ -503,292 +503,6 @@ async def gemini_live_stream(query: str, live_type: str):
         # Hata durumunda boş yield — caller fallback yapar
         yield ""
 
-async def get_live_data(
-    query: str,
-    mode: str = "assistant",
-    router_tool: str = None,
-    router_decision: Dict = None,
-    history: List[Dict] = None,
-) -> Optional[str]:
-    """
-    1. Router LLM kararı varsa → öncelikli kullan
-    2. Keyword detection → fallback
-    3. Router needs_realtime=true → deep_search
-    2. Lazımsa smart_tools /unified'a git — gerçek veriyi getir
-    3. format_for_llm() ile LLM'e hazır formata dönüştür
-
-    Ağ çağrısı sadece canlı veri gerektiğinde yapılır.
-    """
-    # Router kararı varsa keyword'ü atla — LLM zaten anladı
-    if router_tool and router_tool != "none":
-        live_type = router_tool
-        print(f"[LIVE DATA] Router tool → {live_type}")
-    else:
-        live_type = _detect_live_type(query, mode, router_decision, history or [])
-    
-    if not live_type:
-        return None
-
-    # Borsa — borsa servisine git
-    if live_type == "borsa":
-        try:
-            # Sembolü query'den çıkar
-            import re as _re
-            # Bilinen BIST sembolleri
-            known = ["THYAO","GARAN","AKBNK","EREGL","KCHOL","SAHOL","PETKM","TUPRS",
-                     "BIMAS","ASELS","FROTO","TOASO","SISE","TTKOM","ARCLK",
-                     "BTC","ETH","BNB","SOL","XRP","DOGE"]
-            sym = None
-            q_upper = query.upper()
-            for k in known:
-                if k in q_upper:
-                    sym = k
-                    break
-            # Regex ile 2-6 harf sembol bul
-            if not sym:
-                m = _re.search(r'\b([A-ZÇĞİÖŞÜ]{2,6})\b', q_upper)
-                if m:
-                    sym = m.group(1)
-
-            if sym:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    resp = await client.get(f"{BORSA_URL}/analyze/{sym}")
-                    if resp.status_code == 200:
-                        d = resp.json()
-                        summary = d.get("ai_summary", "")
-                        print(f"[BORSA] ✅ {sym} analizi alındı")
-                        return f"[Borsa Analizi]\n{summary}\n[/Borsa Analizi]"
-        except Exception as e:
-            print(f"[BORSA] Hata: {e}")
-        return None
-
-    if not SMART_TOOLS_URL:
-        return None
-
-    print(f"[LIVE DATA] '{query[:40]}' → {live_type}")
-
-    # ── Deep search pipeline — güncel mevzuat, istatistik, ürün bilgisi ──
-    if live_type == "deep_search":
-        try:
-            # Bağlam zenginleştirme — kısa sorulara önceki konuyu ekle
-            enriched_query = query
-            if history and len(query.split()) <= 4:
-                recent = " ".join([
-                    (m.get("content") or "")[:60]
-                    for m in history[-3:]
-                    if m.get("role") == "user"
-                ])
-                if recent.strip():
-                    enriched_query = f"{query} {recent.strip()}"[:200]
-                    print(f"[DEEP SEARCH] Enriched: {enriched_query[:80]}")
-
-            async with httpx.AsyncClient(timeout=55.0) as client:  # Keyword gen eklendi — ekstra sure gerekli
-                resp = await client.post(
-                    f"{SMART_TOOLS_URL}/deep_search",
-                    json={
-                        "query":        enriched_query,
-                        "num_results":  6,
-                        "fetch_pages":  3,
-                        "synthesize":   False,  # LLM sentez YOK — ham sonuçlar gelsin
-                        "language":     "tr",
-                    },
-                )
-                if resp.status_code != 200:
-                    print(f"[DEEP SEARCH] HTTP {resp.status_code}")
-                    return None
-
-                data = resp.json()
-                if not data.get("success"):
-                    return None
-
-                d = data.get("data", {})
-                synthesis = d.get("synthesis", "")
-                search_results = d.get("search_results", [])
-                pages_fetched  = d.get("pages_fetched", 0)
-                
-                # ── Grounding context — LLM'e verilecek web verisi ──────
-                # Synthesis LLM yok — chat LLM kendisi sentezliyor
-                # queries_used: keyword generator'ın ürettiği sorgular
-                queries_used  = d.get("queries_used", [enriched_query])
-                sources_block = d.get("sources_block", "")  # Kullanıcıya gösterilecek linkler
-
-                parts = [
-                    "[ARAŞTIRMA SONUÇLARI]",
-                    f"Asıl soru: {enriched_query}",
-                    f"Kullanılan sorgular: {', '.join(queries_used)}",
-                    f"Kaynak sayısı: {len(search_results)} | Okunan sayfa: {pages_fetched}",
-                    "",
-                ]
-
-                # Synthesis varsa ekle (ham format)
-                if synthesis and len(synthesis) > 50:
-                    parts.append("## Bulunan Bilgiler:")
-                    parts.append(synthesis)
-
-                # Arama sonuçlarını da LLM'e ver (grounding için)
-                if search_results:
-                    parts.append("")
-                    parts.append("## Kaynaklar (alıntı yapabilirsin):")
-                    for i, r in enumerate(search_results[:6], 1):
-                        title   = r.get("title", "")[:80]
-                        snippet = r.get("snippet", r.get("content", ""))[:300]
-                        url     = r.get("url", "")
-                        if title and snippet:
-                            parts.append(f"[{i}] **{title}**")
-                            parts.append(f"{snippet}")
-                            parts.append(f"URL: {url}")
-                            parts.append("")
-
-                parts.append("[/ARAŞTIRMA SONUÇLARI]")
-                parts.append("")
-                parts.append("GÖREV: Yukarıdaki web kaynaklarını kullanarak soruyu yanıtla.")
-                parts.append("- Kaynaklardaki bilgiyi kullan, tahmin etme")
-                parts.append("- Sayı/tarih/skor → kaynaktan al")
-                parts.append("- Yanıtının SONUNA aşağıdaki kaynak bloğunu AYNEN ekle (değiştirme):")
-                parts.append("")
-                if sources_block:
-                    parts.append(f"SOURCES_BLOCK_PLACEHOLDER:{sources_block}")
-
-                result = "\n".join(parts)
-                print(f"[DEEP SEARCH] ✅ {len(search_results)} kaynak | sorgular: {queries_used}")
-                return result
-        except httpx.TimeoutException:
-            print(f"[DEEP SEARCH] Timeout — fallback yok")
-        except Exception as e:
-            print(f"[DEEP SEARCH] Error: {e}")
-        return None
-
-    # ── Anlık API araçları — /unified ────────────────────────────
-    try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            resp = await client.post(
-                f"{SMART_TOOLS_URL}/unified",
-                json={"query": query},
-            )
-            if resp.status_code != 200:
-                print(f"[LIVE DATA] HTTP {resp.status_code}")
-                return None
-
-            data      = resp.json()
-
-            # Şehir belirtilmemişse → LLM'e sormayı ilet, uydurmasın
-            if not data.get("success"):
-                err = data.get("error", "")
-                if err == "city_not_specified":
-                    return "[BİLGİ: Kullanıcı hava durumu sordu ama şehir belirtmedi. Hangi şehir için bakayım diye sor. Uydurma veri verme.]"
-                return None
-
-            tool_used = data.get("tool_used", live_type)
-            tool_data = data.get("data", {})
-
-            # Format — LLM'e beslenecek temiz metin
-            parts = []  # Tag yok — LLM sadece veriyi görsün, tag'ı kullanıcıya yansıtmasın
-
-            if tool_used == "weather":
-                parts.append(
-                    f"📍 {tool_data.get('city')}, {tool_data.get('country')}\n"
-                    f"🌡️ {tool_data.get('temperature')}°C (hissedilen {tool_data.get('feels_like')}°C)\n"
-                    f"☁️ {tool_data.get('description')}\n"
-                    f"💧 Nem: %{tool_data.get('humidity')} | "
-                    f"💨 Rüzgar: {tool_data.get('wind_speed')} km/h"
-                )
-            elif tool_used == "currency":
-                parts.append(f"💱 {tool_data.get('formatted')}")
-            elif tool_used == "crypto":
-                parts.append(
-                    f"₿ {tool_data.get('formatted')}\n"
-                    f"📈 24s değişim: {tool_data.get('change_24h'):+.2f}%"
-                )
-            elif tool_used == "time":
-                parts.append(f"🕐 {tool_data.get('formatted_tr')}")
-            elif tool_used == "news":
-                articles = tool_data.get("articles", [])[:5]
-                if articles:
-                    parts.append("📰 Son Haberler:")
-                    for i, a in enumerate(articles, 1):
-                        parts.append(f"  {i}. {a.get('title','')}")
-            elif tool_used in ("web_search","price_search"):
-                for r in tool_data.get("results", [])[:3]:
-                    parts.append(f"• {r.get('title','')}: {r.get('content','')[:200]}")
-
-            formatted = (
-                "\n".join(parts) +
-                "\n\n[SADECE BU VERİYİ KULLAN — ÖNCEKI KONUYU BIRAK]"
-            )
-            print(f"[LIVE DATA] ✅ {tool_used} — {len(formatted)} chars")
-            return formatted
-
-    except httpx.TimeoutException:
-        print(f"[LIVE DATA] Timeout")
-    except Exception as e:
-        print(f"[LIVE DATA] Error: {e}")
-    return None
-
-
-# ── get_live_data wrapper — sources_block ayıklar ─────────────
-_SOURCES_SENTINEL = "SOURCES_BLOCK_PLACEHOLDER:"
-
-async def get_live_data_with_sources(
-    query: str,
-    mode: str = "assistant",
-    router_tool: str = None,
-    router_decision: Dict = None,
-    history: List[Dict] = None,
-) -> tuple:
-    """
-    get_live_data'yı çağırır, dönen metinden SOURCES_BLOCK_PLACEHOLDER'ı ayıklar.
-
-    Returns:
-        (grounding_context: Optional[str], sources_block: str)
-        grounding_context → LLM'e gidecek temiz grounding metni
-        sources_block     → Kullanıcıya gösterilecek Markdown kaynak listesi
-    """
-    raw = await get_live_data(
-        query,
-        mode=mode,
-        router_tool=router_tool,
-        router_decision=router_decision,
-        history=history,
-    )
-    if not raw:
-        return raw, ""
-
-    if _SOURCES_SENTINEL in raw:
-        idx = raw.find(_SOURCES_SENTINEL)
-        sources_block = raw[idx + len(_SOURCES_SENTINEL):].strip()
-        context       = raw[:idx].rstrip()
-        return context or None, sources_block
-
-    return raw, ""
-
-
-
-# ═══════════════════════════════════════════════════════════════
-# MEMORY & CONTEXT
-# ═══════════════════════════════════════════════════════════════
-
-def _extract_active_commands(history: List[Dict]) -> List[str]:
-    """
-    Konuşma geçmişinden kullanıcının verdiği aktif komutları çıkar.
-    Bu komutlar system prompt'a enjekte edilir — LLM her mesajda görür.
-    """
-    from intent_classifier import classify_intent, Intent
-    commands = []
-    seen = set()
-    for msg in history:
-        if msg.get("role") != "user":
-            continue
-        content = msg.get("content", "")
-        if not content:
-            continue
-        result = classify_intent(content, [], "assistant")
-        if result["intent"] == Intent.USER_COMMAND:
-            cmd = content.strip()
-            if cmd not in seen:
-                seen.add(cmd)
-                commands.append(cmd)
-    return commands
-
 
 async def load_user_memory(user_id: int) -> Optional[str]:
     if not db_pool:
@@ -1290,9 +1004,6 @@ async def build_code_messages(
         system_content += "\n\n" + "\n".join(parts)
 
     # ── Canlı veri (code modda da çalışır) ──────────────────────
-    live_context = await get_live_data(user_prompt, mode="code", history=history or [])
-    if live_context:
-        kwargs["live_context"] = live_context
 
     # RAG + web context
     if kwargs.get('rag_context'):
@@ -1551,33 +1262,17 @@ async def build_messages(
         )
     # ─────────────────────────────────────────────────────────────
 
-    # ── GÜNCEL TARİH — smart_tools NTP (worldtimeapi) ────────────
-    try:
-        async with httpx.AsyncClient(timeout=4.0) as _c:
-            _r = await _c.post(
-                f"{SMART_TOOLS_URL}/unified",
-                json={"query": "bugün tarih ne", "tool_type": "time"}
-            )
-            if _r.status_code == 200:
-                _d = _r.json().get("data", {})
-                _date_only = _d.get("date_only") or _d.get("formatted_tr", "").split(",")[0].strip()
-                if _date_only:
-                    system_content = (
-                        f"[Sistem Bilgisi]\nBugünün tarihi: {_date_only}\n[/Sistem Bilgisi]\n\n"
-                        + system_content
-                    )
-    except Exception:
-        # Fallback: UTC+3 sistem saati
-        from datetime import timezone, timedelta
-        _now = datetime.now(timezone(timedelta(hours=3)))
-        _months = ["Ocak","Şubat","Mart","Nisan","Mayıs","Haziran",
-                   "Temmuz","Ağustos","Eylül","Ekim","Kasım","Aralık"]
-        _days = ["Pazartesi","Salı","Çarşamba","Perşembe","Cuma","Cumartesi","Pazar"]
-        _date_only = f"{_now.day} {_months[_now.month-1]} {_now.year}, {_days[_now.weekday()]}"
-        system_content = (
-            f"[Sistem Bilgisi]\nBugünün tarihi: {_date_only}\n[/Sistem Bilgisi]\n\n"
-            + system_content
-        )
+    # ── GÜNCEL TARİH — UTC+3 lokal ───────────────────────────────
+    from datetime import timezone, timedelta
+    _now = datetime.now(timezone(timedelta(hours=3)))
+    _months = ["Ocak","Şubat","Mart","Nisan","Mayıs","Haziran",
+               "Temmuz","Ağustos","Eylül","Ekim","Kasım","Aralık"]
+    _days = ["Pazartesi","Salı","Çarşamba","Perşembe","Cuma","Cumartesi","Pazar"]
+    _date_only = f"{_now.day} {_months[_now.month-1]} {_now.year}, {_days[_now.weekday()]}"
+    system_content = (
+        f"[Sistem Bilgisi]\nBugünün tarihi: {_date_only}\n[/Sistem Bilgisi]\n\n"
+        + system_content
+    )
     # ─────────────────────────────────────────────────────────────
 
     # 1. USER MEMORY
@@ -1606,24 +1301,11 @@ async def build_messages(
         "intent":         kwargs.get("router_intent", ""),
     } if kwargs.get("live_type_hint") or kwargs.get("needs_realtime") else None
 
-    # context zaten dışarıdan sağlandıysa (SSE pre-fetch) → internal fetch atla (double-fetch önlemi)
-    _skip_internal_fetch = bool(context)
-    if not _skip_internal_fetch:
-        live_context, _sources_block = await get_live_data_with_sources(
-            user_prompt,
-            mode=mode,
-            router_tool=kwargs.get("live_type_hint"),
-            router_decision=_router_dec,
-            history=history or [],
-        )
-        # live_context → user mesajına geçir (system'e değil), sources_block ayrı taşınır
-        if live_context:
-            kwargs["live_context"]   = live_context
-            kwargs["sources_block"]  = _sources_block
-            print(f"[CHAT] Live data → user msg: {len(live_context)} chars | sources: {bool(_sources_block)}")
-    else:
-        live_context   = None   # context param'dan geliyor — user msg'e ayrıca eklenmeyecek
-        _sources_block = ""
+
+    # Live data: Gemini fast path /chat endpoint'inde handle edildi.
+    live_context   = None
+    _sources_block = ""
+
 
     # 4. RAG CONTEXT
     if rag_context:
@@ -1746,6 +1428,35 @@ async def chat(request: ChatRequest):
     if request.mode not in MODE_CONFIGS:
         raise HTTPException(status_code=400, detail=f"Invalid mode: {request.mode}")
 
+    # ── GEMINI FAST PATH ──────────────────────────────────────
+    # Canlı veri / web araması → Gemini direkt stream eder.
+    # build_messages / get_live_data / smart_tools çağrılmaz.
+    # Araya hiçbir şey girmez.
+    if GEMINI_API_KEY:
+        _live_type = _detect_live_type(
+            request.prompt,
+            request.mode or "assistant",
+            None,
+            request.history or [],
+        )
+        if _live_type in _GEMINI_TYPES:
+            print(f"[GEMINI FAST] '{request.prompt[:50]}' → {_live_type}")
+
+            async def _gemini_stream():
+                has_content = False
+                async for chunk in gemini_live_stream(request.prompt, _live_type):
+                    if chunk:
+                        has_content = True
+                        yield chunk
+                if not has_content:
+                    yield "Üzgünüm, şu an yanıt üretemiyorum."
+
+            return StreamingResponse(
+                _gemini_stream(),
+                media_type="text/plain; charset=utf-8",
+            )
+    # ─────────────────────────────────────────────────────────
+
     config        = MODE_CONFIGS[request.mode]
     show_thinking = should_show_thinking(request.prompt, request.mode, request.history or [])
 
@@ -1785,21 +1496,7 @@ async def chat(request: ChatRequest):
             live_type_check = _detect_live_type(request.prompt, request.mode or "assistant", None, request.history or [])
             is_deep = live_type_check == "deep_search"
 
-            # ── Gemini Live Search — web_search/news/price_search ─────────
-            # Gemini Google Search Grounding ile direkt yanıt verir.
-            # DeepInfra'ya gitmez, tag enjeksiyonu yok, sonuç direkt kullanıcıya.
-            if GEMINI_API_KEY and live_type_check in _GEMINI_TYPES:
-                print(f"[GEMINI LIVE] '{request.prompt[:50]}' → {live_type_check}")
-                has_content = False
-                async for chunk in gemini_live_stream(request.prompt, live_type_check):
-                    if chunk:
-                        has_content = True
-                        yield chunk
-                if has_content:
-                    return  # Gemini yanıtladı — DeepInfra'ya gitme
-                # Gemini başarısız → normal akışa devam et
-                print("[GEMINI LIVE] Başarısız — normal akışa geçiliyor")
-            # ─────────────────────────────────────────────────────────────
+            # Gemini: /chat endpoint başında handle edildi
             is_tr   = any(c in request.prompt for c in "çğışöüÇĞİŞÖÜ") or True
 
             if is_deep:
@@ -1941,10 +1638,8 @@ async def chat_sse(request: ChatRequest):
                     })
                     await asyncio.sleep(0.05)
 
-                # Live data çek (sources_block ayrı alınır — LLM'e gitmez)
-                live_context, sources_block = await get_live_data_with_sources(
-                    prompt, mode, history=history or []
-                )
+                # Live data: Gemini /chat fast path'te handle edildi
+                live_context, sources_block = None, ""
 
                 # Adım 4'ü tamamla
                 yield sse_event("step", {
@@ -1965,9 +1660,7 @@ async def chat_sse(request: ChatRequest):
                 })
 
             else:
-                live_context, sources_block = await get_live_data_with_sources(
-                    prompt, mode, history=history or []
-                )
+                live_context, sources_block = None, ""
 
                 # Normal thinking steps
                 show_thinking = should_show_thinking(prompt, mode, request.history or [])

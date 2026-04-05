@@ -1395,9 +1395,11 @@ async def unified_endpoint(request: UnifiedRequest):
     query     = request.query
     tool_type = request.tool_type or auto_detect_tool(query)
 
-    print(f"\n{'─'*50}")
-    print(f"[UNIFIED] '{query}' → {tool_type}")
-    print(f"{'─'*50}")
+    import time as _t
+    _t0 = _t.time()
+    print(f"\n{'━'*60}")
+    print(f"[SMART-TOOLS] ▶ {tool_type.upper()} | query='{query[:60]}'")
+    print(f"{'━'*60}")
 
     try:
         if tool_type == ToolType.TIME:
@@ -1430,11 +1432,14 @@ async def unified_endpoint(request: UnifiedRequest):
         data    = result.get("data", {})
         preview = (data.get("formatted") or data.get("short") or
                    f"{len(data.get('results', data.get('articles', [])))} items")
-        print(f"[UNIFIED] ✅ success={result.get('success')} | {preview}")
+        elapsed = round(_t.time() - _t0, 2)
+        print(f"[SMART-TOOLS] ✅ {tool_type.upper()} | {elapsed}s | {preview[:60]}")
         return result
 
     except Exception as e:
-        print(f"[UNIFIED ERROR] {e}")
+        import traceback
+        print(f"[SMART-TOOLS] ❌ {tool_type.upper()} HATA: {type(e).__name__}: {e}")
+        print(f"[SMART-TOOLS] Traceback: {traceback.format_exc()[-300:]}")
         return {"success": False, "error": str(e),
                 "tool_used": tool_type.value, "query": query}
 
