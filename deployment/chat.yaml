@@ -24,7 +24,7 @@ spec:
         - name: DB_HOST
           value: "postgres"
         - name: GEMINI_API_KEY
-          value: "AIzaSyDbDRbyIKoPob_Ao_g_MBIst6BDYUKw4L8"
+          value: "aa"
         - name: DB_PORT
           value: "5432"
         - name: DB_NAME
@@ -61,12 +61,26 @@ spec:
         - name: DEEPINFRA_CODE_TEMPERATURE
           value: "0.3"
         - name: DEEPINFRA_CODE_MAX_TOKENS
-          value: "16000"   # 4096 → 16000
+          value: "16000"
         
-        # Smart Tools (YENİ!)
+        # Smart Tools
         - name: SMART_TOOLS_URL
           value: "http://skylight-smart-tools:8081"
-        
+
+        # Vertex AI — Google Search Grounding
+        - name: GEMINI_PROJECT
+          value: "tenacious-camp-315521"
+        - name: GEMINI_LOCATION
+          value: "us-central1"
+        - name: GEMINI_MODEL
+          value: "gemini-2.5-flash-lite"
+
+        # Vertex SA key mount
+        volumeMounts:
+        - name: vertex-sa-key
+          mountPath: /etc/vertex-sa
+          readOnly: true
+
         resources:
           requests:
             memory: "256Mi"
@@ -74,6 +88,12 @@ spec:
           limits:
             memory: "512Mi"
             cpu: "500m"
+
+      volumes:
+      - name: vertex-sa-key
+        secret:
+          secretName: vertex-sa-key
+
 ---
 apiVersion: v1
 kind: Service
