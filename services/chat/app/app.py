@@ -429,79 +429,85 @@ def _detect_live_type(
 # ──────────────────────────────────────────────────────────────
 async def gemini_live_stream(query: str, live_type: str):
     """
-    Gemini 2.5 Flash Lite + Google Search Grounding ile canlı yanıt üretir.
-    AsyncGenerator[str, None] — doğrudan SSE'ye yield edilir.
+    Gemini 2.5 Flash Lite + Google Search Grounding.
+    Sync SDK → asyncio.to_thread ile event loop'u bloklamadan çalışır.
     """
     if not GEMINI_API_KEY:
-        yield "[GEMINI] API key yok\n"
+        yield "⚠️ Gemini API key tanımlı değil."
         return
+
+    type_instructions = {
+        "weather":      "Güncel hava durumu bilgisini ver. Sıcaklık, nem, rüzgar. Kısa ve net. Türkçe.",
+        "currency":     "Güncel döviz/kur bilgisini ver. Sayıları net yaz. Türkçe.",
+        "crypto":       "Güncel kripto para fiyatını ver. USD ve TL karşılığını yaz. Türkçe.",
+        "time":         "Güncel tarih ve saati ver. Türkçe.",
+        "news":         "Son dakika haberlerini özetle. Madde madde yaz. Türkçe.",
+        "price_search": "Güncel fiyat bilgisini bul ve ver. Net rakamlar yaz. Türkçe.",
+        "web_search":   "Soruyu Google'da ara, güncel ve doğru yanıt ver. Türkçe.",
+        "deep_search":  "Soruyu derinlemesine araştır. Kapsamlı, kaynaklı ve doğru yanıt ver. Türkçe.",
+    }
+    instruction = type_instructions.get(live_type, "Güncel bilgiyi Google'dan ara ve ver. Türkçe.")
 
     try:
         import google.generativeai as genai
         genai.configure(api_key=GEMINI_API_KEY)
-
-        # live_type'a göre instruction ayarla
-        type_instructions = {
-            "weather":      "Güncel hava durumu bilgisini ver. Sıcaklık, nem, rüzgar. Türkçe.",
-            "currency":     "Güncel döviz/kur bilgisini ver. Sayıları net yaz. Türkçe.",
-            "crypto":       "Güncel kripto para fiyatını ver. USD ve TL karşılığını yaz. Türkçe.",
-            "time":         "Güncel tarih ve saati ver. Varsa timezone bilgisini ekle. Türkçe.",
-            "news":         "Son dakika haberlerini özetle. Madde madde yaz. Türkçe.",
-            "price_search": "Güncel fiyat bilgisini bul ve ver. Net rakamlar yaz. Türkçe.",
-            "web_search":   "Soruyu Google'da ara, güncel ve doğru yanıt ver. Türkçe.",
-            "deep_search":  (
-                "Soruyu derinlemesine araştır. Birden fazla kaynaktan bilgi topla. "
-                "Kapsamlı, detaylı ve doğru bir yanıt ver. "
-                "Kaynakları alıntı yaparak belirt. Türkçe yanıt ver."
-            ),
-        }
-        instruction = type_instructions.get(
-            live_type,
-            "Güncel bilgiyi Google'dan ara ve ver. Kısa ve net. Türkçe."
-        )
 
         model = genai.GenerativeModel(
             model_name=GEMINI_MODEL,
             tools="google_search_retrieval",
             system_instruction=(
                 f"Sen ONE-BUNE AI asistanısın. {instruction} "
-                "Kaynakları yanıtın sonuna ekle. Markdown kullan."
+                "Kaynakları varsa yanıtın sonuna ekle. Markdown kullan."
             ),
         )
 
-        response = model.generate_content(
-            contents=query,
-            generation_config=genai.types.GenerationConfig(
-                temperature=0.1,
-                max_output_tokens=2048 if live_type == "deep_search" else 1024,
-            ),
-            stream=True,
-        )
+        # Blocking Gemini çağrısını thread'de çalıştır — event loop'u bloklamaz
+        def _call_gemini():
+            return model.generate_content(
+                contents=query,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.1,
+                    max_output_tokens=2048 if live_type == "deep_search" else 1024,
+                ),
+            )
 
-        print(f"[GEMINI] ✅ Streaming başladı | model={GEMINI_MODEL} | type={live_type}")
+        print(f"[GEMINI] ▶ {live_type} | '{query[:60]}'")
+        response = await asyncio.to_thread(_call_gemini)
 
-        for chunk in response:
-            if chunk.text:
-                yield chunk.text
+        text = response.text or ""
+        if not text.strip():
+            yield "Yanıt alınamadı."
+            return
+
+        print(f"[GEMINI] ✅ {len(text)} karakter | model={GEMINI_MODEL}")
+
+        # Yanıtı chunk'lar halinde yield et — daha akıcı görünür
+        chunk_size = 80
+        for i in range(0, len(text), chunk_size):
+            yield text[i:i + chunk_size]
+            await asyncio.sleep(0)  # event loop'a nefes aldır
 
         # Kaynakları ekle
         try:
             sources = []
             for candidate in response.candidates:
-                meta = candidate.grounding_metadata
-                if meta and hasattr(meta, "grounding_chunks"):
-                    for c in meta.grounding_chunks:
-                        if hasattr(c, "web") and c.web.uri:
-                            sources.append(f"- [{c.web.title or c.web.uri}]({c.web.uri})")
+                meta = getattr(candidate, "grounding_metadata", None)
+                if meta:
+                    for chunk in getattr(meta, "grounding_chunks", []):
+                        web = getattr(chunk, "web", None)
+                        if web and getattr(web, "uri", None):
+                            title = getattr(web, "title", None) or web.uri
+                            sources.append(f"- [{title}]({web.uri})")
             if sources:
                 yield "\n\n---\n**Kaynaklar:**\n" + "\n".join(sources[:5])
         except Exception:
             pass
 
     except Exception as e:
-        print(f"[GEMINI] ❌ {e}")
-        # Hata durumunda boş yield — caller fallback yapar
-        yield ""
+        import traceback
+        print(f"[GEMINI] ❌ {type(e).__name__}: {e}")
+        print(traceback.format_exc()[-500:])
+        yield f"⚠️ Bir hata oluştu: {type(e).__name__}"
 
 
 async def load_user_memory(user_id: int) -> Optional[str]:

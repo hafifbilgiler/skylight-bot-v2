@@ -44,13 +44,12 @@ import time
 import asyncio
 import json
 
-# ── Web Search Engine v4 + Deep Search Pipeline v4 ───────────
-# Web arama: Gemini fast path chat servisinde handle ediyor — buraya gelmiyor
+# Web arama: Gemini fast path (chat servisi) handle ediyor — burada gerek yok
 _SEARCH_V4 = False
 _web_search_v4 = None
 _web_search_sync_v4 = None
 _format_sources = None
-
+_generate_search_queries = None
 from enum import Enum
 
 # ═══════════════════════════════════════════════════════════════
@@ -1288,11 +1287,11 @@ async def unified_endpoint(request: UnifiedRequest):
 
         elif tool_type == ToolType.PRICE_SEARCH:
             # Gemini fast path chat servisinde handle ediyor
-            result = {"success": False, "error": "Use Gemini", "data": {}}
+            result = {"success": False, "error": "Handled by Gemini", "data": {}}
 
         else:  # WEB_SEARCH
             # Gemini fast path chat servisinde handle ediyor
-            result = {"success": False, "error": "Use Gemini", "data": {}}
+            result = {"success": False, "error": "Handled by Gemini", "data": {}}
 
         result["tool_used"] = tool_type.value
         result["query"]     = query
