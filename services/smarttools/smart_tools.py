@@ -45,24 +45,11 @@ import asyncio
 import json
 
 # ── Web Search Engine v4 + Deep Search Pipeline v4 ───────────
-try:
-    from web_search_v4 import web_search as _web_search_v4
-    from web_search_v4 import web_search_sync as _web_search_sync_v4
-    from deep_search_v4 import deep_search as _deep_search_v4
-    _SEARCH_V4 = True
-    print("[SEARCH] ✅ web_search_v4 + deep_search_v4 loaded")
-except ImportError as _e:
-    _SEARCH_V4 = False
-    print(f"[SEARCH] ⚠️ v4 not found ({_e}) — legacy fallback")
-    # Legacy v3 fallback
-    try:
-        from search_engine_v3 import web_search as _web_search_v4
-        from search_engine_v3 import web_search_sync as _web_search_sync_v4
-        _deep_search_v4 = None
-    except ImportError:
-        _web_search_v4 = None
-        _web_search_sync_v4 = None
-        _deep_search_v4 = None
+# Web arama: Gemini fast path chat servisinde handle ediyor — buraya gelmiyor
+_SEARCH_V4 = False
+_web_search_v4 = None
+_web_search_sync_v4 = None
+_format_sources = None
 
 from enum import Enum
 
@@ -539,124 +526,6 @@ def get_news(query: Optional[str] = None) -> Dict:
         return {"success": False, "error": str(e)}
 
 
-# ═══════════════════════════════════════════════════════════════
-# SYNC WEB SEARCH (waterfall)
-# ═══════════════════════════════════════════════════════════════
-
-def sync_web_search(query: str, num: int = 5) -> Dict:
-    if _SEARCH_V4 and _web_search_sync_v4:
-        return _web_search_sync_v4(query, num)
-
-    """SearXNG → Bing/Google scrape → DuckDuckGo + 3dk cache."""
-    key    = f"s_{query.lower().strip()}"
-    cached = search_cache.get(key)
-    if cached:
-        return cached
-
-    # SearXNG
-    if SEARXNG_URL:
-        try:
-            data    = requests.get(f"{SEARXNG_URL}/search",
-                params={"q": query, "format": "json",
-                        "engines": "bing,duckduckgo", "language": "tr"},
-                timeout=10).json()
-            results = data.get("results", [])[:num]
-            if results:
-                r = {"success": True, "data": {"query": query, "provider": "searxng",
-                    "results": [{"title": x.get("title",""), "url": x.get("url",""),
-                                 "content": x.get("content","")[:400]} for x in results]}}
-                search_cache.set(key, r)
-                return r
-        except Exception:
-            pass
-
-
-    # DuckDuckGo
-    for ua in ["Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-               "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"]:
-        try:
-            soup    = BeautifulSoup(
-                requests.get(f"https://html.duckduckgo.com/html/?q={quote_plus(query)}",
-                             headers={"User-Agent": ua}, timeout=10).text, 'html.parser')
-            results = []
-            for div in soup.find_all('div', class_='result', limit=num):
-                t = div.find('a', class_='result__a')
-                s = div.find('a', class_='result__snippet')
-                if t:
-                    results.append({"title": t.get_text(strip=True), "url": t.get('href',''),
-                                    "content": s.get_text(strip=True)[:400] if s else ""})
-            if results:
-                r = {"success": True, "data": {"query": query,
-                     "provider": "duckduckgo", "results": results}}
-                search_cache.set(key, r)
-                return r
-            break
-        except Exception:
-            time.sleep(0.5)
-
-    return {"success": False, "error": "Tüm arama sağlayıcıları başarısız"}
-
-
-# ═══════════════════════════════════════════════════════════════
-# ASYNC WEB SEARCH (deep search için)
-# ═══════════════════════════════════════════════════════════════
-
-async def async_web_search(query: str, num: int = 5) -> Dict:
-    if _SEARCH_V4 and _web_search_v4:
-        return await _web_search_v4(query, num)
-
-    """Async waterfall — non-blocking."""
-    key    = f"as_{query.lower().strip()}"
-    cached = await deep_cache.get(key)
-    if cached:
-        return cached
-
-    async with httpx.AsyncClient(timeout=12.0) as client:
-
-        # SearXNG
-        if SEARXNG_URL:
-            try:
-                resp    = await client.get(f"{SEARXNG_URL}/search",
-                    params={"q": query, "format": "json",
-                            "engines": "bing,duckduckgo", "language": "tr"})
-                results = resp.json().get("results", [])[:num]
-                if results:
-                    r = {"success": True, "data": {"query": query, "provider": "searxng",
-                        "results": [{"title": x.get("title",""), "url": x.get("url",""),
-                                     "content": x.get("content","")[:400]} for x in results]}}
-                    await deep_cache.set(key, r)
-                    print(f"[SEARCH] SearXNG: {len(results)} sonuç")
-                    return r
-            except Exception as e:
-                print(f"[SEARCH] SearXNG: {e}")
-
-        # DuckDuckGo
-        for ua in ["Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"]:
-            try:
-                resp    = await client.get(
-                    f"https://html.duckduckgo.com/html/?q={quote_plus(query)}",
-                    headers={"User-Agent": ua})
-                soup    = BeautifulSoup(resp.text, 'html.parser')
-                results = []
-                for div in soup.find_all('div', class_='result', limit=num):
-                    t = div.find('a', class_='result__a')
-                    s = div.find('a', class_='result__snippet')
-                    if t:
-                        results.append({"title": t.get_text(strip=True),
-                                        "url": t.get('href',''),
-                                        "content": s.get_text(strip=True)[:400] if s else ""})
-                if results:
-                    r = {"success": True, "data": {"query": query,
-                         "provider": "duckduckgo", "results": results}}
-                    await deep_cache.set(key, r)
-                    print(f"[SEARCH] DDG: {len(results)} sonuç")
-                    return r
-                break
-            except Exception as e:
-                print(f"[SEARCH] DDG: {e}")
-
-    return {"success": False, "error": "Tüm arama sağlayıcıları başarısız"}
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1200,7 +1069,6 @@ async def deep_search_pipeline(req: DeepSearchRequest) -> Dict:
     # ── 1. SEARCH — AI keyword generator + paralel çoklu sorgu ─
     language = "tr" if any(c in req.query for c in "çğışöüÇĞİŞÖÜ") else "en"
     if _web_search_v4:
-        from web_search_v4 import generate_search_queries, format_sources_for_user
         search_queries = await generate_search_queries(req.query, language, max_queries=3)
         if req.query not in search_queries:
             search_queries.insert(0, req.query)
@@ -1320,7 +1188,6 @@ async def deep_search_pipeline(req: DeepSearchRequest) -> Dict:
 
     # Kullanıcıya gösterilecek kaynak bloğu
     if _web_search_v4:
-        from web_search_v4 import format_sources_for_user
         sources_block = format_sources_for_user(
             [{"title": r.get("title",""), "url": r.get("url",""),
               "content": r.get("content","")[:120]} for r in results[:8]],
@@ -1420,10 +1287,12 @@ async def unified_endpoint(request: UnifiedRequest):
             result = get_crypto(_extract_coin(query))
 
         elif tool_type == ToolType.PRICE_SEARCH:
-            result = sync_web_search(query, 5)
+            # Gemini fast path chat servisinde handle ediyor
+            result = {"success": False, "error": "Use Gemini", "data": {}}
 
         else:  # WEB_SEARCH
-            result = sync_web_search(query, 5)
+            # Gemini fast path chat servisinde handle ediyor
+            result = {"success": False, "error": "Use Gemini", "data": {}}
 
         result["tool_used"] = tool_type.value
         result["query"]     = query
