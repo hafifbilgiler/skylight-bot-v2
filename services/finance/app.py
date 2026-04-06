@@ -779,6 +779,16 @@ async def ws_endpoint(ws: WebSocket, symbol: str):
                 "whales":list(whale_history[symbol])[-10:]}
         await ws.send_text(json.dumps(snap, default=str))
 
+        # Ping/keepalive — her 20 saniyede ping gönder, nginx timeout önler
+        async def send_ping():
+            while True:
+                await asyncio.sleep(20)
+                try:
+                    await ws.send_text(json.dumps({"type": "ping"}))
+                except Exception:
+                    break
+        asyncio.create_task(send_ping())
+
         while True:
             msg = await ws.receive_text()
             d   = json.loads(msg)
