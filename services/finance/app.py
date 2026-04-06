@@ -8,6 +8,7 @@ import asyncio, json, os, time
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set
+import jwt as _jwt
 
 import httpx, websockets
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
@@ -23,6 +24,19 @@ DEEPINFRA_API_KEY  = os.getenv("DEEPINFRA_API_KEY", "")
 DEEPINFRA_BASE_URL = os.getenv("DEEPINFRA_BASE_URL", "https://api.deepinfra.com/v1/openai")
 # En ucuz + yeterince akıllı model — $0.05/1M token
 FINANS_LLM_MODEL   = os.getenv("FINANS_LLM_MODEL", "Qwen/Qwen3.5-4B")
+
+JWT_SECRET    = os.getenv("JWT_SECRET", "31aad766798d891f4c587d7f3bc925cd7e1e14989c421ae3c38eb80c1d4ede05")
+JWT_ALGORITHM = "HS256"
+
+def verify_token(token: str) -> bool:
+    """Token geçerli mi kontrol et."""
+    if not token:
+        return False
+    try:
+        _jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        return True
+    except Exception:
+        return False
 
 SUPPORTED_COINS = [
     "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT",
@@ -737,6 +751,13 @@ async def get_signal_history(symbol: str):
 async def ws_endpoint(ws: WebSocket, symbol: str):
     await ws.accept()
     symbol = symbol.upper()
+
+    # Token kontrolü — nginx bypass edildiği için burada yapıyoruz
+    token = ws.query_params.get("token", "")
+    if not verify_token(token):
+        await ws.send_text(json.dumps({"error": "Yetkisiz"}))
+        await ws.close(); return
+
     if symbol not in SUPPORTED_COINS:
         await ws.send_text(json.dumps({"error":"Desteklenmiyor"}))
         await ws.close(); return
