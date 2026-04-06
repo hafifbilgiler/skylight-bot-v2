@@ -737,6 +737,77 @@ async def get_history(symbol: str,
     return {"symbol":symbol,"interval":interval,
             "klines": await fetch_historical(symbol, interval, limit)}
 
+
+@app.get("/fng")
+async def fear_greed_index():
+    """
+    Korku & Açgözlülük Endeksi — Binance verilerinden hesaplanır.
+    RSI, volatilite, hacim, momentum kullanılır.
+    """
+    scores = []
+    labels = []
+
+    btc_klines = list(kline_cache.get("BTCUSDT", {}).get("1d", []))
+    if len(btc_klines) < 30:
+        return {"value": 50, "label": "Nötr", "components": {}}
+
+    closes  = [float(k["c"]) for k in btc_klines]
+    volumes = [float(k["v"]) for k in btc_klines]
+
+    # 1. RSI (0-100 → 0-100)
+    rsi = calc_rsi(closes, 14)
+    if rsi:
+        scores.append(rsi)
+        labels.append(f"RSI: {rsi:.1f}")
+
+    # 2. Fiyat Momentum — son 7 günlük değişim
+    if len(closes) >= 8:
+        mom = (closes[-1] - closes[-8]) / closes[-8] * 100
+        mom_score = 50 + min(max(mom * 3, -50), 50)
+        scores.append(mom_score)
+        labels.append(f"Momentum: {mom:.1f}%")
+
+    # 3. Volatilite — düşük volatilite = daha az korku
+    if len(closes) >= 30:
+        import statistics
+        std = statistics.stdev(closes[-30:])
+        mean = sum(closes[-30:]) / 30
+        vol_pct = std / mean * 100
+        vol_score = max(0, 100 - vol_pct * 5)
+        scores.append(vol_score)
+        labels.append(f"Vol: {vol_pct:.1f}%")
+
+    # 4. Hacim Momentum
+    if len(volumes) >= 10:
+        avg_vol = sum(volumes[-30:]) / 30 if len(volumes) >= 30 else sum(volumes) / len(volumes)
+        vol_ratio = volumes[-1] / avg_vol if avg_vol else 1
+        vol_mom_score = min(50 + (vol_ratio - 1) * 25, 100)
+        scores.append(max(0, vol_mom_score))
+        labels.append(f"HacimRatio: {vol_ratio:.2f}x")
+
+    # 5. EMA Trend — fiyat EMA50 üstünde mi?
+    ema50 = calc_ema(closes, 50)
+    if ema50:
+        ema_score = 75 if closes[-1] > ema50[-1] else 25
+        scores.append(ema_score)
+        labels.append(f"EMA50: {'Üstünde' if closes[-1] > ema50[-1] else 'Altında'}")
+
+    value = round(sum(scores) / len(scores)) if scores else 50
+
+    if value < 20:   label = "Aşırı Korku"
+    elif value < 40: label = "Korku"
+    elif value < 60: label = "Nötr"
+    elif value < 80: label = "Açgözlülük"
+    else:            label = "Aşırı Açgözlülük"
+
+    return {
+        "value": value,
+        "label": label,
+        "components": dict(zip(["rsi","momentum","volatility","volume","ema"], scores)),
+        "details": labels,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
 @app.get("/whales/{symbol}")
 async def get_whales(symbol: str):
     symbol = symbol.upper()
