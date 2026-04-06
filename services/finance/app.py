@@ -12,6 +12,7 @@ import jwt as _jwt
 
 import httpx, websockets
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -547,13 +548,17 @@ async def process_msg(symbol: str, data: Dict):
 
 async def broadcast(symbol: str, data: Dict):
     global all_clients
-    msg  = json.dumps(data, default=str)
-    dead = set()
-    for ws in subscribers[symbol]:
-        try:   await ws.send_text(msg)
-        except: dead.add(ws)
-    subscribers[symbol] -= dead
-    all_clients          -= dead
+    msg = json.dumps(data, default=str)
+    if symbol not in subscribers:
+        return
+    # Kopyasını al — iterasyon sırasında set değişirse hata vermesin
+    current_subscribers = list(subscribers[symbol])
+    for ws in current_subscribers:
+        try:
+            await ws.send_text(msg)
+        except Exception:
+            subscribers[symbol].discard(ws)
+            all_clients.discard(ws)
 
 # ──────────────────────────────────────────────────────────────
 # GEÇMİŞ VERİ
