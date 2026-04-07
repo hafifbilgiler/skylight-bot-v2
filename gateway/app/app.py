@@ -2188,10 +2188,26 @@ async def subscription_plans_endpoint():
 
 @app.post("/chat")
 async def chat_endpoint(
-    request_body: ChatRequest,
     request: Request,
     authorization: str = Header(None),
 ):
+    # Validation hatası olsa bile çalış
+    try:
+        body = await request.json()
+        if 'user_id' in body and body['user_id'] is not None:
+            body['user_id'] = str(body['user_id'])
+        for f in ['router_intent','live_type_hint','image_type','router_thinking',
+                  'user_level','needs_realtime','fetch_pages','query','width','height','num_images']:
+            body.setdefault(f, None)
+        request_body = ChatRequest(**body)
+    except Exception as parse_err:
+        print(f"[CHAT] Parse hatası: {parse_err}")
+        try:
+            body = await request.json()
+        except:
+            body = {}
+        return {"response": "Bir sorun oluştu, tekrar deneyin.", "status": "error"}
+    # ──────────────────────────────────────────
     """
     Ana chat endpoint — Advanced Smart Routing v2.2
 
