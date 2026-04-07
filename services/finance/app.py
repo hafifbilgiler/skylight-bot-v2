@@ -883,6 +883,91 @@ async def get_correlation():
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
+
+@app.get("/news")
+async def get_news(symbol: str = "BTC"):
+    """
+    CoinGecko ücretsiz API'den kripto haberleri çek.
+    Haber başlıkları + AI sentiment skoru.
+    """
+    symbol_map = {
+        "BTCUSDT": "bitcoin", "ETHUSDT": "ethereum", "BNBUSDT": "binancecoin",
+        "SOLUSDT": "solana", "XRPUSDT": "ripple", "ADAUSDT": "cardano",
+        "DOGEUSDT": "dogecoin", "AVAXUSDT": "avalanche-2", "LINKUSDT": "chainlink",
+        "DOTUSDT": "polkadot", "MATICUSDT": "matic-network", "UNIUSDT": "uniswap",
+    }
+    coin_id = symbol_map.get(symbol.upper(), "bitcoin")
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # CoinGecko status updates (ücretsiz, key gereksiz)
+            r = await client.get(
+                f"https://api.coingecko.com/api/v3/coins/{coin_id}/status_updates",
+                headers={"Accept": "application/json"},
+                params={"per_page": 5}
+            )
+            
+            news = []
+            if r.status_code == 200:
+                data = r.json()
+                for item in data.get("status_updates", [])[:5]:
+                    desc = item.get("description", "")[:200]
+                    # Basit sentiment
+                    pos_words = ["launch", "partnership", "upgrade", "bullish", "growth", "adoption", "record"]
+                    neg_words = ["hack", "scam", "crash", "bearish", "lawsuit", "ban", "warning"]
+                    pos = sum(1 for w in pos_words if w in desc.lower())
+                    neg = sum(1 for w in neg_words if w in desc.lower())
+                    sentiment = "pozitif" if pos > neg else "negatif" if neg > pos else "nötr"
+                    sentiment_score = pos - neg
+                    
+                    news.append({
+                        "title": desc[:100] + "..." if len(desc) > 100 else desc,
+                        "category": item.get("category", "genel"),
+                        "created_at": item.get("created_at", ""),
+                        "sentiment": sentiment,
+                        "sentiment_score": sentiment_score,
+                        "url": item.get("project", {}).get("links", {}).get("homepage", [""])[0] if item.get("project") else "",
+                    })
+            
+            # Alternatif: CryptoCompare news (ücretsiz)
+            if not news:
+                r2 = await client.get(
+                    "https://min-api.cryptocompare.com/data/v2/news/",
+                    params={"categories": symbol.replace("USDT","").upper(), "lTs": 0, "lang": "EN"},
+                )
+                if r2.status_code == 200:
+                    items = r2.json().get("Data", [])[:6]
+                    for item in items:
+                        title = item.get("title", "")
+                        body  = item.get("body", "")[:300]
+                        pos_words = ["bullish", "surge", "rally", "gain", "record", "adoption", "launch"]
+                        neg_words = ["crash", "bear", "drop", "hack", "ban", "lawsuit", "warning", "fear"]
+                        text = (title + " " + body).lower()
+                        pos = sum(1 for w in pos_words if w in text)
+                        neg = sum(1 for w in neg_words if w in text)
+                        sentiment = "pozitif" if pos > neg else "negatif" if neg > pos else "nötr"
+                        news.append({
+                            "title": title,
+                            "body": body,
+                            "source": item.get("source_info", {}).get("name", ""),
+                            "sentiment": sentiment,
+                            "sentiment_score": pos - neg,
+                            "url": item.get("url", ""),
+                            "published_at": item.get("published_on", 0),
+                        })
+
+            return {
+                "symbol": symbol,
+                "coin_id": coin_id,
+                "news": news,
+                "count": len(news),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+
+    except Exception as e:
+        print(f"[NEWS] {e}")
+        return {"symbol": symbol, "news": [], "error": str(e)}
+
 @app.get("/fng")
 async def fear_greed_index():
     """
