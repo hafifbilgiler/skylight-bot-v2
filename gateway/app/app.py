@@ -49,7 +49,7 @@ from email.mime.text import MIMEText
 from fastapi import HTTPException, WebSocket, Header, Request, BackgroundTasks, File, UploadFile, Body
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import BaseModel, Field, EmailStr, validator
 
 # ═══════════════════════════════════════════════════════════════
 # CONFIGURATION
@@ -516,6 +516,12 @@ class ChatRequest(BaseModel):
     live_type_hint: Optional[str] = Field(None, max_length=100)
     image_type: Optional[str] = Field(None, max_length=50)
     user_id: Optional[str] = Field(None, max_length=100)
+
+    @validator('user_id', pre=True, always=True)
+    def user_id_to_str(cls, v):
+        if v is None:
+            return None
+        return str(v)
     router_thinking: Optional[bool] = Field(None)
     user_level: Optional[str] = Field(None, max_length=50)
     needs_realtime: Optional[bool] = Field(None)
