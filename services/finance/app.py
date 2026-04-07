@@ -814,6 +814,75 @@ async def get_support_resistance(
         "timestamp":   datetime.now(timezone.utc).isoformat(),
     }
 
+
+@app.get("/correlation")
+async def get_correlation():
+    """
+    Coin korelasyon matrisi — son 30 günlük günlük kapanış fiyatlarından hesaplanır.
+    Pearson korelasyon katsayısı: -1 (ters), 0 (bağımsız), +1 (aynı yön)
+    """
+    # Tüm coinler için 1d kapanış fiyatlarını al
+    closes = {}
+    for symbol in SUPPORTED_COINS:
+        klines = list(kline_cache.get(symbol, {}).get("1d", []))
+        if len(klines) >= 7:
+            closes[symbol] = [float(k["c"]) for k in klines[-30:]]
+
+    if len(closes) < 2:
+        return {"error": "Yetersiz veri", "matrix": {}}
+
+    # Günlük getiri hesapla (% değişim)
+    returns = {}
+    for sym, prices in closes.items():
+        if len(prices) < 2:
+            continue
+        ret = [(prices[i] - prices[i-1]) / prices[i-1] for i in range(1, len(prices))]
+        returns[sym] = ret
+
+    # Pearson korelasyon
+    def pearson(x, y):
+        n = min(len(x), len(y))
+        if n < 3:
+            return 0
+        x, y = x[:n], y[:n]
+        mx, my = sum(x)/n, sum(y)/n
+        num = sum((x[i]-mx)*(y[i]-my) for i in range(n))
+        dx  = (sum((x[i]-mx)**2 for i in range(n)))**0.5
+        dy  = (sum((y[i]-my)**2 for i in range(n)))**0.5
+        if dx == 0 or dy == 0:
+            return 0
+        return round(num / (dx * dy), 3)
+
+    symbols = list(returns.keys())
+    matrix = {}
+    for s1 in symbols:
+        matrix[s1] = {}
+        for s2 in symbols:
+            if s1 == s2:
+                matrix[s1][s2] = 1.0
+            else:
+                matrix[s1][s2] = pearson(returns[s1], returns[s2])
+
+    # BTC ile korelasyon sıralaması
+    btc_corr = []
+    if "BTCUSDT" in matrix:
+        for sym in symbols:
+            if sym != "BTCUSDT":
+                btc_corr.append({
+                    "symbol": sym,
+                    "correlation": matrix["BTCUSDT"].get(sym, 0),
+                    "direction": "pozitif" if matrix["BTCUSDT"].get(sym, 0) > 0.5 else
+                                 "negatif" if matrix["BTCUSDT"].get(sym, 0) < -0.3 else "nötr"
+                })
+        btc_corr.sort(key=lambda x: abs(x["correlation"]), reverse=True)
+
+    return {
+        "symbols":   symbols,
+        "matrix":    matrix,
+        "btc_corr":  btc_corr,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
 @app.get("/fng")
 async def fear_greed_index():
     """
