@@ -900,7 +900,7 @@ async def get_rates():
 
     result = {}
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
             # TRY bazlı döviz kurları
             r = await client.get(
                 "https://api.frankfurter.app/latest",
@@ -936,7 +936,7 @@ async def get_metals():
         usd_try = _rates_cache["data"].get("rates", {}).get("USD", {}).get("try", 38.0)
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
             # Altın ve gümüş (Frankfurter XAU/XAG)
             r = await client.get(
                 "https://api.frankfurter.app/latest",
