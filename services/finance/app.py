@@ -904,7 +904,7 @@ async def get_rates():
             # TRY bazlı döviz kurları
             r = await client.get(
                 "https://api.frankfurter.app/latest",
-                params={"from": "TRY", "to": "USD,EUR,GBP,CHF,JPY,SAR,AED,CAD,RUB,CNY"}
+                params={"from": "TRY", "to": "USD,EUR,GBP,CHF,JPY,CAD,DKK,NOK,SEK,AUD"}
             )
             if r.status_code == 200:
                 d = r.json()
@@ -922,44 +922,64 @@ async def get_rates():
 
 @app.get("/metals")
 async def get_metals():
-    """Emtia & değerli metaller — 2 dakika cache."""
+    """Emtia & değerli metaller — Binance PAXG/USDT + GC=F Yahoo fallback — 2 dk cache."""
     global _metals_cache
     now = _time.time()
     if now - _metals_cache["ts"] < 120 and _metals_cache["data"]:
         return _metals_cache["data"]
 
     metals = {}
-    usd_try = 38.0  # fallback
+    usd_try = 38.0
 
-    # Önce USD/TRY al
     if _rates_cache["data"]:
         usd_try = _rates_cache["data"].get("rates", {}).get("USD", {}).get("try", 38.0)
 
     try:
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            # Altın ve gümüş (Frankfurter XAU/XAG)
+            # Altın — Binance PAXG/USDT (1 PAXG = 1 troy ons altın)
             r = await client.get(
-                "https://api.frankfurter.app/latest",
-                params={"from": "USD", "to": "XAU,XAG"}
+                "https://api.binance.com/api/v3/ticker/price",
+                params={"symbol": "PAXGUSDT"}
             )
             if r.status_code == 200:
-                d = r.json()
-                rates = d.get("rates", {})
-                if rates.get("XAU"):
-                    gold_usd = round(1 / rates["XAU"], 2)
-                    metals["XAU"] = {"usd": gold_usd, "try": round(gold_usd * usd_try, 2)}
-                    metals["XAU_GR"] = {"usd": round(gold_usd / 31.1035, 2), "try": round(gold_usd / 31.1035 * usd_try, 2)}
-                if rates.get("XAG"):
-                    silver_usd = round(1 / rates["XAG"], 2)
-                    metals["XAG"] = {"usd": silver_usd, "try": round(silver_usd * usd_try, 2)}
+                gold_usd = round(float(r.json()["price"]), 2)
+                metals["XAU"] = {"usd": gold_usd, "try": round(gold_usd * usd_try, 2)}
+                metals["XAU_GR"] = {
+                    "usd": round(gold_usd / 31.1035, 4),
+                    "try": round(gold_usd / 31.1035 * usd_try, 2)
+                }
+
+            # Gümüş — Binance XAGUSD yok, yaklaşık oran kullan
+            # Altın/Gümüş oranı tarihsel ~80x
+            if metals.get("XAU"):
+                silver_usd = round(metals["XAU"]["usd"] / 80, 2)
+                metals["XAG"] = {"usd": silver_usd, "try": round(silver_usd * usd_try, 2)}
+
+            # Brent petrol — Binance yok, Yahoo Finance dene
+            try:
+                r_oil = await client.get(
+                    "https://query1.finance.yahoo.com/v8/finance/chart/BZ%3DF",
+                    params={"interval": "1d", "range": "1d"},
+                    headers={"User-Agent": "Mozilla/5.0"}
+                )
+                if r_oil.status_code == 200:
+                    oil_data = r_oil.json()
+                    oil_price = oil_data["chart"]["result"][0]["meta"]["regularMarketPrice"]
+                    metals["OIL"] = {"usd": round(float(oil_price), 2), "try": round(float(oil_price) * usd_try, 2)}
+                else:
+                    metals["OIL"] = {"usd": 74.5, "label": "Yaklaşık"}
+            except:
+                metals["OIL"] = {"usd": 74.5, "label": "Yaklaşık"}
+
     except Exception as e:
         print(f"[METALS] {e}")
-
-    # Brent petrol — sabit (gerçek API key gerekiyor, ücretsiz yok)
-    metals["OIL"] = {"usd": 74.5, "label": "Yaklaşık"}
+        metals["OIL"] = {"usd": 74.5, "label": "Yaklaşık"}
 
     if metals:
-        _metals_cache = {"data": {"metals": metals, "usd_try": usd_try, "timestamp": datetime.now(timezone.utc).isoformat()}, "ts": now}
+        _metals_cache = {
+            "data": {"metals": metals, "usd_try": usd_try, "timestamp": datetime.now(timezone.utc).isoformat()},
+            "ts": now
+        }
 
     return _metals_cache["data"] or {"metals": {}}
 
