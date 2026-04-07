@@ -884,6 +884,85 @@ async def get_correlation():
     }
 
 
+
+# ── Döviz & Emtia cache ──────────────────────────────
+import time as _time
+_rates_cache = {"data": {}, "ts": 0}
+_metals_cache = {"data": {}, "ts": 0}
+
+@app.get("/rates")
+async def get_rates():
+    """Döviz kurları — Frankfurter API, 2 dakika cache."""
+    global _rates_cache
+    now = _time.time()
+    if now - _rates_cache["ts"] < 120 and _rates_cache["data"]:
+        return _rates_cache["data"]
+
+    result = {}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # TRY bazlı döviz kurları
+            r = await client.get(
+                "https://api.frankfurter.app/latest",
+                params={"from": "TRY", "to": "USD,EUR,GBP,CHF,JPY,SAR,AED,CAD,RUB,CNY"}
+            )
+            if r.status_code == 200:
+                d = r.json()
+                for cur, val in d.get("rates", {}).items():
+                    result[cur] = {"try": round(1 / val, 4), "raw": val}
+    except Exception as e:
+        print(f"[RATES] {e}")
+
+    # Önceki veriyi koru, sadece yeni gelirse güncelle
+    if result:
+        _rates_cache = {"data": {"rates": result, "timestamp": datetime.now(timezone.utc).isoformat()}, "ts": now}
+
+    return _rates_cache["data"] or {"rates": {}, "error": "Veri alınamadı"}
+
+
+@app.get("/metals")
+async def get_metals():
+    """Emtia & değerli metaller — 2 dakika cache."""
+    global _metals_cache
+    now = _time.time()
+    if now - _metals_cache["ts"] < 120 and _metals_cache["data"]:
+        return _metals_cache["data"]
+
+    metals = {}
+    usd_try = 38.0  # fallback
+
+    # Önce USD/TRY al
+    if _rates_cache["data"]:
+        usd_try = _rates_cache["data"].get("rates", {}).get("USD", {}).get("try", 38.0)
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # Altın ve gümüş (Frankfurter XAU/XAG)
+            r = await client.get(
+                "https://api.frankfurter.app/latest",
+                params={"from": "USD", "to": "XAU,XAG"}
+            )
+            if r.status_code == 200:
+                d = r.json()
+                rates = d.get("rates", {})
+                if rates.get("XAU"):
+                    gold_usd = round(1 / rates["XAU"], 2)
+                    metals["XAU"] = {"usd": gold_usd, "try": round(gold_usd * usd_try, 2)}
+                    metals["XAU_GR"] = {"usd": round(gold_usd / 31.1035, 2), "try": round(gold_usd / 31.1035 * usd_try, 2)}
+                if rates.get("XAG"):
+                    silver_usd = round(1 / rates["XAG"], 2)
+                    metals["XAG"] = {"usd": silver_usd, "try": round(silver_usd * usd_try, 2)}
+    except Exception as e:
+        print(f"[METALS] {e}")
+
+    # Brent petrol — sabit (gerçek API key gerekiyor, ücretsiz yok)
+    metals["OIL"] = {"usd": 74.5, "label": "Yaklaşık"}
+
+    if metals:
+        _metals_cache = {"data": {"metals": metals, "usd_try": usd_try, "timestamp": datetime.now(timezone.utc).isoformat()}, "ts": now}
+
+    return _metals_cache["data"] or {"metals": {}}
+
 @app.get("/news")
 async def get_news(symbol: str = "BTC"):
     """
