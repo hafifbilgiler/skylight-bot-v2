@@ -514,6 +514,16 @@ class ChatRequest(BaseModel):
     file_context: Optional[str] = Field(None, max_length=100000)
     router_intent: Optional[str] = Field(None, max_length=100)
     live_type_hint: Optional[str] = Field(None, max_length=100)
+    image_type: Optional[str] = Field(None, max_length=50)
+    user_id: Optional[str] = Field(None, max_length=100)
+    router_thinking: Optional[bool] = Field(None)
+    user_level: Optional[str] = Field(None, max_length=50)
+    needs_realtime: Optional[bool] = Field(None)
+    fetch_pages: Optional[bool] = Field(None)
+    query: Optional[str] = Field(None, max_length=1000)
+    width: Optional[int] = Field(None)
+    height: Optional[int] = Field(None)
+    num_images: Optional[int] = Field(None)
 
 class ImageGenerationRequest(BaseModel):
     prompt: str = Field(..., max_length=2000)
