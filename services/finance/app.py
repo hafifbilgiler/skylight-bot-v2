@@ -1006,10 +1006,10 @@ Olasılıksal dil kullanırsın. Kesin alım/satım tavsiyesi vermezsin. 3-4 cü
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
-                f"{LLM_BASE_URL}/v1/chat/completions",
-                headers={"Authorization": f"Bearer {LLM_API_KEY}"},
+                f"{DEEPINFRA_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {DEEPINFRA_API_KEY}"},
                 json={
-                    "model": LLM_MODEL,
+                    "model": os.getenv("FINANS_LLM_MODEL", "meta-llama/Llama-3.2-3B-Instruct"),
                     "messages": [
                         {"role": "system", "content": system},
                         {"role": "user",   "content": prompt}
@@ -1042,10 +1042,10 @@ Kesin alım/satım tavsiyesi vermezsin. 3-4 cümle ile öz cevap verirsin."""
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
-                f"{LLM_BASE_URL}/v1/chat/completions",
-                headers={"Authorization": f"Bearer {LLM_API_KEY}"},
+                f"{DEEPINFRA_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {DEEPINFRA_API_KEY}"},
                 json={
-                    "model": LLM_MODEL,
+                    "model": os.getenv("FINANS_LLM_MODEL", "meta-llama/Llama-3.2-3B-Instruct"),
                     "messages": [
                         {"role": "system", "content": system},
                         {"role": "user", "content": prompt}
