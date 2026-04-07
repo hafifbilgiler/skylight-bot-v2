@@ -983,6 +983,87 @@ async def get_metals():
 
     return _metals_cache["data"] or {"metals": {}}
 
+
+
+@app.post("/currency-commentary")
+async def get_currency_commentary(request: Request):
+    """Döviz/emtia için AI yorumu — kripto commentary ile aynı yapı."""
+    try:
+        body = await request.json()
+        code    = body.get("code", "USD")
+        name    = body.get("name", "Amerikan Doları")
+        value   = body.get("value", 0)
+        context = body.get("context", "")
+
+        system = """Sen ONE-BUNE platformunun finansal analiz asistanısın.
+Kullanıcıya döviz ve emtia piyasaları hakkında kısa, net, Türkçe yorumlar yaparsın.
+Olasılıksal dil kullanırsın. Kesin alım/satım tavsiyesi vermezsin. 3-4 cümle ile öz cevap verirsin."""
+
+        prompt = code + "/TRY kuru: " + str(round(float(value or 0), 4)) + ". " + str(context) + " " + name + " kuru icin guncel piyasa yorumu yap."
+
+
+
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{LLM_BASE_URL}/v1/chat/completions",
+                headers={"Authorization": f"Bearer {LLM_API_KEY}"},
+                json={
+                    "model": LLM_MODEL,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user",   "content": prompt}
+                    ],
+                    "max_tokens": 300,
+                    "temperature": 0.7,
+                }
+            )
+            if response.status_code == 200:
+                text = response.json()["choices"][0]["message"]["content"].strip()
+                return {"commentary": text, "code": code}
+            return {"commentary": "Şu an yorum yapılamıyor.", "code": code}
+    except Exception as e:
+        print(f"[CURRENCY-COMMENTARY] {e}")
+        return {"commentary": "Yorum alınamadı.", "code": code}
+
+@app.post("/analyze")
+async def analyze_text(request: Request):
+    """Serbest metin analizi — döviz, emtia, genel piyasa yorumu."""
+    try:
+        body = await request.json()
+        prompt = body.get("prompt", "")
+        if not prompt:
+            return {"commentary": "Analiz için içerik bulunamadı."}
+
+        system = """Sen ONE-BUNE platformunun finansal analiz asistanısın. 
+Kullanıcıya döviz, emtia ve kripto piyasaları hakkında kısa, net, Türkçe yorumlar yaparsın.
+Olasılıksal dil kullanırsın ('olabilir', 'ihtimali var', 'görünüyor' gibi).
+Kesin alım/satım tavsiyesi vermezsin. 3-4 cümle ile öz cevap verirsin."""
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{LLM_BASE_URL}/v1/chat/completions",
+                headers={"Authorization": f"Bearer {LLM_API_KEY}"},
+                json={
+                    "model": LLM_MODEL,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "max_tokens": 300,
+                    "temperature": 0.7,
+                }
+            )
+            if response.status_code == 200:
+                data = response.json()
+                text = data["choices"][0]["message"]["content"].strip()
+                return {"commentary": text}
+            else:
+                return {"commentary": "Şu an analiz yapılamıyor, lütfen tekrar deneyin."}
+    except Exception as e:
+        print(f"[ANALYZE] {e}")
+        return {"commentary": "Analiz sırasında hata oluştu."}
+
 @app.get("/news")
 async def get_news(symbol: str = "BTC"):
     """
