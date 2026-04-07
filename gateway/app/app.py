@@ -98,6 +98,21 @@ DB_PASSWORD = os.getenv("DB_PASSWORD", "")
 
 SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.hostinger.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+
+def _smtp_send(msg):
+    """Port 465 → SSL, 587 → STARTTLS. Otomatik seçim."""
+    if SMTP_PORT == 465:
+        import ssl
+        ctx = ssl.create_default_context()
+        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, context=ctx, timeout=15) as s:
+            s.login(SMTP_USER, SMTP_PASS)
+            s.send_message(msg)
+    else:
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=15) as s:
+            s.ehlo(); s.starttls(); s.ehlo()
+            s.login(SMTP_USER, SMTP_PASS)
+            s.send_message(msg)
+
 SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASS = os.getenv("SMTP_PASS", "")
 SMTP_FROM = os.getenv("SMTP_FROM", SMTP_USER or "noreply@one-bune.com")
@@ -495,8 +510,10 @@ class ChatRequest(BaseModel):
     context: Optional[str] = Field(None, max_length=50000)
     image_data: Optional[str] = None
     session_summary: Optional[str] = Field(None, max_length=5000)
-    file_id: Optional[str] = Field(None, max_length=50)       # Yüklenen dosya ID'si
-    file_context: Optional[str] = Field(None, max_length=100000)  # Dosya içeriği (ön-doldurulmuş)
+    file_id: Optional[str] = Field(None, max_length=50)
+    file_context: Optional[str] = Field(None, max_length=100000)
+    router_intent: Optional[str] = Field(None, max_length=100)
+    live_type_hint: Optional[str] = Field(None, max_length=100)
 
 class ImageGenerationRequest(BaseModel):
     prompt: str = Field(..., max_length=2000)
@@ -1239,10 +1256,7 @@ async def request_code_endpoint(req: OTPRequest, request: Request):
                 f"Bu kod 5 dakika boyunca gecerlidir.\n\nONE-BUNE AI",
                 "plain", "utf-8"
             ))
-            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-                server.ehlo(); server.starttls(); server.ehlo()
-                server.login(SMTP_USER, SMTP_PASS)
-                server.send_message(msg)
+            _smtp_send(msg)
             abuse_post("/otp/request/mark-sent", {"email": req.email, "ip_address": ip_address})
             return {"status": "success", "message": "Kod gonderildi."}
         finally:
@@ -2008,9 +2022,11 @@ ONE-BUNE Destek Ekibi"""
         msg1["Reply-To"] = to_user
         msg1.attach(MIMEText(team_plain, "plain", "utf-8"))
         msg1.attach(MIMEText(team_html,  "html",  "utf-8"))
+        use_tls = SMTP_PORT == 465
         await aiosmtplib.send(
             msg1, hostname=SMTP_SERVER, port=SMTP_PORT,
-            username=SMTP_USER, password=SMTP_PASS, start_tls=True,
+            username=SMTP_USER, password=SMTP_PASS,
+            use_tls=use_tls, start_tls=(not use_tls),
         )
         print(f"[SUPPORT EMAIL] Ekip bildirimi gönderildi → {SUPPORT_EMAIL}")
 
@@ -2023,7 +2039,8 @@ ONE-BUNE Destek Ekibi"""
         msg2.attach(MIMEText(user_html,  "html",  "utf-8"))
         await aiosmtplib.send(
             msg2, hostname=SMTP_SERVER, port=SMTP_PORT,
-            username=SMTP_USER, password=SMTP_PASS, start_tls=True,
+            username=SMTP_USER, password=SMTP_PASS,
+            use_tls=use_tls, start_tls=(not use_tls),
         )
         print(f"[SUPPORT EMAIL] Kullanıcı yanıtı gönderildi → {to_user}")
 
@@ -2595,6 +2612,13 @@ async def chat_endpoint(
             router_tool     = decision.get("tool", "none")
             router_realtime = decision.get("needs_realtime", False)
             router_intent   = decision.get("intent", "")
+
+            # Dosya varsa router kararını geçersiz kıl — her zaman kod/analiz modu
+            if request_body.file_id or request_body.file_context:
+                router_intent   = "code_explain"
+                router_tool     = "code"
+                router_realtime = False
+                print(f"[ROUTER] Dosya var → code modu zorlandı")
 
             if router_realtime and router_tool != "none":
                 print(f"[SMART ROUTER] Realtime → tool={router_tool} intent={router_intent}")
@@ -3231,10 +3255,7 @@ async def admin_toggle_admin(
                         </p>
                     </div>"""
                     msg.attach(MIMEText(html, "html", "utf-8"))
-                    with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as s:
-                        s.ehlo(); s.starttls(); s.ehlo()
-                        s.login(SMTP_USER, SMTP_PASS)
-                        s.send_message(msg)
+                    _smtp_send(msg)
                     print(f"[ADMIN] Admin bilgileri gönderildi: {user_email}")
                 except Exception as e:
                     print(f"[ADMIN] Email gönderilemedi: {e}")
@@ -3640,10 +3661,7 @@ async def admin_send_otp(req: AdminOTPRequest, request: Request,
             </p>
         </div>"""
         msg.attach(MIMEText(html, "html", "utf-8"))
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as s:
-            s.ehlo(); s.starttls(); s.ehlo()
-            s.login(SMTP_USER, SMTP_PASS)
-            s.send_message(msg)
+        _smtp_send(msg)
         print(f"[ADMIN OTP] → {otp_target}, IP={ip}")
         return {"status": "success"}
     except Exception as e:
