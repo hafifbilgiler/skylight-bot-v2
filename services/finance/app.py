@@ -707,7 +707,18 @@ async def health():
 
 @app.get("/coins")
 async def get_coins():
-    return {"coins":[{"symbol":s,"price":price_cache.get(s,0)} for s in SUPPORTED_COINS]}
+    coins = []
+    for s in SUPPORTED_COINS:
+        price = price_cache.get(s, 0)
+        # 24s değişim hesapla — 1d kline'dan
+        change_24h = 0.0
+        klines_1d = list(kline_cache.get(s, {}).get("1d", []))
+        if len(klines_1d) >= 2:
+            prev_close = float(klines_1d[-2]["c"])
+            if prev_close > 0:
+                change_24h = round((price - prev_close) / prev_close * 100, 2)
+        coins.append({"symbol": s, "price": price, "change_24h": change_24h})
+    return {"coins": coins}
 
 @app.get("/signals/{symbol}")
 async def get_signals(symbol: str, interval: str = Query("1h", enum=INTERVALS)):
@@ -737,6 +748,71 @@ async def get_history(symbol: str,
     return {"symbol":symbol,"interval":interval,
             "klines": await fetch_historical(symbol, interval, limit)}
 
+
+
+@app.get("/support-resistance/{symbol}")
+async def get_support_resistance(
+    symbol: str,
+    interval: str = Query("1h", enum=INTERVALS),
+):
+    """Pivot noktalarından otomatik destek/direnç seviyeleri."""
+    symbol = symbol.upper()
+    if symbol not in SUPPORTED_COINS:
+        raise HTTPException(404)
+
+    klines = list(kline_cache.get(symbol, {}).get(interval, []))
+    if len(klines) < 20:
+        await fetch_historical(symbol, interval, 300)
+        klines = list(kline_cache.get(symbol, {}).get(interval, []))
+
+    if len(klines) < 20:
+        return {"symbol": symbol, "supports": [], "resistances": []}
+
+    highs  = [float(k["h"]) for k in klines]
+    lows   = [float(k["l"]) for k in klines]
+    closes = [float(k["c"]) for k in klines]
+    price  = closes[-1]
+
+    # Pivot High/Low tespiti — 5 mum penceresi
+    pivots_high, pivots_low = [], []
+    for i in range(5, len(klines)-5):
+        if all(highs[i] >= highs[i-j] and highs[i] >= highs[i+j] for j in range(1, 6)):
+            pivots_high.append(highs[i])
+        if all(lows[i] <= lows[i-j] and lows[i] <= lows[i+j] for j in range(1, 6)):
+            pivots_low.append(lows[i])
+
+    # Yakın seviyeleri birleştir (%0.5 tolerans)
+    def cluster(levels, tol=0.005):
+        if not levels: return []
+        levels = sorted(set(round(l, 8) for l in levels))
+        clusters = [[levels[0]]]
+        for l in levels[1:]:
+            if abs(l - clusters[-1][-1]) / clusters[-1][-1] < tol:
+                clusters[-1].append(l)
+            else:
+                clusters.append([l])
+        return [round(sum(c)/len(c), 8) for c in clusters]
+
+    supports    = sorted([l for l in cluster(pivots_low)  if l < price], reverse=True)[:3]
+    resistances = sorted([l for l in cluster(pivots_high) if l > price])[:3]
+
+    # Son kapanışa göre güç skoru
+    def strength(levels, price, is_support):
+        result = []
+        for l in levels:
+            pct = abs(l - price) / price * 100
+            s = "güçlü" if pct < 1 else "orta" if pct < 3 else "zayıf"
+            result.append({"level": round(l, 8), "pct_away": round(pct, 2), "strength": s})
+        return result
+
+    return {
+        "symbol":      symbol,
+        "interval":    interval,
+        "price":       price,
+        "supports":    strength(supports, price, True),
+        "resistances": strength(resistances, price, False),
+        "timestamp":   datetime.now(timezone.utc).isoformat(),
+    }
 
 @app.get("/fng")
 async def fear_greed_index():
