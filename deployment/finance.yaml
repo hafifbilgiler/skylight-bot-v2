@@ -29,6 +29,8 @@ spec:
           value: "https://api.deepinfra.com/v1/openai"
         - name: FINANS_LLM_MODEL
           value: "meta-llama/Llama-3.2-3B-Instruct"
+        - name: LLM_BASE_URL
+          value: "meta-llama/Llama-3.2-3B-Instruct"
         - name: DEEPINFRA_API_KEY
           valueFrom:
             secretKeyRef:
