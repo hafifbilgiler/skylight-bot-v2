@@ -279,6 +279,132 @@ async def get_companion_history(user_id: str, limit: int = 50):
 
 
 # ══════════════════════════════════════════════════════
+# HAVA DURUMU TAHMİNİ
+# ══════════════════════════════════════════════════════
+
+# ── Open-Meteo yardımcısı (API key gerektirmez, ticari ücretsiz) ──
+WMO_CODES = {
+    0:"Açık",1:"Hafif bulutlu",2:"Parçalı bulutlu",3:"Kapalı",
+    45:"Sisli",48:"Kırağılı sis",51:"Hafif çiseleme",53:"Çiseleme",55:"Yoğun çiseleme",
+    61:"Hafif yağmur",63:"Yağmur",65:"Şiddetli yağmur",
+    71:"Hafif kar",73:"Kar",75:"Yoğun kar",77:"Kar tanesi",
+    80:"Hafif sağanak",81:"Sağanak",82:"Şiddetli sağanak",
+    85:"Kar yağışı",86:"Yoğun kar yağışı",
+    95:"Fırtına",96:"Fırtına/dolu",99:"Şiddetli fırtına"
+}
+
+def wmo_icon(code: int) -> str:
+    if code == 0: return "01d"
+    if code in [1,2]: return "02d"
+    if code == 3: return "04d"
+    if code in [45,48]: return "50d"
+    if code in [51,53,55,61,63]: return "10d"
+    if code == 65: return "09d"
+    if code in [71,73,75,77,85,86]: return "13d"
+    if code in [80,81,82]: return "09d"
+    if code in [95,96,99]: return "11d"
+    return "03d"
+
+async def fetch_open_meteo(lat: float, lon: float, days: int = 7) -> dict:
+    """Open-Meteo: API key yok, tamamen ücretsiz, ticari kullanım OK."""
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            r = await client.get(
+                "https://api.open-meteo.com/v1/forecast",
+                params={
+                    "latitude": lat, "longitude": lon,
+                    "daily": "temperature_2m_max,temperature_2m_min,weathercode,precipitation_sum,windspeed_10m_max,precipitation_probability_max",
+                    "current_weather": "true",
+                    "timezone": "auto",
+                    "forecast_days": days
+                }
+            )
+            if r.status_code != 200:
+                return {}
+            d = r.json()
+            current_raw = d.get("current_weather", {})
+            daily = d.get("daily", {})
+            dates = daily.get("time", [])
+
+            current = {
+                "temp": round(current_raw.get("temperature", 0)),
+                "feels_like": round(current_raw.get("temperature", 0) - 2),
+                "humidity": 60,  # Open-Meteo free tier'da humidity yok
+                "description": WMO_CODES.get(int(current_raw.get("weathercode", 0)), "Bilinmiyor"),
+                "icon": wmo_icon(int(current_raw.get("weathercode", 0))),
+                "wind_speed": round(current_raw.get("windspeed", 0)),
+            }
+
+            forecast = []
+            for i, date in enumerate(dates):
+                code = int(daily["weathercode"][i]) if i < len(daily.get("weathercode",[])) else 0
+                forecast.append({
+                    "date": date,
+                    "temp_min": round(daily["temperature_2m_min"][i]) if i < len(daily.get("temperature_2m_min",[])) else 0,
+                    "temp_max": round(daily["temperature_2m_max"][i]) if i < len(daily.get("temperature_2m_max",[])) else 0,
+                    "temp_avg": round((daily["temperature_2m_min"][i]+daily["temperature_2m_max"][i])/2) if i < len(daily.get("temperature_2m_min",[])) else 0,
+                    "description": WMO_CODES.get(code, "Bilinmiyor"),
+                    "icon": wmo_icon(code),
+                    "humidity": 60,
+                    "wind_speed": round(daily["windspeed_10m_max"][i]) if i < len(daily.get("windspeed_10m_max",[])) else 0,
+                    "rain_chance": round(daily["precipitation_probability_max"][i]) if i < len(daily.get("precipitation_probability_max",[])) else 0,
+                    "rain_mm": round(daily["precipitation_sum"][i], 1) if i < len(daily.get("precipitation_sum",[])) else 0,
+                })
+            return {"current": current, "forecast": forecast}
+    except Exception as e:
+        print(f"[OPEN-METEO] {e}")
+        return {}
+
+
+@app.get("/sosyal/travel/weather-forecast")
+async def get_weather_forecast(city: str, country: str = "", lat: float = 0, lon: float = 0, days: int = 7):
+    """7 günlük hava tahmini — Open-Meteo (ücretsiz, API key yok)."""
+    result = {"city": city, "country": country, "forecast": [], "current": None, "source": "open-meteo"}
+
+    if lat and lon:
+        data = await fetch_open_meteo(lat, lon, min(days, 7))
+        if data:
+            result["current"]  = data.get("current")
+            result["forecast"] = data.get("forecast", [])
+
+    if not result["forecast"]:
+        system = "Sen meteoroloji uzmanısın. Türkçe yanıt ver."
+        prompt = f"{city}, {country} için mevsimsel hava tahmini: sıcaklık aralığı, yağış, giyim önerisi (3 cümle)."
+        result["ai_forecast"] = await llm_chat([{"role":"user","content":prompt}], system, max_tokens=200)
+
+    return result
+
+
+@app.get("/sosyal/travel/weather-date")
+async def get_weather_for_date(city: str, country: str = "", lat: float = 0, lon: float = 0, target_date: str = ""):
+    """Belirli tarih için hava (7 gün içi gerçek, dışı AI tahmini)."""
+    from datetime import datetime
+    result = {"city": city, "date": target_date, "forecast": None, "ai_forecast": None}
+    if not target_date: return result
+
+    try:
+        target_dt = datetime.strptime(target_date, "%Y-%m-%d")
+        diff_days  = (target_dt - datetime.now()).days
+    except:
+        return result
+
+    if 0 <= diff_days <= 6 and lat and lon:
+        data = await fetch_open_meteo(lat, lon, 7)
+        if data:
+            day = next((f for f in data.get("forecast",[]) if f["date"]==target_date), None)
+            if day:
+                result["forecast"] = {**day, "source": "open-meteo"}
+
+    if not result["forecast"]:
+        month_tr = ["","Ocak","Şubat","Mart","Nisan","Mayıs","Haziran","Temmuz","Ağustos","Eylül","Ekim","Kasım","Aralık"]
+        m = month_tr[target_dt.month]
+        prompt = f"{city}, {country} - {m} ayı tipik hava: sıcaklık, yağış, öneri (2 cümle, Türkçe)."
+        result["ai_forecast"] = await llm_chat([{"role":"user","content":prompt}], "Meteoroloji uzmanısın. Kısa Türkçe.", max_tokens=120)
+
+    return result
+
+
+# ══════════════════════════════════════════════════════
 # YEMEK
 # ══════════════════════════════════════════════════════
 
