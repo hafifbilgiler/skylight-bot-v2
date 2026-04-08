@@ -21,21 +21,15 @@ spec:
           ports:
             - containerPort: 8091
           env:
-            - name: DEEPINFRA_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: skylight-secrets
-                  key: DEEPINFRA_API_KEY
             - name: DEEPINFRA_BASE_URL
               value: "https://api.deepinfra.com/v1/openai"
             - name: SOSYAL_LLM_MODEL
-              value: "meta-llama/Llama-3.3-70B-Instruct"
-            - name: OPENWEATHER_API_KEY
+              value: "meta-llama/Llama-3.2-3B-Instruct"
+            - name: DEEPINFRA_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: skylight-secrets
-                  key: OPENWEATHER_API_KEY
-                  optional: true
+                  name: smart-tools-secret
+                  key: DEEPINFRA_API_KEY
           resources:
             requests:
               memory: "128Mi"
