@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: skylight-sosyal
+  namespace: skylight-bot-v2
+  labels:
+    app: skylight-sosyal
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: skylight-sosyal
+  template:
+    metadata:
+      labels:
+        app: skylight-sosyal
+    spec:
+      containers:
+        - name: sosyal
+          image: docker.io/hafifbilgiler/skylight-sosyal:1.0
+          ports:
+            - containerPort: 8091
+          env:
+            - name: DEEPINFRA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: skylight-secrets
+                  key: DEEPINFRA_API_KEY
+            - name: DEEPINFRA_BASE_URL
+              value: "https://api.deepinfra.com/v1/openai"
+            - name: SOSYAL_LLM_MODEL
+              value: "meta-llama/Llama-3.3-70B-Instruct"
+            - name: OPENWEATHER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: skylight-secrets
+                  key: OPENWEATHER_API_KEY
+                  optional: true
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8091
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8091
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: skylight-sosyal
+  namespace: skylight-bot-v2
+spec:
+  selector:
+    app: skylight-sosyal
+  ports:
+    - protocol: TCP
+      port: 8091
+      targetPort: 8091
+      nodePort: 30291
+  type: NodePort
