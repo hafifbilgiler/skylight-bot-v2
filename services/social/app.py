@@ -1,4 +1,4 @@
-import os, json, time, uuid, asyncio
+import os, json, time, uuid, asyncio, hashlib
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, List
 from fastapi import FastAPI, Request, HTTPException
@@ -215,7 +215,9 @@ KURALLAR:
 @app.post("/sosyal/companion/chat")
 async def companion_chat(request: Request):
     body     = await request.json()
-    user_id  = str(body.get("user_id", "guest"))
+    # user_id → token hash ile benzersiz yap, "guest" paylaşımlı olmaz
+    raw_token = body.get("token") or body.get("user_id") or "anonymous"
+    user_id   = hashlib.sha256(str(raw_token).encode()).hexdigest()[:16]
     message  = body.get("message", "")
     history  = body.get("history", [])
 
@@ -266,8 +268,13 @@ async def _analyze_mood(text: str) -> str:
 
 
 @app.get("/sosyal/companion/history/{user_id}")
-async def get_companion_history(user_id: str, limit: int = 50):
-    user = get_user(user_id)
+async def get_companion_history(user_id: str, limit: int = 50, token: str = ""):
+    # Token varsa hash ile doğrula — yoksa direkt user_id kullan
+    if token and token != "guest":
+        real_id = hashlib.sha256(token.encode()).hexdigest()[:16]
+    else:
+        real_id = user_id
+    user = get_user(real_id)
     # 7 günden eski mesajları filtrele
     cutoff = time.time() - COMPANION_TTL
     recent = [m for m in user["companion_history"] if m.get("ts", 0) > cutoff]
