@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: sosyal
-          image: docker.io/hafifbilgiler/skylight-sosyal:1.2
+          image: docker.io/hafifbilgiler/skylight-sosyal:1.3
           ports:
             - containerPort: 8091
           env:
@@ -25,11 +25,29 @@ spec:
               value: "https://api.deepinfra.com/v1/openai"
             - name: SOSYAL_LLM_MODEL
               value: "meta-llama/Llama-3.2-3B-Instruct"
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: smart-tools-secret
+                  key: GEMINI_API_KEY
+                  optional: true
+            - name: GEMINI_MODEL
+              value: "gemini-1.5-flash"
             - name: DEEPINFRA_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: smart-tools-secret
                   key: DEEPINFRA_API_KEY
+            - name: GEMINI_PROJECT
+              value: "gen-lang-client-0907571701"
+            - name: GEMINI_LOCATION
+              value: "us-central1"
+            - name: GEMINI_MODEL
+              value: "gemini-2.5-flash-lite"
+          volumeMounts:
+            - name: vertex-sa-key
+              mountPath: /etc/vertex-sa
+              readOnly: true
           resources:
             requests:
               memory: "128Mi"
@@ -37,6 +55,10 @@ spec:
             limits:
               memory: "512Mi"
               cpu: "500m"
+      volumes:
+        - name: vertex-sa-key
+          secret:
+            secretName: vertex-sa-key
           livenessProbe:
             httpGet:
               path: /health

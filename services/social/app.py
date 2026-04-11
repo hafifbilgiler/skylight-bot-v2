@@ -116,7 +116,7 @@ GENEL TAVSİYELER:
 - Ulaşım ipuçları
 - Mutlaka denenmesi gereken yemekler"""
 
-    reply = await llm_chat([{"role": "user", "content": prompt}], system, max_tokens=1200)
+    reply = await smart_llm([{"role": "user", "content": prompt}], system, max_tokens=1200)
 
     # Kaydet
     user = get_user(user_id)
@@ -151,7 +151,7 @@ Kullanıcıya bu şehir hakkında kısa, pratik ve samimi Türkçe cevaplar ver.
 Yerel ipuçları, gizli köşeler, bütçe tavsiyeleri konularında yardım et.
 Cevaplarını kısa tut (3-5 cümle)."""
 
-    reply = await llm_chat(history + [{"role": "user", "content": message}], system, max_tokens=400)
+    reply = await smart_llm(history + [{"role": "user", "content": message}], system, max_tokens=400)
     return {"reply": reply, "city": city}
 
 
@@ -166,7 +166,7 @@ async def get_city_info(city: str, country: str = "", lat: float = 0, lon: float
     """Şehir hakkında hızlı AI özeti + hava durumu."""
     system = "Sen bir seyahat ansiklopedisisin. Kısa ve bilgi dolu Türkçe özetler yazarsın."
     prompt = f"{city}, {country} hakkında: 1) En önemli 3 özellik 2) İdeal ziyaret süresi 3) Bütçe sınıfı (ucuz/orta/pahalı) 4) En iyi mevsim — toplam 5-6 cümle."
-    reply = await llm_chat([{"role": "user", "content": prompt}], system, max_tokens=300)
+    reply = await smart_llm([{"role": "user", "content": prompt}], system, max_tokens=300)
 
     result = {"city": city, "country": country, "summary": reply, "weather": None}
 
@@ -221,7 +221,7 @@ async def companion_chat(request: Request):
     message  = body.get("message", "")
     history  = body.get("history", [])
 
-    reply = await llm_chat(
+    reply = await smart_llm(
         history + [{"role": "user", "content": message}],
         COMPANION_SYSTEM,
         max_tokens=300
@@ -288,6 +288,81 @@ async def get_companion_history(user_id: str, limit: int = 50, token: str = ""):
 # ══════════════════════════════════════════════════════
 # HAVA DURUMU TAHMİNİ
 # ══════════════════════════════════════════════════════
+
+# ── Vertex AI — gemini-2.5-flash-lite, grounding KAPALI ──
+VERTEX_PROJECT  = os.getenv("GEMINI_PROJECT", "")
+VERTEX_LOCATION = os.getenv("GEMINI_LOCATION", "us-central1")
+VERTEX_MODEL    = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
+VERTEX_SA_KEY   = "/etc/vertex-sa/key.json"
+USE_VERTEX      = bool(VERTEX_PROJECT)
+_vtok: dict = {"token": "", "expires": 0}
+
+async def get_vertex_token() -> str:
+    import json, time
+    now = time.time()
+    if _vtok["token"] and now < _vtok["expires"] - 60:
+        return _vtok["token"]
+    try:
+        import jwt as pyjwt
+        with open(VERTEX_SA_KEY) as f:
+            sa = json.load(f)
+        claim = {
+            "iss": sa["client_email"], "sub": sa["client_email"],
+            "aud": "https://oauth2.googleapis.com/token",
+            "iat": int(now), "exp": int(now) + 3600,
+            "scope": "https://www.googleapis.com/auth/cloud-platform",
+        }
+        signed = pyjwt.encode(claim, sa["private_key"], algorithm="RS256")
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.post(
+                "https://oauth2.googleapis.com/token",
+                data={"grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer", "assertion": signed}
+            )
+            data = r.json()
+            t = data["access_token"]
+            _vtok["token"] = t
+            _vtok["expires"] = int(now) + 3590
+            return t
+    except Exception as e:
+        print(f"[VERTEX TOKEN] {e}")
+        return ""
+
+async def smart_llm(messages: list, system: str, max_tokens: int = 600) -> str:
+    """Vertex AI gemini-2.5-flash-lite (grounding yok) — DeepInfra fallback."""
+    if not USE_VERTEX:
+        return await llm_chat(messages, system, max_tokens)
+    try:
+        token = await get_vertex_token()
+        if not token:
+            return await llm_chat(messages, system, max_tokens)
+        contents = []
+        if system:
+            contents.append({"role": "user", "parts": [{"text": "System: " + system}]})
+            contents.append({"role": "model", "parts": [{"text": "Anladım."}]})
+        for m in messages:
+            role = "user" if m["role"] == "user" else "model"
+            contents.append({"role": role, "parts": [{"text": m["content"]}]})
+        url = (
+            f"https://{VERTEX_LOCATION}-aiplatform.googleapis.com/v1/"
+            f"projects/{VERTEX_PROJECT}/locations/{VERTEX_LOCATION}/"
+            f"publishers/google/models/{VERTEX_MODEL}:generateContent"
+        )
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            r = await client.post(
+                url,
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json={
+                    "contents": contents,
+                    "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.8}
+                }
+            )
+            if r.status_code == 200:
+                return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            print(f"[VERTEX] {r.status_code}: {r.text[:150]}")
+    except Exception as e:
+        print(f"[VERTEX] {e}")
+    return await llm_chat(messages, system, max_tokens)
+
 
 # ── Open-Meteo yardımcısı (API key gerektirmez, ticari ücretsiz) ──
 WMO_CODES = {
@@ -377,7 +452,7 @@ async def get_weather_forecast(city: str, country: str = "", lat: float = 0, lon
     if not result["forecast"]:
         system = "Sen meteoroloji uzmanısın. Türkçe yanıt ver."
         prompt = f"{city}, {country} için mevsimsel hava tahmini: sıcaklık aralığı, yağış, giyim önerisi (3 cümle)."
-        result["ai_forecast"] = await llm_chat([{"role":"user","content":prompt}], system, max_tokens=200)
+        result["ai_forecast"] = await smart_llm([{"role":"user","content":prompt}], system, max_tokens=200)
 
     return result
 
@@ -406,7 +481,7 @@ async def get_weather_for_date(city: str, country: str = "", lat: float = 0, lon
         month_tr = ["","Ocak","Şubat","Mart","Nisan","Mayıs","Haziran","Temmuz","Ağustos","Eylül","Ekim","Kasım","Aralık"]
         m = month_tr[target_dt.month]
         prompt = f"{city}, {country} - {m} ayı tipik hava: sıcaklık, yağış, öneri (2 cümle, Türkçe)."
-        result["ai_forecast"] = await llm_chat([{"role":"user","content":prompt}], "Meteoroloji uzmanısın. Kısa Türkçe.", max_tokens=120)
+        result["ai_forecast"] = await smart_llm([{"role":"user","content":prompt}], "Meteoroloji uzmanısın. Kısa Türkçe.", max_tokens=120)
 
     return result
 
@@ -429,7 +504,7 @@ Pişirme süresi, zorluk derecesi ve kalori bilgisi eklersin.
 Alternatif malzeme önerileri sunarsın."""
 
     prompt = f"{dish} tarifi{' ('+prefs+')' if prefs else ''}"
-    reply  = await llm_chat(history + [{"role": "user", "content": prompt}], system, max_tokens=800)
+    reply  = await smart_llm(history + [{"role": "user", "content": prompt}], system, max_tokens=800)
     return {"recipe": reply, "dish": dish}
 
 
@@ -447,7 +522,7 @@ Ruh halim: {mood or 'normal'}
 
 3 farklı tarif öner (isim + 2 cümle açıklama)."""
 
-    reply = await llm_chat([{"role": "user", "content": prompt}], system, max_tokens=400)
+    reply = await smart_llm([{"role": "user", "content": prompt}], system, max_tokens=400)
     return {"suggestions": reply}
 
 
@@ -474,7 +549,7 @@ Kullanıcının ruh hali: {mood or 'belirsiz'}
 Kısa, motive edici, pratik Türkçe cevaplar ver (3-4 cümle).
 Görev önceliklendirme, zaman yönetimi ve enerji yönetimi konularında uzmansın."""
 
-    reply = await llm_chat(history + [{"role": "user", "content": message}], system, max_tokens=300)
+    reply = await smart_llm(history + [{"role": "user", "content": message}], system, max_tokens=300)
 
     # Görevleri kaydet
     if tasks:
