@@ -1,11 +1,17 @@
-# db_controller.py - COMPLETE VERSION WITH PAYMENT SYSTEM + ADMIN
+# db_controller.py - COMPLETE VERSION WITH PAYMENT SYSTEM + ADMIN + SOSYAL/TRAVEL
 """
 ═══════════════════════════════════════════════════════════════
 ONE-BUNE AI Platform - Database Controller Service
 ═══════════════════════════════════════════════════════════════
 COMPLETE VERSION - All Tables + Payment System + Memory System
+                 + Sosyal/Travel (Kiwi flight) System
 
-Version: 2.5.1
+Version: 2.6.0
+Changes v2.6.0:
+  - flight_saves  table: Kullanıcının kaydettiği uçuşlar (Kiwi)
+  - travel_plans  table: AI ile oluşturulan gezi planları
+  - İlgili index'ler eklendi
+  - ensure_column çağrıları eklendi
 Changes v2.5.0:
   - Admin columns added to users table:
       is_admin, is_banned, ban_reason, banned_at, last_active
@@ -129,7 +135,7 @@ def ensure_constraint(cur, table_name: str, constraint_name: str, constraint_sql
 def init_database_schema() -> bool:
     log_info("=" * 70)
     log_info("DATABASE SCHEMA INITIALIZATION STARTED")
-    log_info("Version: 2.5.1 - Admin Panel + Payment System + Memory + Code Context")
+    log_info("Version: 2.6.0 - Admin Panel + Payment System + Memory + Code Context + Travel/Kiwi")
     log_info("=" * 70)
 
     try:
@@ -163,19 +169,14 @@ def init_database_schema() -> bool:
             );
         """)
 
-        # Temel kolonlar
         ensure_column(cur, "users", "password",   "VARCHAR(255)")
         ensure_column(cur, "users", "name",        "VARCHAR(255)")
         ensure_column(cur, "users", "picture",     "TEXT")
         ensure_column(cur, "users", "created_at",  "TIMESTAMPTZ DEFAULT NOW()")
         ensure_column(cur, "users", "last_login",  "TIMESTAMPTZ DEFAULT NOW()")
-
-        # Ödeme kolonları
         ensure_column(cur, "users", "is_premium",          "BOOLEAN DEFAULT FALSE")
         ensure_column(cur, "users", "subscription_active", "BOOLEAN DEFAULT FALSE")
         ensure_column(cur, "users", "auth_token",          "VARCHAR(255)")
-
-        # ── YENİ v2.5.0: Admin panel kolonları ──────────────
         ensure_column(cur, "users", "is_admin",    "BOOLEAN DEFAULT FALSE")
         ensure_column(cur, "users", "is_banned",   "BOOLEAN DEFAULT FALSE")
         ensure_column(cur, "users", "ban_reason",  "TEXT")
@@ -187,9 +188,8 @@ def init_database_schema() -> bool:
         ensure_column(cur, "users", "zip_code",    "VARCHAR(10)")
         ensure_column(cur, "users", "identity_no",   "VARCHAR(20)")
         ensure_column(cur, "users", "avatar_style",  "VARCHAR(50) DEFAULT 'av-01'")
-        # ────────────────────────────────────────────────────
 
-        log_success("USERS table OK (with admin + payment + avatar columns)")
+        log_success("USERS table OK")
 
         # ─────────────────────────────────────────────
         # 2. OTP_CODES
@@ -721,12 +721,12 @@ def init_database_schema() -> bool:
         except Exception as e:
             log_warning(f"Constraint warning (may already exist): {e}")
         for idx_name, idx_sql in [
-            ("idx_generated_images_user_id",       "CREATE INDEX IF NOT EXISTS idx_generated_images_user_id ON generated_images(user_id);"),
+            ("idx_generated_images_user_id",        "CREATE INDEX IF NOT EXISTS idx_generated_images_user_id ON generated_images(user_id);"),
             ("idx_generated_images_conversation_id","CREATE INDEX IF NOT EXISTS idx_generated_images_conversation_id ON generated_images(conversation_id);"),
-            ("idx_generated_images_expires_at",    "CREATE INDEX IF NOT EXISTS idx_generated_images_expires_at ON generated_images(expires_at) WHERE is_deleted = FALSE;"),
-            ("idx_generated_images_hash",          "CREATE INDEX IF NOT EXISTS idx_generated_images_hash ON generated_images(image_hash);"),
-            ("idx_generated_images_modification",  "CREATE INDEX IF NOT EXISTS idx_generated_images_modification ON generated_images(modification_of);"),
-            ("idx_generated_images_created_at",    "CREATE INDEX IF NOT EXISTS idx_generated_images_created_at ON generated_images(created_at DESC);"),
+            ("idx_generated_images_expires_at",     "CREATE INDEX IF NOT EXISTS idx_generated_images_expires_at ON generated_images(expires_at) WHERE is_deleted = FALSE;"),
+            ("idx_generated_images_hash",           "CREATE INDEX IF NOT EXISTS idx_generated_images_hash ON generated_images(image_hash);"),
+            ("idx_generated_images_modification",   "CREATE INDEX IF NOT EXISTS idx_generated_images_modification ON generated_images(modification_of);"),
+            ("idx_generated_images_created_at",     "CREATE INDEX IF NOT EXISTS idx_generated_images_created_at ON generated_images(created_at DESC);"),
         ]:
             ensure_index(cur, idx_name, idx_sql)
         log_success("GENERATED_IMAGES table OK")
@@ -779,22 +779,151 @@ def init_database_schema() -> bool:
         ensure_column(cur, "code_context", "last_compression_at",        "TIMESTAMPTZ")
         log_success("CODE_CONTEXT table OK")
 
+        # ═══════════════════════════════════════════════
+        # 21. FLIGHT_SAVES  ← v2.6.0 YENİ
+        # ═══════════════════════════════════════════════
+        log_info("Creating/checking FLIGHT_SAVES table (v2.6.0)...")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS flight_saves (
+                id            SERIAL PRIMARY KEY,
+                user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+
+                -- Rota bilgisi
+                from_iata     VARCHAR(10)  NOT NULL,
+                to_iata       VARCHAR(10)  NOT NULL,
+                from_name     VARCHAR(100),
+                to_name       VARCHAR(100),
+                departure     DATE         NOT NULL,
+                return_date   DATE,
+                trip_type     VARCHAR(10)  NOT NULL DEFAULT 'roundtrip'
+                              CHECK (trip_type IN ('roundtrip','oneway')),
+                passengers    SMALLINT     NOT NULL DEFAULT 1,
+
+                -- Uçuş detayı (Kiwi'den gelen)
+                airline       VARCHAR(100),
+                flight_code   VARCHAR(20),
+                departure_time TIME,
+                arrival_time  TIME,
+                duration      VARCHAR(20),
+                stops         SMALLINT     DEFAULT 0,
+                cabin         VARCHAR(30),
+                baggage       VARCHAR(50),
+
+                -- Fiyat
+                price         NUMERIC(10,2),
+                currency      VARCHAR(5)   DEFAULT 'USD',
+                total_price   NUMERIC(10,2),  -- price * passengers
+
+                -- Kiwi bağlantısı
+                kiwi_url      TEXT,
+                affiliate_id  VARCHAR(100),
+
+                -- Ham veri (Kiwi API yanıtı — ileride işe yarar)
+                raw_data      JSONB        DEFAULT '{}',
+
+                -- Durum
+                status        VARCHAR(20)  NOT NULL DEFAULT 'saved'
+                              CHECK (status IN ('saved','clicked','purchased','expired')),
+                clicked_at    TIMESTAMPTZ,
+                purchased_at  TIMESTAMPTZ,
+
+                created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+                updated_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+            );
+        """)
+        ensure_column(cur, "flight_saves", "user_id",        "INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE")
+        ensure_column(cur, "flight_saves", "from_iata",      "VARCHAR(10) NOT NULL")
+        ensure_column(cur, "flight_saves", "to_iata",        "VARCHAR(10) NOT NULL")
+        ensure_column(cur, "flight_saves", "from_name",      "VARCHAR(100)")
+        ensure_column(cur, "flight_saves", "to_name",        "VARCHAR(100)")
+        ensure_column(cur, "flight_saves", "departure",      "DATE NOT NULL")
+        ensure_column(cur, "flight_saves", "return_date",    "DATE")
+        ensure_column(cur, "flight_saves", "trip_type",      "VARCHAR(10) NOT NULL DEFAULT 'roundtrip'")
+        ensure_column(cur, "flight_saves", "passengers",     "SMALLINT NOT NULL DEFAULT 1")
+        ensure_column(cur, "flight_saves", "airline",        "VARCHAR(100)")
+        ensure_column(cur, "flight_saves", "flight_code",    "VARCHAR(20)")
+        ensure_column(cur, "flight_saves", "departure_time", "TIME")
+        ensure_column(cur, "flight_saves", "arrival_time",   "TIME")
+        ensure_column(cur, "flight_saves", "duration",       "VARCHAR(20)")
+        ensure_column(cur, "flight_saves", "stops",          "SMALLINT DEFAULT 0")
+        ensure_column(cur, "flight_saves", "cabin",          "VARCHAR(30)")
+        ensure_column(cur, "flight_saves", "baggage",        "VARCHAR(50)")
+        ensure_column(cur, "flight_saves", "price",          "NUMERIC(10,2)")
+        ensure_column(cur, "flight_saves", "currency",       "VARCHAR(5) DEFAULT 'USD'")
+        ensure_column(cur, "flight_saves", "total_price",    "NUMERIC(10,2)")
+        ensure_column(cur, "flight_saves", "kiwi_url",       "TEXT")
+        ensure_column(cur, "flight_saves", "affiliate_id",   "VARCHAR(100)")
+        ensure_column(cur, "flight_saves", "raw_data",       "JSONB DEFAULT '{}'")
+        ensure_column(cur, "flight_saves", "status",         "VARCHAR(20) NOT NULL DEFAULT 'saved'")
+        ensure_column(cur, "flight_saves", "clicked_at",     "TIMESTAMPTZ")
+        ensure_column(cur, "flight_saves", "purchased_at",   "TIMESTAMPTZ")
+        ensure_column(cur, "flight_saves", "updated_at",     "TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+        log_success("FLIGHT_SAVES table OK (v2.6.0)")
+
+        # ═══════════════════════════════════════════════
+        # 22. TRAVEL_PLANS  ← v2.6.0 YENİ
+        # ═══════════════════════════════════════════════
+        log_info("Creating/checking TRAVEL_PLANS table (v2.6.0)...")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS travel_plans (
+                id           SERIAL PRIMARY KEY,
+                user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+
+                -- Şehir/ülke
+                city         VARCHAR(100) NOT NULL,
+                country      VARCHAR(100),
+                lat          NUMERIC(9,6),
+                lon          NUMERIC(9,6),
+
+                -- Plan parametreleri
+                days         SMALLINT     NOT NULL DEFAULT 5,
+                budget       VARCHAR(20)  NOT NULL DEFAULT 'orta'
+                             CHECK (budget IN ('düşük','orta','yüksek')),
+                preferences  TEXT,
+
+                -- AI çıktısı (Gemini)
+                plan_text    TEXT         NOT NULL,
+
+                -- İlişkili uçuş (opsiyonel — uçuş seçildikten sonra plan yapıldıysa)
+                flight_id    INTEGER REFERENCES flight_saves(id) ON DELETE SET NULL,
+
+                -- Özet meta
+                highlights   TEXT[],  -- ["Eyfel Kulesi","Louvre","Seine gezisi"]
+                daily_budget NUMERIC(8,2),  -- kişi başı günlük tahmini
+
+                created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        """)
+        ensure_column(cur, "travel_plans", "user_id",      "INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE")
+        ensure_column(cur, "travel_plans", "city",         "VARCHAR(100) NOT NULL")
+        ensure_column(cur, "travel_plans", "country",      "VARCHAR(100)")
+        ensure_column(cur, "travel_plans", "lat",          "NUMERIC(9,6)")
+        ensure_column(cur, "travel_plans", "lon",          "NUMERIC(9,6)")
+        ensure_column(cur, "travel_plans", "days",         "SMALLINT NOT NULL DEFAULT 5")
+        ensure_column(cur, "travel_plans", "budget",       "VARCHAR(20) NOT NULL DEFAULT 'orta'")
+        ensure_column(cur, "travel_plans", "preferences",  "TEXT")
+        ensure_column(cur, "travel_plans", "plan_text",    "TEXT NOT NULL")
+        ensure_column(cur, "travel_plans", "flight_id",    "INTEGER REFERENCES flight_saves(id) ON DELETE SET NULL")
+        ensure_column(cur, "travel_plans", "highlights",   "TEXT[]")
+        ensure_column(cur, "travel_plans", "daily_budget", "NUMERIC(8,2)")
+        ensure_column(cur, "travel_plans", "updated_at",   "TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+        log_success("TRAVEL_PLANS table OK (v2.6.0)")
+
         # =====================================================
         # INDEXES
         # =====================================================
         log_info("Creating indexes...")
 
         for stmt in [
-            # Users (temel)
+            # Users
             "CREATE INDEX IF NOT EXISTS idx_users_google_id    ON users(google_id);",
             "CREATE INDEX IF NOT EXISTS idx_users_email        ON users(email);",
             "CREATE INDEX IF NOT EXISTS idx_users_premium      ON users(is_premium)  WHERE is_premium  = TRUE;",
             "CREATE INDEX IF NOT EXISTS idx_users_subscription ON users(subscription_active) WHERE subscription_active = TRUE;",
-            # ── YENİ v2.5.0: Admin index'leri ────────────────
             "CREATE INDEX IF NOT EXISTS idx_users_is_admin     ON users(is_admin)  WHERE is_admin  = TRUE;",
             "CREATE INDEX IF NOT EXISTS idx_users_is_banned    ON users(is_banned) WHERE is_banned = TRUE;",
             "CREATE INDEX IF NOT EXISTS idx_users_last_active  ON users(last_active DESC);",
-            # ─────────────────────────────────────────────────
             # OTP
             "CREATE INDEX IF NOT EXISTS idx_otp_email ON otp_codes(email);",
             # Conversations
@@ -859,6 +988,17 @@ def init_database_schema() -> bool:
             # Code Context
             "CREATE INDEX IF NOT EXISTS idx_code_context_conversation_id ON code_context(conversation_id);",
             "CREATE INDEX IF NOT EXISTS idx_code_context_user_id         ON code_context(user_id);",
+            # ── v2.6.0: Flight Saves ───────────────────────────────────
+            "CREATE INDEX IF NOT EXISTS idx_flight_saves_user_id   ON flight_saves(user_id);",
+            "CREATE INDEX IF NOT EXISTS idx_flight_saves_departure ON flight_saves(departure);",
+            "CREATE INDEX IF NOT EXISTS idx_flight_saves_route     ON flight_saves(from_iata, to_iata);",
+            "CREATE INDEX IF NOT EXISTS idx_flight_saves_status    ON flight_saves(status);",
+            "CREATE INDEX IF NOT EXISTS idx_flight_saves_created   ON flight_saves(created_at DESC);",
+            # ── v2.6.0: Travel Plans ───────────────────────────────────
+            "CREATE INDEX IF NOT EXISTS idx_travel_plans_user_id   ON travel_plans(user_id);",
+            "CREATE INDEX IF NOT EXISTS idx_travel_plans_city      ON travel_plans(city);",
+            "CREATE INDEX IF NOT EXISTS idx_travel_plans_flight_id ON travel_plans(flight_id);",
+            "CREATE INDEX IF NOT EXISTS idx_travel_plans_created   ON travel_plans(created_at DESC);",
         ]:
             cur.execute(stmt)
 
@@ -871,6 +1011,8 @@ def init_database_schema() -> bool:
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_user_learning_unique ON user_learning(user_id, topic, pattern_type);",
             "CREATE INDEX IF NOT EXISTS idx_user_memory_technical     ON user_memory USING gin(technical_preferences);",
             "CREATE INDEX IF NOT EXISTS idx_user_memory_communication ON user_memory USING gin(communication_style);",
+            # v2.6.0
+            "CREATE INDEX IF NOT EXISTS idx_flight_saves_raw_data  ON flight_saves  USING gin(raw_data);",
         ]:
             cur.execute(gin_sql)
 
@@ -958,6 +1100,26 @@ def init_database_schema() -> bool:
             END; $$ LANGUAGE plpgsql;
         """)
 
+        # ── v2.6.0: Uçuş click/purchase logu ─────────────────────────
+        cur.execute("""
+            CREATE OR REPLACE FUNCTION log_flight_action(
+                p_flight_id INTEGER,
+                p_action    VARCHAR  -- 'clicked' | 'purchased'
+            )
+            RETURNS VOID AS $$
+            BEGIN
+                IF p_action = 'clicked' THEN
+                    UPDATE flight_saves
+                       SET status = 'clicked', clicked_at = NOW(), updated_at = NOW()
+                     WHERE id = p_flight_id AND status = 'saved';
+                ELSIF p_action = 'purchased' THEN
+                    UPDATE flight_saves
+                       SET status = 'purchased', purchased_at = NOW(), updated_at = NOW()
+                     WHERE id = p_flight_id;
+                END IF;
+            END; $$ LANGUAGE plpgsql;
+        """)
+
         log_success("Helper functions created")
 
         # =====================================================
@@ -997,8 +1159,14 @@ def init_database_schema() -> bool:
             END; $$ LANGUAGE plpgsql;
         """)
 
-        for tbl in ["conversations","user_profiles","user_learning","user_subscriptions",
-                    "usage_tracking","user_preferences","subscription_plans","user_memory","code_context"]:
+        # updated_at trigger'ları — v2.6.0 tablolar da dahil
+        for tbl in [
+            "conversations", "user_profiles", "user_learning", "user_subscriptions",
+            "usage_tracking", "user_preferences", "subscription_plans",
+            "user_memory", "code_context",
+            "flight_saves",   # v2.6.0
+            "travel_plans",   # v2.6.0
+        ]:
             cur.execute(f"DROP TRIGGER IF EXISTS update_{tbl}_updated_at ON {tbl};")
             cur.execute(f"""
                 CREATE TRIGGER update_{tbl}_updated_at
@@ -1020,8 +1188,6 @@ def init_database_schema() -> bool:
             EXECUTE FUNCTION update_familiarity_level();
         """)
 
-        # ── Premium senkronizasyon trigger'ı ──────────────────────
-        # user_subscriptions değişince users.is_premium otomatik güncellenir
         cur.execute("""
             CREATE OR REPLACE FUNCTION sync_user_premium()
             RETURNS TRIGGER AS $$
@@ -1054,14 +1220,13 @@ def init_database_schema() -> bool:
             AFTER INSERT OR UPDATE ON user_subscriptions
             FOR EACH ROW EXECUTE FUNCTION sync_user_premium();
         """)
-        # ──────────────────────────────────────────────────────────
 
         log_success("Triggers OK")
 
         conn.commit()
         cur.close()
         conn.close()
-        log_success("Schema initialization completed successfully — v2.5.0")
+        log_success("Schema initialization completed successfully — v2.6.0")
         log_info("=" * 70)
         return True
 
@@ -1095,12 +1260,15 @@ def health_check() -> Dict[str, Any]:
         conn = get_db_connection()
         cur  = conn.cursor()
         required_tables = [
-            "users","otp_codes","conversations","messages",
-            "conversation_summaries","user_memory","context_snapshots",
-            "user_intents","user_profiles","query_logs",
-            "subscription_plans","user_subscriptions",
-            "subscription_checkouts","payment_audit_log",
-            "payment_history","usage_tracking","generated_images","code_context",
+            "users", "otp_codes", "conversations", "messages",
+            "conversation_summaries", "user_memory", "context_snapshots",
+            "user_intents", "user_profiles", "query_logs",
+            "subscription_plans", "user_subscriptions",
+            "subscription_checkouts", "payment_audit_log",
+            "payment_history", "usage_tracking", "generated_images",
+            "code_context",
+            "flight_saves",   # v2.6.0
+            "travel_plans",   # v2.6.0
         ]
         cur.execute("""
             SELECT table_name FROM information_schema.tables
@@ -1122,44 +1290,21 @@ def health_check() -> Dict[str, Any]:
 
 
 # =====================================================
-# MAIN
-# =====================================================
-
-# =====================================================
-# ADMIN SEED — v2.5.0
+# ADMIN SEED
 # =====================================================
 
 def seed_admin_user() -> bool:
-    """
-    Admin kullanıcısını seed eder.
-    Sabit kullanıcı adı ve şifre — deploy sonrası DB'de oluşur.
-
-    Giriş bilgileri:
-      Kullanıcı adı : admin
-      Şifre         : Admin1234!   ← bunu değiştir
-
-    OTP kodu şu adrese gider:
-      ADMIN_NOTIFICATION_EMAIL env değişkeni (K8s YAML'da tanımlı)
-    """
-
-    # ── SABİT GİRİŞ BİLGİLERİ ─────────────────────────────────
-    # Bu kullanıcı HER ZAMAN garanti edilir.
-    # Başka admin kullanıcılar olsa bile bu oluşturulur/güncellenir.
     ADMIN_EMAIL    = "admin@one-bune.com"
     ADMIN_NAME     = "admin"
     ADMIN_PASSWORD = "123456"   # ← deploy sonrası değiştir
-    # ──────────────────────────────────────────────────────────
 
     try:
         conn = get_db_connection()
         cur  = conn.cursor()
         try:
-            # Şifreyi pgcrypto ile hash'le
             cur.execute("SELECT crypt(%s, gen_salt('bf', 12))", (ADMIN_PASSWORD,))
             password_hash = cur.fetchone()[0]
 
-            # admin@one-bune.com'u HER ZAMAN upsert et
-            # Diğer admin kullanıcılar olsa bile bu garanti edilir
             cur.execute("""
                 INSERT INTO users
                     (email, name, password, is_admin, is_premium,
@@ -1193,9 +1338,13 @@ def seed_admin_user() -> bool:
         return False
 
 
+# =====================================================
+# MAIN
+# =====================================================
+
 def main():
     log_info("🚀 ONE-BUNE DATABASE CONTROLLER SERVICE STARTING...")
-    log_info("📦 Version: 2.5.1 - Admin Panel + Payment System + Memory + Code Context")
+    log_info("📦 Version: 2.6.0 - Admin + Payment + Memory + Code Context + Travel/Kiwi")
     log_info(f"🐘 PostgreSQL Host: {os.getenv('DB_HOST', 'postgres')}")
     log_info(f"🗄️ Database Name:   {os.getenv('DB_NAME', 'N/A')}")
     log_info("=" * 70)
@@ -1217,10 +1366,8 @@ def main():
         log_error("Schema initialization failed!")
         sys.exit(1)
 
-    # ── Admin kullanıcı seed ──────────────────────────
     log_info("Admin kullanıcı kontrol ediliyor...")
     seed_admin_user()
-    # ─────────────────────────────────────────────────
 
     health = health_check()
     if health["status"] != "healthy":
