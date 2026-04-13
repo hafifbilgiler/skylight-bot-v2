@@ -1,3 +1,22 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kiwi-secret
+  namespace: skylight-bot-v2
+type: Opaque
+stringData:
+  tequila-api-key: "BURAYA_TEQUILA_API_KEY"   # tequila.kiwi.com'dan al
+  affiliate-id:    ""                          # partners.kiwi.com'dan al (şimdilik boş)
+---
+# ═══════════════════════════════════════════════════════════
+# skylight-sosyal Deployment — v2.0
+# Değişiklikler:
+#   - DB bağlantısı eklendi (pg-secret)
+#   - Redis bağlantısı eklendi
+#   - JWT_SECRET eklendi (token doğrulama)
+#   - Kiwi API key eklendi (kiwi-secret)
+#   - Image tag güncellendi: 1.5 → 2.0
+# ═══════════════════════════════════════════════════════════
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -20,7 +39,9 @@ spec:
           image: docker.io/hafifbilgiler/skylight-sosyal:1.3
           ports:
             - containerPort: 8091
+ 
           env:
+            # ── LLM (DeepInfra fallback) ────────────────────
             - name: DEEPINFRA_BASE_URL
               value: "https://api.deepinfra.com/v1/openai"
             - name: SOSYAL_LLM_MODEL
@@ -30,16 +51,66 @@ spec:
                 secretKeyRef:
                   name: smart-tools-secret
                   key: DEEPINFRA_API_KEY
+ 
+            # ── Vertex AI (Gemini — ana LLM) ─────────────────
             - name: GEMINI_PROJECT
               value: "gen-lang-client-0907571701"
             - name: GEMINI_LOCATION
               value: "us-central1"
             - name: GEMINI_MODEL
               value: "gemini-2.5-flash-lite"
+ 
+            # ── PostgreSQL ───────────────────────────────────
+            - name: DB_HOST
+              value: "postgres"
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: pg-secret
+                  key: dbname
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: pg-secret
+                  key: username
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: pg-secret
+                  key: password
+ 
+            # ── Redis (DB 5 — sosyal cache) ──────────────────
+            - name: REDIS_URL
+              value: "redis://skylight-redis:6379"
+            - name: REDIS_DB
+              value: "5"
+ 
+            # ── JWT (token doğrulama — gateway ile aynı) ─────
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-secret
+                  key: jwt-secret
+ 
+            # ── Kiwi / Tequila API ───────────────────────────
+            - name: TEQUILA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: kiwi-secret
+                  key: tequila-api-key
+            - name: KIWI_AFFILIATE_ID
+              valueFrom:
+                secretKeyRef:
+                  name: kiwi-secret
+                  key: affiliate-id
+ 
           volumeMounts:
             - name: vertex-sa-key
               mountPath: /etc/vertex-sa
               readOnly: true
+ 
           resources:
             requests:
               memory: "128Mi"
@@ -47,18 +118,21 @@ spec:
             limits:
               memory: "512Mi"
               cpu: "500m"
+ 
           livenessProbe:
             httpGet:
               path: /health
               port: 8091
             initialDelaySeconds: 15
             periodSeconds: 30
+ 
           readinessProbe:
             httpGet:
               path: /health
               port: 8091
             initialDelaySeconds: 5
             periodSeconds: 10
+ 
       volumes:
         - name: vertex-sa-key
           secret:
