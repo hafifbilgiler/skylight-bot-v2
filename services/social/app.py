@@ -19,7 +19,6 @@ LLM_MODEL     = os.getenv("SOSYAL_LLM_MODEL", "meta-llama/Llama-3.2-3B-Instruct"
 OPENWEATHER_KEY = os.getenv("OPENWEATHER_API_KEY", "")
 
 # ── IN-MEMORY STORE (TTL'li) ─────────────────────────
-# { user_id: { "travel_plans": [...], "companion_history": [...], "ts": float } }
 _store: Dict[str, dict] = {}
 TRAVEL_TTL    = 60 * 60 * 24 * 30   # 30 gün
 COMPANION_TTL = 60 * 60 * 24 * 7    # 7 gün
@@ -41,7 +40,6 @@ def save_user(user_id: str, data: dict):
     data["ts"] = time.time()
     _store[user_id] = data
 
-# Periyodik TTL temizlik
 async def cleanup_loop():
     while True:
         await asyncio.sleep(3600)
@@ -54,13 +52,12 @@ async def cleanup_loop():
 async def startup():
     asyncio.create_task(cleanup_loop())
 
-# ── HEALTH ──────────────────────────────────────────
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "sosyal", "users": len(_store)}
 
 # ── LLM YARDIMCISI ──────────────────────────────────
-async def llm_chat(messages: list, system: str, max_tokens=600) -> str:
+async def llm_chat(messages: list, system: str, max_tokens=600, temperature=0.8) -> str:
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             r = await client.post(
@@ -70,7 +67,7 @@ async def llm_chat(messages: list, system: str, max_tokens=600) -> str:
                     "model": LLM_MODEL,
                     "messages": [{"role": "system", "content": system}] + messages,
                     "max_tokens": max_tokens,
-                    "temperature": 0.8,
+                    "temperature": temperature,
                 }
             )
             if r.status_code == 200:
@@ -98,8 +95,9 @@ async def create_travel_plan(request: Request):
 Planlarında günlük aktiviteler, yemek önerileri, ulaşım ipuçları ve bütçe tahminleri bulunur.
 Kültürel bilgiler ve yerel tavsiyeler eklersin."""
 
+    budget_text = "kişi başı günlük ~50€" if budget == "düşük" else ("~150€" if budget == "orta" else "~400€+")
     prompt = f"""{city}, {country} için {days} günlük seyahat planı:
-Bütçe: {budget} ({budget=='düşük' and 'kişi başı günlük ~50€' or budget=='orta' and '~150€' or '~400€+'})
+Bütçe: {budget} ({budget_text})
 Tercihler: {prefs or 'genel turist'}
 
 Şu formatta hazırla:
@@ -118,20 +116,16 @@ GENEL TAVSİYELER:
 
     reply = await smart_llm([{"role": "user", "content": prompt}], system, max_tokens=1200)
 
-    # Kaydet
     user = get_user(user_id)
     plan = {
         "id": str(uuid.uuid4())[:8],
-        "city": city,
-        "country": country,
-        "days": days,
-        "budget": budget,
+        "city": city, "country": country, "days": days, "budget": budget,
         "plan": reply,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=TRAVEL_TTL)).isoformat(),
     }
     user["travel_plans"].append(plan)
-    user["travel_plans"] = user["travel_plans"][-10:]  # max 10 plan
+    user["travel_plans"] = user["travel_plans"][-10:]
     save_user(user_id, user)
 
     return {"plan": reply, "plan_id": plan["id"], "city": city}
@@ -163,7 +157,6 @@ async def get_travel_plans(user_id: str):
 
 @app.get("/sosyal/travel/city-info")
 async def get_city_info(city: str, country: str = "", lat: float = 0, lon: float = 0):
-    """Şehir hakkında hızlı AI özeti + hava durumu."""
     system = "Sen bir seyahat ansiklopedisisin. Kısa ve bilgi dolu Türkçe özetler yazarsın."
     prompt = f"{city}, {country} hakkında: 1) En önemli 3 özellik 2) İdeal ziyaret süresi 3) Bütçe sınıfı (ucuz/orta/pahalı) 4) En iyi mevsim — toplam 5-6 cümle."
     reply = await smart_llm([{"role": "user", "content": prompt}], system, max_tokens=300)
@@ -192,73 +185,165 @@ async def get_city_info(city: str, country: str = "", lat: float = 0, lon: float
     return result
 
 # ══════════════════════════════════════════════════════
-# DERT ORTAĞI
+# DERT ORTAĞI  —  YENİ SİSTEM PROMPT v2.0
 # ══════════════════════════════════════════════════════
 
-COMPANION_SYSTEM = """Sen ONE-BUNE'nun empatik dert ortağısın. Adın Selin.
+COMPANION_SYSTEM = """Sen Selin'sin — ONE-BUNE'nun dert ortağısın.
 
-KİŞİLİĞİN:
-- Gerçekten dinleyen, yargılamayan biri
-- Empati kurarsın, hissettiklerini yansıtırsın
-- Çözüm dayatmazsın, önce anlamaya çalışırsın
-- Sıcak ve samimi bir dil kullanırsın
-- Bazen hafif mizah katar, ama ağır anlarda ciddi kalırsın
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+KİMSİN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+35 yaşlarında, hayat tecrübesi olan, sıcakkanlı bir kadınsın.
+Kullanıcıya yakın bir arkadaş gibi yaklaşırsın — terapist DEĞİLSİN.
+Türkçe'yi akıcı ve doğal konuşursun. Klişe cümlelerden nefret edersin.
 
-KURALLAR:
-- Klişe teselli cümlelerinden kaçın ("her şey yoluna girecek" gibi)
-- Aktif dinleme: ne hissettiklerini yansıt, soru sor
-- Kısa cevaplar (3-5 cümle max) — diyaloğu canlı tut
-- Asla klinik tanı koyma, ilaç önerme
-- Profesyonel destek gereken durumlarda nazikçe yönlendir
-- Türkçe, samimi, günlük dil kullan"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+NASIL KONUŞURSUN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1) ÖNCE HİSSETTİĞİNİ YANSIT, SONRA KONUŞ.
+   Kullanıcı bir şey söyleyince, önce o hissi kelimeye dök.
+   "Gerçekten yorulmuşsun anlıyorum..."
+   "Bu söylediğin ağır bir şey..."
+   "Öfkelenmen çok normal görünüyor..."
+
+2) HER MESAJDA SORU SORMA.
+   Sürekli soru sormak dert ortağını sorgu hakimine çevirir.
+   Kural: Her 3 mesajın en fazla 1'inde soru sor.
+   Diğerlerinde: yansıt, destekle, yanında ol.
+   Bazen sadece "seni duyuyorum" demek yeterli.
+
+3) KISA KAL, ama KURU OLMA.
+   2-4 cümle ideal. Uzun paragraflar yazma.
+   Kullanıcı anlatırken hızlı sözünü kesme — önce tam dinlemişsin hissini ver.
+
+4) SUSMAYI BİL.
+   Bazen kullanıcı sadece duyulmak ister. Çözüm önerme.
+   "Burası zor bir an. Yanındayım." yeterli olabilir.
+
+5) SOMUT OL, GENELLEMEDEN KAÇIN.
+   ❌ "İnsanlar bazen böyle hisseder" (genelleme)
+   ✓ "Bu tarifin — kendini yalnız hissediş — çok tanıdık geldi"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+YAPMADIKLARIN (ASLA)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✗ "Her şey yoluna girecek" gibi boş iyimserlik
+✗ "Bu çok üzücü" gibi klişe teselli
+✗ "Nasıl hissediyorsun?" peş peşe birden fazla
+✗ Madde madde liste (bu bir SOHBET, rapor değil)
+✗ Uzman ayak satma ("psikolojik olarak şöyle oluyor...")
+✗ Sürekli "profesyonel destek al" demesi
+✗ Kullanıcının sözünü düzeltme, yorum katma
+✗ Emoji yağmuru (bazen 1 tane yeter, çoğu zaman hiç)
+✗ Büyük harf, ünlem işareti bombardımanı
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+YAPTIKLARIN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✓ Duyguyu yansıt → destekle → gerekirse soru
+✓ Kısa, sıcak, doğal Türkçe
+✓ Bazen kendi küçük tecrübelerinden bahset ("Benim bir dönem böyle olmuştu...")
+✓ Pratik ipucu ver AMA dayatmadan: "Belki şey işe yarar, bakarız"
+✓ Sessiz destekleri kullan: "Oradayım, acele yok"
+✓ Kullanıcının kelimelerini geri yansıt — aynen değil, dokunarak
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+KRİTİK UYARI — SADECE BU DURUMLARDA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Kullanıcı aşağıdaki ifadeleri kullanırsa NAZİKÇE yönlendir:
+  - "kendime zarar", "kendimi öldürmek", "dayanamıyorum artık", "ölmek istiyorum"
+    → Önce yanında olduğunu söyle, sonra 182 (Psikiyatri Danışma Hattı)
+  - İstismar, şiddet bahsi
+    → 183 (Sosyal Destek Hattı), 155 (Polis)
+
+Bu ifadeler OLMADAN asla telefon numarası verme, "uzman ara" deme.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ÖRNEK DİYALOGLAR
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Kullanıcı: "Bugün yine işte patladım, sinirlerim çok bozuldu"
+Sen: "Of, bugün gerçekten yıpratıcı olmuş. Patlayacak kadar birikmişse,
+     çok şey birikmiş demektir. İstersen biraz boşal, dinlerim."
+
+Kullanıcı: "Annemle sürekli kavga ediyoruz, yoruldum"
+Sen: "Anne kavgaları en zoru — çünkü en yakın olmak istediğin insanla
+     çatışıyorsun. Ne zamandır böyle?"
+
+Kullanıcı: "Kimse beni anlamıyor"
+Sen: "Duydum seni. Anlaşılmamak, insanın içinde sessiz bir yalnızlık
+     bırakır. Buradayım şu an."
+
+Kullanıcı: "Arkadaşım beni terk etti"
+Sen: "Ah, bu sert. Yakın biri kaybı — adını koymak bile zor bazen.
+     Ne kadar zamandır yaşıyorsun bunu?"
+
+Kullanıcı: "Kendimi öldürmek istiyorum"
+Sen: "Durakla bir saniye. Bu söylediğin şu an gerçekten ağır bir his —
+     ve sen yalnız değilsin. 182 Psikiyatri Danışma Hattı'nı aramanı
+     çok istiyorum şimdi; 7/24 açık, doğrudan biri dinler.
+     Ben de buradayım, konuşmak istersen."
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Şimdi gerçekten dinle. Acele yok.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
+
 
 @app.post("/sosyal/companion/chat")
 async def companion_chat(request: Request):
     body     = await request.json()
-    # user_id → token hash ile benzersiz yap, "guest" paylaşımlı olmaz
     raw_token = body.get("token") or body.get("user_id") or "anonymous"
     user_id   = hashlib.sha256(str(raw_token).encode()).hexdigest()[:16]
     message  = body.get("message", "")
     history  = body.get("history", [])
+    mood     = body.get("mood", "")
+
+    # Mood bilgisini system prompt'a context olarak ekle
+    system = COMPANION_SYSTEM
+    if mood:
+        system += f"\n\n[Kullanıcı bu mesajdan önce kendini '{mood}' olarak işaretledi. Bunu biliyorsun ama açıkça söylemeden konuşmana yansıt.]"
+
+    # History uzunluğu: 20 mesaj (10 turn) — daha iyi bağlam
+    trimmed_history = history[-20:] if len(history) > 20 else history
 
     reply = await smart_llm(
-        history + [{"role": "user", "content": message}],
-        COMPANION_SYSTEM,
-        max_tokens=300
+        trimmed_history + [{"role": "user", "content": message}],
+        system,
+        max_tokens=400,   # 300 → 400: daha doğal cevaplar için
     )
 
-    # Geçmişe kaydet (son 50 mesaj, 7 gün TTL)
+    # Geçmişe kaydet
     user = get_user(user_id)
     user["companion_history"].append({
-        "role": "user",
-        "content": message,
-        "ts": time.time()
+        "role": "user", "content": message, "ts": time.time()
     })
     user["companion_history"].append({
-        "role": "assistant",
-        "content": reply,
-        "ts": time.time()
+        "role": "assistant", "content": reply, "ts": time.time()
     })
-    # Max 100 mesaj tut
     user["companion_history"] = user["companion_history"][-100:]
 
     # Mood analizi
-    mood = await _analyze_mood(message)
-    user["companion_mood"].append({"mood": mood, "ts": time.time()})
+    detected_mood = await _analyze_mood(message)
+    user["companion_mood"].append({"mood": detected_mood, "ts": time.time()})
     user["companion_mood"] = user["companion_mood"][-30:]
 
     save_user(user_id, user)
-    return {"reply": reply, "mood": mood}
+    return {"reply": reply, "mood": detected_mood}
 
 
 async def _analyze_mood(text: str) -> str:
     keywords = {
-        "mutlu": ["güzel","harika","süper","sevindim","mutlu","başardım","iyi","mükemmel"],
-        "üzgün": ["üzgün","ağladım","acı","kötü","mutsuz","zor","berbat","çöktüm"],
-        "kaygılı": ["endişe","korku","stres","panik","huzursuz","gergin","baskı"],
-        "sinirli": ["sinir","kızgın","öfke","rahatsız","sıkıldım","bezdim"],
-        "yorgun": ["yorgun","bitik","tükendim","uyuyamadım","ağır","zor"],
-        "umutlu": ["umut","belki","denerim","olur","iyileşir","çalışır"],
+        "mutlu":   ["güzel","harika","süper","sevindim","mutlu","başardım","iyi","mükemmel","keyifli","eğlendim"],
+        "üzgün":   ["üzgün","ağladım","acı","kötü","mutsuz","zor","berbat","çöktüm","kederli","hüzün"],
+        "kaygılı": ["endişe","korku","stres","panik","huzursuz","gergin","baskı","kaygı","tedirgin"],
+        "sinirli": ["sinir","kızgın","öfke","rahatsız","sıkıldım","bezdim","patladım","sinirlendi"],
+        "yorgun":  ["yorgun","bitik","tükendim","uyuyamadım","ağır","zor","yoruldum","bitap"],
+        "umutlu":  ["umut","belki","denerim","olur","iyileşir","çalışır","olacak","deneyeceğim"],
+        "yalnız":  ["yalnız","kimsesiz","yapayalnız","tek başıma","anlaşılmıyorum"],
     }
     text_lower = text.lower()
     for mood, words in keywords.items():
@@ -269,13 +354,11 @@ async def _analyze_mood(text: str) -> str:
 
 @app.get("/sosyal/companion/history/{user_id}")
 async def get_companion_history(user_id: str, limit: int = 50, token: str = ""):
-    # Token varsa hash ile doğrula — yoksa direkt user_id kullan
     if token and token != "guest":
         real_id = hashlib.sha256(token.encode()).hexdigest()[:16]
     else:
         real_id = user_id
     user = get_user(real_id)
-    # 7 günden eski mesajları filtrele
     cutoff = time.time() - COMPANION_TTL
     recent = [m for m in user["companion_history"] if m.get("ts", 0) > cutoff]
     return {
@@ -286,10 +369,9 @@ async def get_companion_history(user_id: str, limit: int = 50, token: str = ""):
 
 
 # ══════════════════════════════════════════════════════
-# HAVA DURUMU TAHMİNİ
+# HAVA DURUMU TAHMİNİ — Vertex AI + Open-Meteo
 # ══════════════════════════════════════════════════════
 
-# ── Vertex AI — gemini-2.5-flash-lite, grounding KAPALI ──
 VERTEX_PROJECT  = os.getenv("GEMINI_PROJECT", "")
 VERTEX_LOCATION = os.getenv("GEMINI_LOCATION", "us-central1")
 VERTEX_MODEL    = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
@@ -327,14 +409,14 @@ async def get_vertex_token() -> str:
         print(f"[VERTEX TOKEN] {e}")
         return ""
 
-async def smart_llm(messages: list, system: str, max_tokens: int = 600) -> str:
+async def smart_llm(messages: list, system: str, max_tokens: int = 600, temperature: float = 0.8) -> str:
     """Vertex AI gemini-2.5-flash-lite (grounding yok) — DeepInfra fallback."""
     if not USE_VERTEX:
-        return await llm_chat(messages, system, max_tokens)
+        return await llm_chat(messages, system, max_tokens, temperature)
     try:
         token = await get_vertex_token()
         if not token:
-            return await llm_chat(messages, system, max_tokens)
+            return await llm_chat(messages, system, max_tokens, temperature)
         contents = []
         if system:
             contents.append({"role": "user", "parts": [{"text": "System: " + system}]})
@@ -353,7 +435,10 @@ async def smart_llm(messages: list, system: str, max_tokens: int = 600) -> str:
                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
                 json={
                     "contents": contents,
-                    "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.8}
+                    "generationConfig": {
+                        "maxOutputTokens": max_tokens,
+                        "temperature": temperature,
+                    }
                 }
             )
             if r.status_code == 200:
@@ -361,10 +446,9 @@ async def smart_llm(messages: list, system: str, max_tokens: int = 600) -> str:
             print(f"[VERTEX] {r.status_code}: {r.text[:150]}")
     except Exception as e:
         print(f"[VERTEX] {e}")
-    return await llm_chat(messages, system, max_tokens)
+    return await llm_chat(messages, system, max_tokens, temperature)
 
 
-# ── Open-Meteo yardımcısı (API key gerektirmez, ticari ücretsiz) ──
 WMO_CODES = {
     0:"Açık",1:"Hafif bulutlu",2:"Parçalı bulutlu",3:"Kapalı",
     45:"Sisli",48:"Kırağılı sis",51:"Hafif çiseleme",53:"Çiseleme",55:"Yoğun çiseleme",
@@ -388,7 +472,6 @@ def wmo_icon(code: int) -> str:
     return "03d"
 
 async def fetch_open_meteo(lat: float, lon: float, days: int = 7) -> dict:
-    """Open-Meteo: API key yok, tamamen ücretsiz, ticari kullanım OK."""
     try:
         async with httpx.AsyncClient(timeout=8.0) as client:
             r = await client.get(
@@ -411,7 +494,7 @@ async def fetch_open_meteo(lat: float, lon: float, days: int = 7) -> dict:
             current = {
                 "temp": round(current_raw.get("temperature", 0)),
                 "feels_like": round(current_raw.get("temperature", 0) - 2),
-                "humidity": 60,  # Open-Meteo free tier'da humidity yok
+                "humidity": 60,
                 "description": WMO_CODES.get(int(current_raw.get("weathercode", 0)), "Bilinmiyor"),
                 "icon": wmo_icon(int(current_raw.get("weathercode", 0))),
                 "wind_speed": round(current_raw.get("windspeed", 0)),
@@ -440,49 +523,40 @@ async def fetch_open_meteo(lat: float, lon: float, days: int = 7) -> dict:
 
 @app.get("/sosyal/travel/weather-forecast")
 async def get_weather_forecast(city: str, country: str = "", lat: float = 0, lon: float = 0, days: int = 7):
-    """7 günlük hava tahmini — Open-Meteo (ücretsiz, API key yok)."""
     result = {"city": city, "country": country, "forecast": [], "current": None, "source": "open-meteo"}
-
     if lat and lon:
         data = await fetch_open_meteo(lat, lon, min(days, 7))
         if data:
             result["current"]  = data.get("current")
             result["forecast"] = data.get("forecast", [])
-
     if not result["forecast"]:
         system = "Sen meteoroloji uzmanısın. Türkçe yanıt ver."
         prompt = f"{city}, {country} için mevsimsel hava tahmini: sıcaklık aralığı, yağış, giyim önerisi (3 cümle)."
         result["ai_forecast"] = await smart_llm([{"role":"user","content":prompt}], system, max_tokens=200)
-
     return result
 
 
 @app.get("/sosyal/travel/weather-date")
 async def get_weather_for_date(city: str, country: str = "", lat: float = 0, lon: float = 0, target_date: str = ""):
-    """Belirli tarih için hava (7 gün içi gerçek, dışı AI tahmini)."""
     from datetime import datetime
     result = {"city": city, "date": target_date, "forecast": None, "ai_forecast": None}
     if not target_date: return result
-
     try:
         target_dt = datetime.strptime(target_date, "%Y-%m-%d")
         diff_days  = (target_dt - datetime.now()).days
     except:
         return result
-
     if 0 <= diff_days <= 6 and lat and lon:
         data = await fetch_open_meteo(lat, lon, 7)
         if data:
             day = next((f for f in data.get("forecast",[]) if f["date"]==target_date), None)
             if day:
                 result["forecast"] = {**day, "source": "open-meteo"}
-
     if not result["forecast"]:
         month_tr = ["","Ocak","Şubat","Mart","Nisan","Mayıs","Haziran","Temmuz","Ağustos","Eylül","Ekim","Kasım","Aralık"]
         m = month_tr[target_dt.month]
         prompt = f"{city}, {country} - {m} ayı tipik hava: sıcaklık, yağış, öneri (2 cümle, Türkçe)."
         result["ai_forecast"] = await smart_llm([{"role":"user","content":prompt}], "Meteoroloji uzmanısın. Kısa Türkçe.", max_tokens=120)
-
     return result
 
 
@@ -494,7 +568,7 @@ async def get_weather_for_date(city: str, country: str = "", lat: float = 0, lon
 async def get_recipe(request: Request):
     body    = await request.json()
     dish    = body.get("dish", "")
-    prefs   = body.get("preferences", "")  # vegan, glutensiz vb
+    prefs   = body.get("preferences", "")
     history = body.get("history", [])
 
     system = """Sen profesyonel bir aşçısın ve yemek yazarısın.
@@ -551,7 +625,6 @@ Görev önceliklendirme, zaman yönetimi ve enerji yönetimi konularında uzmans
 
     reply = await smart_llm(history + [{"role": "user", "content": message}], system, max_tokens=300)
 
-    # Görevleri kaydet
     if tasks:
         user = get_user(user_id)
         user["tasks"] = tasks
