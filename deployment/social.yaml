@@ -1,21 +1,38 @@
+# ═══════════════════════════════════════════════════════════
+# TRAVELPAYOUTS (Aviasales Flight Data API) Secret
+# ═══════════════════════════════════════════════════════════
+# Oluşturmak için (önerilen yöntem):
+#   kubectl create secret generic travelpayouts-secret \
+#     --from-literal=api-token=BURAYA_API_TOKEN \
+#     --from-literal=marker-id=716107 \
+#     -n skylight-bot-v2
+#
+# Veya aşağıdaki YAML'ı doldur — ama token'ı git'e commit ETME!
+# ───────────────────────────────────────────────────────────
 apiVersion: v1
 kind: Secret
 metadata:
-  name: kiwi-secret
+  name: travelpayouts-secret
   namespace: skylight-bot-v2
 type: Opaque
 stringData:
-  tequila-api-key: "BURAYA_TEQUILA_API_KEY"   # tequila.kiwi.com'dan al
-  affiliate-id:    ""                          # partners.kiwi.com'dan al (şimdilik boş)
+  api-token: "BURAYA_TRAVELPAYOUTS_API_TOKEN"   # travelpayouts.com/profile → API token
+  marker-id: "716107"                            # Hafifbilgiler affiliate marker
 ---
 # ═══════════════════════════════════════════════════════════
-# skylight-sosyal Deployment — v2.0
+# skylight-sosyal Deployment — v2.1
 # Değişiklikler:
+#   v2.0 → v2.1
+#   - Kiwi/Tequila secret KALDIRILDI
+#   - Travelpayouts (Aviasales) entegrasyonu eklendi
+#   - Yeni endpoint'ler: flight_search, flight_calendar,
+#     flight_click, flight_parse
+#   - Image tag güncellendi: 2.0 → 2.1
+#
+#   v1.5 → v2.0 (referans)
 #   - DB bağlantısı eklendi (pg-secret)
 #   - Redis bağlantısı eklendi
 #   - JWT_SECRET eklendi (token doğrulama)
-#   - Kiwi API key eklendi (kiwi-secret)
-#   - Image tag güncellendi: 1.5 → 2.0
 # ═══════════════════════════════════════════════════════════
 apiVersion: apps/v1
 kind: Deployment
@@ -36,10 +53,10 @@ spec:
     spec:
       containers:
         - name: sosyal
-          image: docker.io/hafifbilgiler/skylight-sosyal:1.5
+          image: docker.io/hafifbilgiler/skylight-sosyal:1.6
           ports:
             - containerPort: 8091
- 
+
           env:
             # ── LLM (DeepInfra fallback) ────────────────────
             - name: DEEPINFRA_BASE_URL
@@ -51,7 +68,7 @@ spec:
                 secretKeyRef:
                   name: smart-tools-secret
                   key: DEEPINFRA_API_KEY
- 
+
             # ── Vertex AI (Gemini — ana LLM) ─────────────────
             - name: GEMINI_PROJECT
               value: "gen-lang-client-0907571701"
@@ -59,7 +76,7 @@ spec:
               value: "us-central1"
             - name: GEMINI_MODEL
               value: "gemini-2.5-flash-lite"
- 
+
             # ── PostgreSQL ───────────────────────────────────
             - name: DB_HOST
               value: "postgres"
@@ -80,37 +97,38 @@ spec:
                 secretKeyRef:
                   name: pg-secret
                   key: password
- 
+
             # ── Redis (DB 5 — sosyal cache) ──────────────────
             - name: REDIS_URL
               value: "redis://skylight-redis:6379"
             - name: REDIS_DB
               value: "5"
- 
+
             # ── JWT (token doğrulama — gateway ile aynı) ─────
             - name: JWT_SECRET
               valueFrom:
                 secretKeyRef:
                   name: gateway-secret
                   key: jwt-secret
- 
-            # ── Kiwi / Tequila API ───────────────────────────
-            - name: TEQUILA_API_KEY
+
+            # ── Travelpayouts / Aviasales API ────────────────
+            # Flight Data API + affiliate linkler için
+            - name: TRAVELPAYOUTS_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: kiwi-secret
-                  key: tequila-api-key
-            - name: KIWI_AFFILIATE_ID
+                  name: travelpayouts-secret
+                  key: api-token
+            - name: TRAVELPAYOUTS_MARKER
               valueFrom:
                 secretKeyRef:
-                  name: kiwi-secret
-                  key: affiliate-id
- 
+                  name: travelpayouts-secret
+                  key: marker-id
+
           volumeMounts:
             - name: vertex-sa-key
               mountPath: /etc/vertex-sa
               readOnly: true
- 
+
           resources:
             requests:
               memory: "128Mi"
@@ -118,21 +136,21 @@ spec:
             limits:
               memory: "512Mi"
               cpu: "500m"
- 
+
           livenessProbe:
             httpGet:
               path: /health
               port: 8091
             initialDelaySeconds: 15
             periodSeconds: 30
- 
+
           readinessProbe:
             httpGet:
               path: /health
               port: 8091
             initialDelaySeconds: 5
             periodSeconds: 10
- 
+
       volumes:
         - name: vertex-sa-key
           secret:

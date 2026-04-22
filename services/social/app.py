@@ -22,6 +22,12 @@ OPENWEATHER_KEY = os.getenv("OPENWEATHER_API_KEY", "")
 REDIS_URL = os.getenv("REDIS_URL", "redis://skylight-redis:6379")
 REDIS_DB  = int(os.getenv("REDIS_DB", "5"))    # Sosyal → DB 5
 
+# ── TRAVELPAYOUTS (Aviasales Flight Data API) ──────
+TP_API_TOKEN    = os.getenv("TRAVELPAYOUTS_TOKEN", "")
+TP_MARKER_ID    = os.getenv("TRAVELPAYOUTS_MARKER", "716107")
+TP_BASE_URL     = "https://api.travelpayouts.com"
+TP_CACHE_TTL    = 60 * 60  # 1 saat — cache'den geldiği için bu yeterli
+
 # ═══════════════════════════════════════════════════════
 # REDIS STORE
 # ═══════════════════════════════════════════════════════
@@ -450,6 +456,330 @@ async def get_companion_history(user_id: str, limit: int = 50, token: str = ""):
         "mood_history": moods[-14:],
         "total":        len(recent),
     }
+
+
+# ══════════════════════════════════════════════════════
+# TRAVELPAYOUTS — UÇUŞ ARAMA & FİYAT
+# ══════════════════════════════════════════════════════
+# Marker ID: 716107 (Hafifbilgiler affiliate)
+# API: Aviasales Flight Data API
+# Rate limit: 10 req/sec (Redis cache ile altına iniyoruz)
+# Cache: 1 saat (veri zaten Aviasales cache'inden geliyor, 7 günlük)
+# ══════════════════════════════════════════════════════
+
+# Havayolu kod → isim map (görünür hale getirmek için)
+AIRLINE_NAMES = {
+    "TK": "Turkish Airlines",
+    "PC": "Pegasus",
+    "VF": "AJet",
+    "XQ": "SunExpress",
+    "LH": "Lufthansa",
+    "BA": "British Airways",
+    "AF": "Air France",
+    "KL": "KLM",
+    "EK": "Emirates",
+    "QR": "Qatar Airways",
+    "TB": "TUI",
+    "FR": "Ryanair",
+    "W6": "Wizz Air",
+    "U2": "easyJet",
+    "AZ": "ITA Airways",
+    "IB": "Iberia",
+    "OS": "Austrian",
+    "SU": "Aeroflot",
+}
+
+def airline_name(code: str) -> str:
+    return AIRLINE_NAMES.get(code, code)
+
+
+async def tp_request(endpoint: str, params: dict) -> dict:
+    """Travelpayouts API wrapper — redis cache'li."""
+    if not TP_API_TOKEN:
+        return {"success": False, "error": "TP_API_TOKEN tanımsız"}
+
+    # Cache key
+    cache_key = f"tp:{endpoint}:" + ":".join(f"{k}={v}" for k, v in sorted(params.items()))
+    cached = await redis_get_json(cache_key)
+    if cached:
+        cached["_cached"] = True
+        return cached
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(
+                f"{TP_BASE_URL}{endpoint}",
+                headers={"X-Access-Token": TP_API_TOKEN},
+                params=params,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                # 1 saat cache
+                await redis_set_json(cache_key, data, TP_CACHE_TTL)
+                return data
+            return {"success": False, "error": f"HTTP {r.status_code}", "detail": r.text[:200]}
+    except Exception as e:
+        print(f"[TP] {endpoint} error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+def build_affiliate_link(
+    origin: str,
+    destination: str,
+    depart_date: str = "",
+    return_date: str = "",
+) -> str:
+    """
+    Aviasales deep-link üretir — marker ID otomatik eklenir.
+    Format örneği:
+      https://www.aviasales.com/search/IST28052026LON05062026?marker=716107
+    """
+    def fmt(d: str) -> str:
+        # "2026-05-28" → "2805"
+        if not d or len(d) < 10:
+            return ""
+        return d[8:10] + d[5:7]
+
+    search_code = f"{origin.upper()}{fmt(depart_date)}{destination.upper()}"
+    if return_date:
+        search_code += fmt(return_date)
+
+    url = f"https://www.aviasales.com/search/{search_code}?marker={TP_MARKER_ID}"
+    return url
+
+
+def format_flight(raw: dict, origin: str, destination: str) -> dict:
+    """API yanıtından UI-friendly uçuş objesi üretir."""
+    airline_code = raw.get("airline", "")
+    dep = raw.get("departure_at", "")
+    ret = raw.get("return_at", "")
+
+    # Tarihleri ayır (T'den önce tarih, sonra saat)
+    dep_date = dep[:10] if dep else ""
+    dep_time = dep[11:16] if dep else ""
+    ret_date = ret[:10] if ret else ""
+    ret_time = ret[11:16] if ret else ""
+
+    duration_min = raw.get("duration", 0) or raw.get("duration_to", 0)
+    hours = duration_min // 60
+    mins  = duration_min % 60
+    duration_text = f"{hours}s {mins}dk" if hours else f"{mins}dk"
+
+    return {
+        "airline_code": airline_code,
+        "airline_name": airline_name(airline_code),
+        "flight_number": f"{airline_code}{raw.get('flight_number', '')}",
+        "price": raw.get("price", 0),
+        "origin": origin,
+        "destination": destination,
+        "depart_date": dep_date,
+        "depart_time": dep_time,
+        "return_date": ret_date,
+        "return_time": ret_time,
+        "duration": duration_text,
+        "duration_min": duration_min,
+        "direct": raw.get("number_of_changes", 1) == 0,
+        "affiliate_url": build_affiliate_link(origin, destination, dep_date, ret_date),
+    }
+
+
+@app.post("/sosyal/travel/flight_search")
+async def flight_search(request: Request):
+    """
+    En ucuz uçuşları getir.
+    Body: { origin, destination, depart_date?, return_date?, currency?, one_way? }
+    """
+    body = await request.json()
+    origin      = str(body.get("origin", "")).upper()
+    destination = str(body.get("destination", "")).upper()
+    depart_date = body.get("depart_date", "")   # "2026-05" veya "2026-05-28"
+    return_date = body.get("return_date", "")
+    currency    = body.get("currency", "try")
+    one_way     = bool(body.get("one_way", False))
+
+    if not origin or not destination:
+        return {"success": False, "error": "origin ve destination zorunlu"}
+
+    params = {
+        "origin": origin,
+        "destination": destination,
+        "currency": currency,
+    }
+    if depart_date:
+        params["depart_date"] = depart_date
+    if return_date and not one_way:
+        params["return_date"] = return_date
+
+    data = await tp_request("/v1/prices/cheap", params)
+
+    if not data.get("success"):
+        return {"success": False, "error": data.get("error", "API hatası"), "flights": []}
+
+    # Yanıt formatı: { "data": { "DESTINATION": { "0": {...}, "1": {...} } } }
+    raw_flights = data.get("data", {}).get(destination, {})
+    flights = []
+    for key, flight in raw_flights.items():
+        flights.append(format_flight(flight, origin, destination))
+
+    # Fiyata göre sırala
+    flights.sort(key=lambda f: f["price"])
+
+    return {
+        "success": True,
+        "origin": origin,
+        "destination": destination,
+        "currency": currency.upper(),
+        "flights": flights[:10],   # En ucuz 10 tane
+        "cached": data.get("_cached", False),
+    }
+
+
+@app.post("/sosyal/travel/flight_calendar")
+async def flight_calendar(request: Request):
+    """
+    Ay içinde günlük fiyat takvimi.
+    Body: { origin, destination, depart_date, currency? }
+    depart_date: "2026-05" formatında
+    """
+    body = await request.json()
+    origin      = str(body.get("origin", "")).upper()
+    destination = str(body.get("destination", "")).upper()
+    depart_date = body.get("depart_date", "")
+    currency    = body.get("currency", "try")
+
+    if not origin or not destination or not depart_date:
+        return {"success": False, "error": "origin, destination ve depart_date zorunlu"}
+
+    params = {
+        "origin": origin,
+        "destination": destination,
+        "depart_date": depart_date,
+        "calendar_type": "departure_date",
+        "currency": currency,
+    }
+
+    data = await tp_request("/v1/prices/calendar", params)
+
+    if not data.get("success"):
+        return {"success": False, "error": data.get("error", "API hatası")}
+
+    raw = data.get("data", {})
+    days = []
+    for day_key, flight in raw.items():
+        days.append({
+            "date": day_key,
+            "price": flight.get("value") or flight.get("price", 0),
+            "airline": airline_name(flight.get("airline", "")),
+            "direct": flight.get("number_of_changes", 1) == 0,
+        })
+    days.sort(key=lambda d: d["date"])
+
+    # En ucuz günü bul
+    cheapest = min(days, key=lambda d: d["price"]) if days else None
+
+    return {
+        "success": True,
+        "origin": origin,
+        "destination": destination,
+        "currency": currency.upper(),
+        "days": days,
+        "cheapest_day": cheapest,
+        "cached": data.get("_cached", False),
+    }
+
+
+@app.post("/sosyal/travel/flight_click")
+async def flight_click(request: Request):
+    """
+    Kullanıcı uçuş kartındaki 'Bileti Al' butonuna tıkladığında
+    çağrılır — affiliate URL'yi döner + DB'ye log atar.
+    """
+    body = await request.json()
+    origin      = str(body.get("origin", "")).upper()
+    destination = str(body.get("destination", "")).upper()
+    depart_date = body.get("depart_date", "")
+    return_date = body.get("return_date", "")
+    user_id     = str(body.get("user_id", "guest"))
+
+    url = build_affiliate_link(origin, destination, depart_date, return_date)
+
+    # Redis'e click log (analytics için)
+    try:
+        r = await get_redis()
+        log_key = f"sos:clicks:flight:{datetime.now().strftime('%Y%m%d')}"
+        await r.incr(log_key)
+        await r.expire(log_key, 60 * 60 * 24 * 90)  # 90 gün
+    except Exception:
+        pass
+
+    return {
+        "success": True,
+        "url": url,
+        "origin": origin,
+        "destination": destination,
+    }
+
+
+@app.post("/sosyal/travel/flight_parse")
+async def flight_parse(request: Request):
+    """
+    Kullanıcının doğal dilde yazdığı isteği Gemini ile parse eder.
+    Örn: "İstanbul'dan Londra'ya Mayıs sonu 2 kişi"
+    →    { origin: "IST", destination: "LON", depart: "2026-05-28", return: "2026-06-05", passengers: 2 }
+    """
+    body = await request.json()
+    query = body.get("query", "")
+
+    if not query:
+        return {"success": False, "error": "query gerekli"}
+
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    system = f"""Sen uçuş arama isteğini parse eden bir asistansın.
+Bugünün tarihi: {today}.
+
+Kullanıcı bir uçuş tarifi yazar. Senin görevin şu bilgileri JSON olarak çıkarmak:
+
+{{
+  "origin": "IATA kodu (IST, SAW, ESB, AYT, ADB, TZX vs.)",
+  "destination": "IATA kodu",
+  "depart_date": "YYYY-MM-DD formatında (belirsizse YYYY-MM yeter)",
+  "return_date": "YYYY-MM-DD formatında (tek yön ise boş)",
+  "passengers": 1,
+  "one_way": false
+}}
+
+Türkiye şehirleri IATA kodları:
+  İstanbul=IST (Pegasus: SAW), Ankara=ESB, İzmir=ADB, Antalya=AYT,
+  Bodrum=BJV, Dalaman=DLM, Trabzon=TZX, Gaziantep=GZT, Kayseri=ASR,
+  Konya=KYA, Adana=ADA, Malatya=MLX, Samsun=SZF, Van=VAN
+
+Yurt dışı: Londra=LON, Paris=PAR, Roma=ROM, Amsterdam=AMS, Berlin=BER,
+  Madrid=MAD, Dubai=DXB, New York=NYC, Tokyo=TYO
+
+Ay adları: Ocak=01, Şubat=02, Mart=03, Nisan=04, Mayıs=05, Haziran=06,
+  Temmuz=07, Ağustos=08, Eylül=09, Ekim=10, Kasım=11, Aralık=12.
+"Mayıs sonu" → ayın 25-30'u arası seç.
+"Mayıs başı" → 01-10.
+"Gelecek hafta" → bugün + 7 gün.
+
+SADECE JSON döndür, açıklama yazma."""
+
+    reply = await smart_llm(
+        [{"role": "user", "content": query}],
+        system,
+        max_tokens=300,
+        temperature=0.2,
+    )
+
+    # JSON parse et
+    try:
+        # Bazen model ```json ile sarıyor
+        cleaned = reply.strip().replace("```json", "").replace("```", "").strip()
+        parsed = json.loads(cleaned)
+        return {"success": True, "parsed": parsed, "raw_query": query}
+    except Exception as e:
+        return {"success": False, "error": "parse_failed", "raw_reply": reply[:200]}
 
 
 # ══════════════════════════════════════════════════════
