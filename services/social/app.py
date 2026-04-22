@@ -5,6 +5,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import httpx
+import redis.asyncio as aioredis
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -13,48 +14,140 @@ app = FastAPI(title="ONE-BUNE Sosyal Servisi")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # ── CONFIG ──────────────────────────────────────────
-LLM_BASE_URL  = os.getenv("DEEPINFRA_BASE_URL", "https://api.deepinfra.com/v1/openai")
-LLM_API_KEY   = os.getenv("DEEPINFRA_API_KEY", "")
-LLM_MODEL     = os.getenv("SOSYAL_LLM_MODEL", "meta-llama/Llama-3.2-3B-Instruct")
+LLM_BASE_URL    = os.getenv("DEEPINFRA_BASE_URL", "https://api.deepinfra.com/v1/openai")
+LLM_API_KEY     = os.getenv("DEEPINFRA_API_KEY", "")
+LLM_MODEL       = os.getenv("SOSYAL_LLM_MODEL", "meta-llama/Llama-3.2-3B-Instruct")
 OPENWEATHER_KEY = os.getenv("OPENWEATHER_API_KEY", "")
 
-# ── IN-MEMORY STORE (TTL'li) ─────────────────────────
-_store: Dict[str, dict] = {}
+REDIS_URL = os.getenv("REDIS_URL", "redis://skylight-redis:6379")
+REDIS_DB  = int(os.getenv("REDIS_DB", "5"))    # Sosyal → DB 5
+
+# ═══════════════════════════════════════════════════════
+# REDIS STORE
+# ═══════════════════════════════════════════════════════
+# Key şeması (namespace: sos:):
+#   sos:u:{user_id}:travel_plans      → JSON list   TTL 30 gün
+#   sos:u:{user_id}:companion_history → JSON list   TTL 7 gün
+#   sos:u:{user_id}:companion_mood    → JSON list   TTL 30 gün
+#   sos:u:{user_id}:tasks             → JSON dict   TTL 30 gün
+#   sos:u:{user_id}:habits            → JSON list   TTL 30 gün
+# ═══════════════════════════════════════════════════════
+
 TRAVEL_TTL    = 60 * 60 * 24 * 30   # 30 gün
 COMPANION_TTL = 60 * 60 * 24 * 7    # 7 gün
+DAILY_TTL     = 60 * 60 * 24 * 30   # 30 gün
+MOOD_TTL      = 60 * 60 * 24 * 30   # 30 gün
 
-def get_user(user_id: str) -> dict:
-    now = time.time()
-    if user_id not in _store:
-        _store[user_id] = {
-            "travel_plans": [],
-            "companion_history": [],
-            "companion_mood": [],
-            "habits": [],
-            "tasks": {"todo": [], "doing": [], "done": []},
-            "ts": now,
-        }
-    return _store[user_id]
+_redis: Optional[aioredis.Redis] = None
 
-def save_user(user_id: str, data: dict):
-    data["ts"] = time.time()
-    _store[user_id] = data
+async def get_redis() -> aioredis.Redis:
+    global _redis
+    if _redis is None:
+        _redis = aioredis.from_url(
+            REDIS_URL,
+            db=REDIS_DB,
+            encoding="utf-8",
+            decode_responses=True,
+            socket_connect_timeout=5,
+            socket_keepalive=True,
+            health_check_interval=30,
+        )
+    return _redis
 
-async def cleanup_loop():
-    while True:
-        await asyncio.sleep(3600)
-        now = time.time()
-        expired = [uid for uid, d in _store.items() if now - d.get("ts", 0) > TRAVEL_TTL]
-        for uid in expired:
-            del _store[uid]
+def _k(user_id: str, field: str) -> str:
+    return f"sos:u:{user_id}:{field}"
+
+async def redis_get_json(key: str, default=None):
+    try:
+        r = await get_redis()
+        v = await r.get(key)
+        return json.loads(v) if v else default
+    except Exception as e:
+        print(f"[REDIS GET] {key}: {e}")
+        return default
+
+async def redis_set_json(key: str, value, ttl: int = None):
+    try:
+        r = await get_redis()
+        if ttl:
+            await r.setex(key, ttl, json.dumps(value, ensure_ascii=False))
+        else:
+            await r.set(key, json.dumps(value, ensure_ascii=False))
+    except Exception as e:
+        print(f"[REDIS SET] {key}: {e}")
+
+# ─── Kullanıcı state'i (Redis destekli) ─────────────────
+async def get_travel_plans(user_id: str) -> list:
+    return await redis_get_json(_k(user_id, "travel_plans"), [])
+
+async def add_travel_plan(user_id: str, plan: dict):
+    plans = await get_travel_plans(user_id)
+    plans.append(plan)
+    plans = plans[-10:]   # son 10
+    await redis_set_json(_k(user_id, "travel_plans"), plans, TRAVEL_TTL)
+
+async def get_companion_history_raw(user_id: str) -> list:
+    return await redis_get_json(_k(user_id, "companion_history"), [])
+
+async def push_companion_message(user_id: str, msg: dict):
+    hist = await get_companion_history_raw(user_id)
+    hist.append(msg)
+    hist = hist[-100:]    # son 100 mesaj (≈ 50 turn)
+    await redis_set_json(_k(user_id, "companion_history"), hist, COMPANION_TTL)
+
+async def get_companion_moods(user_id: str) -> list:
+    return await redis_get_json(_k(user_id, "companion_mood"), [])
+
+async def push_companion_mood(user_id: str, mood_entry: dict):
+    moods = await get_companion_moods(user_id)
+    moods.append(mood_entry)
+    moods = moods[-30:]
+    await redis_set_json(_k(user_id, "companion_mood"), moods, MOOD_TTL)
+
+async def get_daily_tasks(user_id: str) -> dict:
+    return await redis_get_json(_k(user_id, "tasks"), {"todo": [], "doing": [], "done": []})
+
+async def set_daily_tasks(user_id: str, tasks: dict):
+    await redis_set_json(_k(user_id, "tasks"), tasks, DAILY_TTL)
+
+async def get_daily_habits(user_id: str) -> list:
+    return await redis_get_json(_k(user_id, "habits"), [])
+
+async def set_daily_habits(user_id: str, habits: list):
+    await redis_set_json(_k(user_id, "habits"), habits, DAILY_TTL)
+
 
 @app.on_event("startup")
 async def startup():
-    asyncio.create_task(cleanup_loop())
+    # Redis'e bağlan, warmup
+    try:
+        r = await get_redis()
+        await r.ping()
+        print(f"[REDIS] ✅ Bağlandı → DB {REDIS_DB}")
+    except Exception as e:
+        print(f"[REDIS] ❌ Bağlantı hatası: {e}")
+
+@app.on_event("shutdown")
+async def shutdown():
+    global _redis
+    if _redis:
+        await _redis.aclose()
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "sosyal", "users": len(_store)}
+    redis_ok = False
+    try:
+        r = await get_redis()
+        await r.ping()
+        redis_ok = True
+    except Exception:
+        pass
+    return {
+        "status": "ok" if redis_ok else "degraded",
+        "service": "sosyal",
+        "redis": "ok" if redis_ok else "down",
+        "redis_db": REDIS_DB,
+    }
 
 # ── LLM YARDIMCISI ──────────────────────────────────
 async def llm_chat(messages: list, system: str, max_tokens=600, temperature=0.8) -> str:
@@ -116,7 +209,6 @@ GENEL TAVSİYELER:
 
     reply = await smart_llm([{"role": "user", "content": prompt}], system, max_tokens=1200)
 
-    user = get_user(user_id)
     plan = {
         "id": str(uuid.uuid4())[:8],
         "city": city, "country": country, "days": days, "budget": budget,
@@ -124,9 +216,7 @@ GENEL TAVSİYELER:
         "created_at": datetime.now(timezone.utc).isoformat(),
         "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=TRAVEL_TTL)).isoformat(),
     }
-    user["travel_plans"].append(plan)
-    user["travel_plans"] = user["travel_plans"][-10:]
-    save_user(user_id, user)
+    await add_travel_plan(user_id, plan)
 
     return {"plan": reply, "plan_id": plan["id"], "city": city}
 
@@ -150,9 +240,9 @@ Cevaplarını kısa tut (3-5 cümle)."""
 
 
 @app.get("/sosyal/travel/plans/{user_id}")
-async def get_travel_plans(user_id: str):
-    user = get_user(user_id)
-    return {"plans": user["travel_plans"]}
+async def list_travel_plans(user_id: str):
+    plans = await get_travel_plans(user_id)
+    return {"plans": plans}
 
 
 @app.get("/sosyal/travel/city-info")
@@ -316,22 +406,15 @@ async def companion_chat(request: Request):
         max_tokens=400,   # 300 → 400: daha doğal cevaplar için
     )
 
-    # Geçmişe kaydet
-    user = get_user(user_id)
-    user["companion_history"].append({
-        "role": "user", "content": message, "ts": time.time()
-    })
-    user["companion_history"].append({
-        "role": "assistant", "content": reply, "ts": time.time()
-    })
-    user["companion_history"] = user["companion_history"][-100:]
+    # Redis'e kaydet
+    now_ts = time.time()
+    await push_companion_message(user_id, {"role": "user",      "content": message, "ts": now_ts})
+    await push_companion_message(user_id, {"role": "assistant", "content": reply,   "ts": now_ts})
 
     # Mood analizi
     detected_mood = await _analyze_mood(message)
-    user["companion_mood"].append({"mood": detected_mood, "ts": time.time()})
-    user["companion_mood"] = user["companion_mood"][-30:]
+    await push_companion_mood(user_id, {"mood": detected_mood, "ts": now_ts})
 
-    save_user(user_id, user)
     return {"reply": reply, "mood": detected_mood}
 
 
@@ -358,13 +441,14 @@ async def get_companion_history(user_id: str, limit: int = 50, token: str = ""):
         real_id = hashlib.sha256(token.encode()).hexdigest()[:16]
     else:
         real_id = user_id
-    user = get_user(real_id)
+    hist   = await get_companion_history_raw(real_id)
+    moods  = await get_companion_moods(real_id)
     cutoff = time.time() - COMPANION_TTL
-    recent = [m for m in user["companion_history"] if m.get("ts", 0) > cutoff]
+    recent = [m for m in hist if m.get("ts", 0) > cutoff]
     return {
-        "history": recent[-limit:],
-        "mood_history": user["companion_mood"][-14:],
-        "total": len(recent)
+        "history":      recent[-limit:],
+        "mood_history": moods[-14:],
+        "total":        len(recent),
     }
 
 
@@ -626,28 +710,22 @@ Görev önceliklendirme, zaman yönetimi ve enerji yönetimi konularında uzmans
     reply = await smart_llm(history + [{"role": "user", "content": message}], system, max_tokens=300)
 
     if tasks:
-        user = get_user(user_id)
-        user["tasks"] = tasks
-        save_user(user_id, user)
+        await set_daily_tasks(user_id, tasks)
 
     return {"reply": reply}
 
 
 @app.get("/sosyal/daily/data/{user_id}")
 async def get_daily_data(user_id: str):
-    user = get_user(user_id)
-    return {
-        "tasks": user.get("tasks", {"todo": [], "doing": [], "done": []}),
-        "habits": user.get("habits", []),
-    }
+    tasks  = await get_daily_tasks(user_id)
+    habits = await get_daily_habits(user_id)
+    return {"tasks": tasks, "habits": habits}
 
 
 @app.post("/sosyal/daily/save")
 async def save_daily_data(request: Request):
     body    = await request.json()
     user_id = str(body.get("user_id", "guest"))
-    user    = get_user(user_id)
-    if "tasks"  in body: user["tasks"]  = body["tasks"]
-    if "habits" in body: user["habits"] = body["habits"]
-    save_user(user_id, user)
+    if "tasks"  in body: await set_daily_tasks(user_id,  body["tasks"])
+    if "habits" in body: await set_daily_habits(user_id, body["habits"])
     return {"status": "ok"}
