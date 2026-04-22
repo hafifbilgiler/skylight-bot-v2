@@ -16,7 +16,7 @@ metadata:
   namespace: skylight-bot-v2
 type: Opaque
 stringData:
-  api-token: "BURAYA_TRAVELPAYOUTS_API_TOKEN"   # travelpayouts.com/profile → API token
+  api-token: "feb7e3744f6c11751dfa26b9654021eb"   # travelpayouts.com/profile → API token
   marker-id: "716107"                            # Hafifbilgiler affiliate marker
 ---
 # ═══════════════════════════════════════════════════════════
