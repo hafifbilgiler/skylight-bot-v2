@@ -783,6 +783,261 @@ SADECE JSON döndür, açıklama yazma."""
 
 
 # ══════════════════════════════════════════════════════
+# AUTOCOMPLETE — Şehir / Havalimanı arama
+# ══════════════════════════════════════════════════════
+
+@app.get("/sosyal/travel/places")
+async def places_autocomplete(term: str = "", locale: str = "tr", types: str = "city,airport"):
+    """
+    Travelpayouts autocomplete API wrapper.
+    term: Kullanıcının yazdığı metin (min 2 karakter)
+    locale: tr, en, ru...
+    types: "city" / "airport" / "country" veya kombinasyon
+    """
+    if len(term) < 2:
+        return {"success": True, "results": []}
+
+    cache_key = f"tp:autocomplete:{term.lower()}:{locale}:{types}"
+    cached = await redis_get_json(cache_key)
+    if cached:
+        return cached
+
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            # Travelpayouts autocomplete
+            type_list = [t.strip() for t in types.split(",") if t.strip()]
+            params = {"term": term, "locale": locale}
+            # types[] için özel handling — query string'e manuel ekle
+            url = "https://autocomplete.travelpayouts.com/places2"
+            query_string = "&".join([f"types[]={t}" for t in type_list])
+            full_url = f"{url}?term={term}&locale={locale}&{query_string}"
+
+            r = await client.get(full_url)
+            if r.status_code != 200:
+                return {"success": False, "error": f"HTTP {r.status_code}", "results": []}
+
+            data = r.json()
+            # Normalize et
+            results = []
+            for item in data if isinstance(data, list) else []:
+                if item.get("type") == "city":
+                    results.append({
+                        "type": "city",
+                        "code": item.get("code", ""),
+                        "name": item.get("name", ""),
+                        "country_name": item.get("country_name", ""),
+                        "country_code": item.get("country_code", ""),
+                        "main_airport_name": item.get("main_airport_name"),
+                        "coordinates": item.get("coordinates"),
+                        "weight": item.get("weight", 0),
+                    })
+                elif item.get("type") == "airport":
+                    results.append({
+                        "type": "airport",
+                        "code": item.get("code", ""),
+                        "name": item.get("name", ""),
+                        "city_code": item.get("city_code", ""),
+                        "city_name": item.get("city_name", ""),
+                        "country_name": item.get("country_name", ""),
+                        "country_code": item.get("country_code", ""),
+                        "coordinates": item.get("coordinates"),
+                        "weight": item.get("weight", 0),
+                    })
+                elif item.get("type") == "country":
+                    results.append({
+                        "type": "country",
+                        "code": item.get("code", ""),
+                        "name": item.get("name", ""),
+                    })
+
+            # Weight'e göre sırala (popülerlik)
+            results.sort(key=lambda x: x.get("weight", 0), reverse=True)
+            results = results[:15]
+
+            output = {"success": True, "results": results}
+            await redis_set_json(cache_key, output, 60 * 60 * 24)  # 24 saat cache
+            return output
+
+    except Exception as e:
+        print(f"[AUTOCOMPLETE] {e}")
+        return {"success": False, "error": str(e), "results": []}
+
+
+# ══════════════════════════════════════════════════════
+# DESTINATION BİLGİSİ — AI + Görsel
+# ══════════════════════════════════════════════════════
+
+@app.post("/sosyal/travel/destination_info")
+async def destination_info(request: Request):
+    """
+    Şehir/destinasyon hakkında AI ile zengin içerik üretir.
+    Body: { city, country?, code? }
+    Dönen:
+      - summary: 2-3 cümle tanıtım
+      - highlights: 5-6 önemli yer
+      - best_time: "En iyi mevsim" açıklaması
+      - local_tip: Yerel ipucu
+      - budget: Fiyat aralığı
+      - image_url: Wikipedia/Unsplash'tan görsel (varsa)
+    """
+    body = await request.json()
+    city    = body.get("city", "")
+    country = body.get("country", "")
+    code    = body.get("code", "")
+
+    if not city:
+        return {"success": False, "error": "city gerekli"}
+
+    # Cache key
+    cache_key = f"sos:dest:{city.lower()}:{country.lower()}"
+    cached = await redis_get_json(cache_key)
+    if cached:
+        return cached
+
+    # AI'dan bilgi iste
+    system = """Sen deneyimli bir seyahat yazarısın. Türkçe, sıcak, pratik destinasyon bilgileri veriyorsun.
+JSON formatında döndüreceksin, sadece JSON — başka açıklama YOK."""
+
+    prompt = f"""{city}{', '+country if country else ''} hakkında JSON üret:
+
+{{
+  "summary": "Şehri 2-3 cümlede özetle — ne için meşhur, hangi hissi veriyor",
+  "highlights": [
+    {{"name": "Yer adı", "desc": "Kısa tanım (1 cümle)", "emoji": "📍"}},
+    ... 5 tane
+  ],
+  "best_time": "En iyi ziyaret mevsimi ve sebebi (1-2 cümle)",
+  "local_tip": "Sadece yerel birisinin bileceği bir ipucu (1 cümle)",
+  "budget": {{"class": "ucuz/orta/pahalı", "daily_usd": 120, "note": "Günlük ortalama"}},
+  "must_try_food": "3-4 yerel yemek, virgülle ayır",
+  "language_tips": "Dil + temel selamlaşma (Merhaba=???, Teşekkürler=???)"
+}}
+
+SADECE JSON DÖNDÜR. Markdown kullanma, açıklama yazma."""
+
+    reply = await smart_llm(
+        [{"role": "user", "content": prompt}],
+        system,
+        max_tokens=1000,
+        temperature=0.6,
+    )
+
+    # Parse
+    info = None
+    try:
+        cleaned = reply.strip().replace("```json", "").replace("```", "").strip()
+        info = json.loads(cleaned)
+    except:
+        info = {
+            "summary": reply[:300],
+            "highlights": [],
+            "best_time": "",
+            "local_tip": "",
+            "budget": {"class": "orta", "daily_usd": 100, "note": ""},
+        }
+
+    # Wikipedia'dan görsel çek
+    image_url = await fetch_wikipedia_image(city, country)
+
+    result = {
+        "success": True,
+        "city": city,
+        "country": country,
+        "code": code,
+        "info": info,
+        "image_url": image_url,
+    }
+
+    await redis_set_json(cache_key, result, 60 * 60 * 24 * 7)  # 7 gün
+    return result
+
+
+async def fetch_wikipedia_image(city: str, country: str = "") -> str:
+    """Wikipedia API'den şehir görseli çek. 3 dil dene: tr, en, fallback."""
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            # Önce Türkçe Wikipedia, sonra İngilizce
+            for lang in ["tr", "en"]:
+                url = f"https://{lang}.wikipedia.org/api/rest_v1/page/summary/{city}"
+                r = await client.get(url, headers={"User-Agent": "ONE-BUNE/1.0"})
+                if r.status_code == 200:
+                    data = r.json()
+                    thumb = data.get("thumbnail", {}).get("source", "")
+                    orig  = data.get("originalimage", {}).get("source", "")
+                    if orig or thumb:
+                        # Büyük boyutu tercih et
+                        return orig or thumb
+    except Exception as e:
+        print(f"[WIKI IMAGE] {e}")
+    return ""
+
+
+# ══════════════════════════════════════════════════════
+# AYNI GÜN TÜM UÇUŞLAR
+# ══════════════════════════════════════════════════════
+
+@app.post("/sosyal/travel/flights_same_day")
+async def flights_same_day(request: Request):
+    """
+    Belirli bir günde tüm uçuşları döner (saate göre sıralı).
+    Body: { origin, destination, date (YYYY-MM-DD), currency? }
+    """
+    body = await request.json()
+    origin      = str(body.get("origin", "")).upper()
+    destination = str(body.get("destination", "")).upper()
+    date        = body.get("date", "")
+    currency    = body.get("currency", "try")
+
+    if not origin or not destination or not date:
+        return {"success": False, "error": "origin, destination ve date zorunlu"}
+
+    # Önce direkt uçuşları çek
+    params_direct = {
+        "origin": origin,
+        "destination": destination,
+        "depart_date": date,
+        "currency": currency,
+    }
+    data = await tp_request("/v1/prices/direct", params_direct)
+
+    flights = []
+    if data.get("success"):
+        raw = data.get("data", {}).get(destination, {})
+        for k, f in raw.items():
+            flights.append({**format_flight(f, origin, destination), "is_direct": True})
+
+    # Aktarmalı uçuşlar
+    params_cheap = {
+        "origin": origin,
+        "destination": destination,
+        "depart_date": date,
+        "currency": currency,
+    }
+    data2 = await tp_request("/v1/prices/cheap", params_cheap)
+
+    if data2.get("success"):
+        raw2 = data2.get("data", {}).get(destination, {})
+        for k, f in raw2.items():
+            flight = format_flight(f, origin, destination)
+            # Dublikasyon önle
+            if not any(existing["flight_number"] == flight["flight_number"] for existing in flights):
+                flights.append({**flight, "is_direct": f.get("number_of_changes", 1) == 0})
+
+    # Kalkış saatine göre sırala
+    flights.sort(key=lambda f: f.get("depart_time", "00:00"))
+
+    return {
+        "success": True,
+        "origin": origin,
+        "destination": destination,
+        "date": date,
+        "currency": currency.upper(),
+        "flights": flights,
+        "total": len(flights),
+    }
+
+
+# ══════════════════════════════════════════════════════
 # HAVA DURUMU TAHMİNİ — Vertex AI + Open-Meteo
 # ══════════════════════════════════════════════════════
 
