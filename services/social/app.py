@@ -26,7 +26,7 @@ REDIS_DB  = int(os.getenv("REDIS_DB", "5"))    # Sosyal → DB 5
 TP_API_TOKEN    = os.getenv("TRAVELPAYOUTS_TOKEN", "")
 TP_MARKER_ID    = os.getenv("TRAVELPAYOUTS_MARKER", "716107")
 TP_BASE_URL     = "https://api.travelpayouts.com"
-TP_CACHE_TTL    = 60 * 60  # 1 saat — cache'den geldiği için bu yeterli
+TP_CACHE_TTL    = 60 * 60  # 1 saat
 
 # ═══════════════════════════════════════════════════════
 # REDIS STORE
@@ -35,14 +35,13 @@ TP_CACHE_TTL    = 60 * 60  # 1 saat — cache'den geldiği için bu yeterli
 #   sos:u:{user_id}:travel_plans      → JSON list   TTL 30 gün
 #   sos:u:{user_id}:companion_history → JSON list   TTL 7 gün
 #   sos:u:{user_id}:companion_mood    → JSON list   TTL 30 gün
-#   sos:u:{user_id}:tasks             → JSON dict   TTL 30 gün
-#   sos:u:{user_id}:habits            → JSON list   TTL 30 gün
+#   sos:u:{user_id}:saved_trips       → JSON list   TTL 90 gün (kayıtlı planlar)
 # ═══════════════════════════════════════════════════════
 
-TRAVEL_TTL    = 60 * 60 * 24 * 30   # 30 gün
-COMPANION_TTL = 60 * 60 * 24 * 7    # 7 gün
-DAILY_TTL     = 60 * 60 * 24 * 30   # 30 gün
-MOOD_TTL      = 60 * 60 * 24 * 30   # 30 gün
+TRAVEL_TTL      = 60 * 60 * 24 * 30   # 30 gün (eski travel plans)
+COMPANION_TTL   = 60 * 60 * 24 * 7    # 7 gün
+MOOD_TTL        = 60 * 60 * 24 * 30   # 30 gün
+SAVED_TRIPS_TTL = 60 * 60 * 24 * 90   # 90 gün (yeni kayıtlı planlar)
 
 _redis: Optional[aioredis.Redis] = None
 
@@ -89,7 +88,7 @@ async def get_travel_plans(user_id: str) -> list:
 async def add_travel_plan(user_id: str, plan: dict):
     plans = await get_travel_plans(user_id)
     plans.append(plan)
-    plans = plans[-10:]   # son 10
+    plans = plans[-10:]
     await redis_set_json(_k(user_id, "travel_plans"), plans, TRAVEL_TTL)
 
 async def get_companion_history_raw(user_id: str) -> list:
@@ -98,7 +97,7 @@ async def get_companion_history_raw(user_id: str) -> list:
 async def push_companion_message(user_id: str, msg: dict):
     hist = await get_companion_history_raw(user_id)
     hist.append(msg)
-    hist = hist[-100:]    # son 100 mesaj (≈ 50 turn)
+    hist = hist[-100:]
     await redis_set_json(_k(user_id, "companion_history"), hist, COMPANION_TTL)
 
 async def get_companion_moods(user_id: str) -> list:
@@ -110,22 +109,16 @@ async def push_companion_mood(user_id: str, mood_entry: dict):
     moods = moods[-30:]
     await redis_set_json(_k(user_id, "companion_mood"), moods, MOOD_TTL)
 
-async def get_daily_tasks(user_id: str) -> dict:
-    return await redis_get_json(_k(user_id, "tasks"), {"todo": [], "doing": [], "done": []})
+# ─── Kayıtlı Seyahat Planları (yeni) ───────────────────
+async def get_saved_trips(user_id: str) -> list:
+    return await redis_get_json(_k(user_id, "saved_trips"), [])
 
-async def set_daily_tasks(user_id: str, tasks: dict):
-    await redis_set_json(_k(user_id, "tasks"), tasks, DAILY_TTL)
-
-async def get_daily_habits(user_id: str) -> list:
-    return await redis_get_json(_k(user_id, "habits"), [])
-
-async def set_daily_habits(user_id: str, habits: list):
-    await redis_set_json(_k(user_id, "habits"), habits, DAILY_TTL)
+async def set_saved_trips(user_id: str, trips: list):
+    await redis_set_json(_k(user_id, "saved_trips"), trips, SAVED_TRIPS_TTL)
 
 
 @app.on_event("startup")
 async def startup():
-    # Redis'e bağlan, warmup
     try:
         r = await get_redis()
         await r.ping()
@@ -281,7 +274,7 @@ async def get_city_info(city: str, country: str = "", lat: float = 0, lon: float
     return result
 
 # ══════════════════════════════════════════════════════
-# DERT ORTAĞI  —  YENİ SİSTEM PROMPT v2.0
+# DERT ORTAĞI — Selin v2.0
 # ══════════════════════════════════════════════════════
 
 COMPANION_SYSTEM = """Sen Selin'sin — ONE-BUNE'nun dert ortağısın.
@@ -298,126 +291,83 @@ NASIL KONUŞURSUN
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 1) ÖNCE HİSSETTİĞİNİ YANSIT, SONRA KONUŞ.
-   Kullanıcı bir şey söyleyince, önce o hissi kelimeye dök.
    "Gerçekten yorulmuşsun anlıyorum..."
    "Bu söylediğin ağır bir şey..."
    "Öfkelenmen çok normal görünüyor..."
 
 2) HER MESAJDA SORU SORMA.
-   Sürekli soru sormak dert ortağını sorgu hakimine çevirir.
-   Kural: Her 3 mesajın en fazla 1'inde soru sor.
+   Her 3 mesajın en fazla 1'inde soru sor.
    Diğerlerinde: yansıt, destekle, yanında ol.
-   Bazen sadece "seni duyuyorum" demek yeterli.
 
 3) KISA KAL, ama KURU OLMA.
    2-4 cümle ideal. Uzun paragraflar yazma.
-   Kullanıcı anlatırken hızlı sözünü kesme — önce tam dinlemişsin hissini ver.
 
 4) SUSMAYI BİL.
    Bazen kullanıcı sadece duyulmak ister. Çözüm önerme.
    "Burası zor bir an. Yanındayım." yeterli olabilir.
 
 5) SOMUT OL, GENELLEMEDEN KAÇIN.
-   ❌ "İnsanlar bazen böyle hisseder" (genelleme)
-   ✓ "Bu tarifin — kendini yalnız hissediş — çok tanıdık geldi"
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 YAPMADIKLARIN (ASLA)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
 ✗ "Her şey yoluna girecek" gibi boş iyimserlik
 ✗ "Bu çok üzücü" gibi klişe teselli
-✗ "Nasıl hissediyorsun?" peş peşe birden fazla
 ✗ Madde madde liste (bu bir SOHBET, rapor değil)
-✗ Uzman ayak satma ("psikolojik olarak şöyle oluyor...")
 ✗ Sürekli "profesyonel destek al" demesi
-✗ Kullanıcının sözünü düzeltme, yorum katma
-✗ Emoji yağmuru (bazen 1 tane yeter, çoğu zaman hiç)
+✗ Emoji yağmuru
 ✗ Büyük harf, ünlem işareti bombardımanı
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-YAPTIKLARIN
+KRİTİK UYARI
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Kullanıcı "kendime zarar", "ölmek istiyorum", "dayanamıyorum artık" ifadeleri kullanırsa:
+  → Önce yanında olduğunu söyle, sonra 182 (Psikiyatri Danışma Hattı)
+İstismar, şiddet bahsi: 183, 155
 
-✓ Duyguyu yansıt → destekle → gerekirse soru
-✓ Kısa, sıcak, doğal Türkçe
-✓ Bazen kendi küçük tecrübelerinden bahset ("Benim bir dönem böyle olmuştu...")
-✓ Pratik ipucu ver AMA dayatmadan: "Belki şey işe yarar, bakarız"
-✓ Sessiz destekleri kullan: "Oradayım, acele yok"
-✓ Kullanıcının kelimelerini geri yansıt — aynen değil, dokunarak
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-KRİTİK UYARI — SADECE BU DURUMLARDA
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Kullanıcı aşağıdaki ifadeleri kullanırsa NAZİKÇE yönlendir:
-  - "kendime zarar", "kendimi öldürmek", "dayanamıyorum artık", "ölmek istiyorum"
-    → Önce yanında olduğunu söyle, sonra 182 (Psikiyatri Danışma Hattı)
-  - İstismar, şiddet bahsi
-    → 183 (Sosyal Destek Hattı), 155 (Polis)
-
-Bu ifadeler OLMADAN asla telefon numarası verme, "uzman ara" deme.
+Bu ifadeler OLMADAN asla telefon numarası verme.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ÖRNEK DİYALOGLAR
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Kullanıcı: "Bugün yine işte patladım, sinirlerim çok bozuldu"
-Sen: "Of, bugün gerçekten yıpratıcı olmuş. Patlayacak kadar birikmişse,
-     çok şey birikmiş demektir. İstersen biraz boşal, dinlerim."
-
-Kullanıcı: "Annemle sürekli kavga ediyoruz, yoruldum"
-Sen: "Anne kavgaları en zoru — çünkü en yakın olmak istediğin insanla
-     çatışıyorsun. Ne zamandır böyle?"
+Kullanıcı: "Bugün yine işte patladım"
+Sen: "Of, bugün gerçekten yıpratıcı olmuş. Patlayacak kadar birikmişse, çok şey birikmiş demektir. İstersen biraz boşal, dinlerim."
 
 Kullanıcı: "Kimse beni anlamıyor"
-Sen: "Duydum seni. Anlaşılmamak, insanın içinde sessiz bir yalnızlık
-     bırakır. Buradayım şu an."
-
-Kullanıcı: "Arkadaşım beni terk etti"
-Sen: "Ah, bu sert. Yakın biri kaybı — adını koymak bile zor bazen.
-     Ne kadar zamandır yaşıyorsun bunu?"
+Sen: "Duydum seni. Anlaşılmamak, insanın içinde sessiz bir yalnızlık bırakır. Buradayım şu an."
 
 Kullanıcı: "Kendimi öldürmek istiyorum"
-Sen: "Durakla bir saniye. Bu söylediğin şu an gerçekten ağır bir his —
-     ve sen yalnız değilsin. 182 Psikiyatri Danışma Hattı'nı aramanı
-     çok istiyorum şimdi; 7/24 açık, doğrudan biri dinler.
-     Ben de buradayım, konuşmak istersen."
+Sen: "Durakla bir saniye. Bu söylediğin şu an gerçekten ağır bir his — ve sen yalnız değilsin. 182 Psikiyatri Danışma Hattı'nı aramanı çok istiyorum şimdi; 7/24 açık, doğrudan biri dinler. Ben de buradayım."
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Şimdi gerçekten dinle. Acele yok.
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
+Şimdi gerçekten dinle. Acele yok."""
 
 
 @app.post("/sosyal/companion/chat")
 async def companion_chat(request: Request):
-    body     = await request.json()
+    body      = await request.json()
     raw_token = body.get("token") or body.get("user_id") or "anonymous"
     user_id   = hashlib.sha256(str(raw_token).encode()).hexdigest()[:16]
-    message  = body.get("message", "")
-    history  = body.get("history", [])
-    mood     = body.get("mood", "")
+    message   = body.get("message", "")
+    history   = body.get("history", [])
+    mood      = body.get("mood", "")
 
-    # Mood bilgisini system prompt'a context olarak ekle
     system = COMPANION_SYSTEM
     if mood:
         system += f"\n\n[Kullanıcı bu mesajdan önce kendini '{mood}' olarak işaretledi. Bunu biliyorsun ama açıkça söylemeden konuşmana yansıt.]"
 
-    # History uzunluğu: 20 mesaj (10 turn) — daha iyi bağlam
     trimmed_history = history[-20:] if len(history) > 20 else history
 
     reply = await smart_llm(
         trimmed_history + [{"role": "user", "content": message}],
         system,
-        max_tokens=400,   # 300 → 400: daha doğal cevaplar için
+        max_tokens=400,
     )
 
-    # Redis'e kaydet
     now_ts = time.time()
     await push_companion_message(user_id, {"role": "user",      "content": message, "ts": now_ts})
     await push_companion_message(user_id, {"role": "assistant", "content": reply,   "ts": now_ts})
 
-    # Mood analizi
     detected_mood = await _analyze_mood(message)
     await push_companion_mood(user_id, {"mood": detected_mood, "ts": now_ts})
 
@@ -457,36 +407,21 @@ async def get_companion_history(user_id: str, limit: int = 50, token: str = ""):
         "total":        len(recent),
     }
 
-
 # ══════════════════════════════════════════════════════
 # TRAVELPAYOUTS — UÇUŞ ARAMA & FİYAT
 # ══════════════════════════════════════════════════════
 # Marker ID: 716107 (Hafifbilgiler affiliate)
 # API: Aviasales Flight Data API
-# Rate limit: 10 req/sec (Redis cache ile altına iniyoruz)
-# Cache: 1 saat (veri zaten Aviasales cache'inden geliyor, 7 günlük)
 # ══════════════════════════════════════════════════════
 
-# Havayolu kod → isim map (görünür hale getirmek için)
 AIRLINE_NAMES = {
-    "TK": "Turkish Airlines",
-    "PC": "Pegasus",
-    "VF": "AJet",
-    "XQ": "SunExpress",
-    "LH": "Lufthansa",
-    "BA": "British Airways",
-    "AF": "Air France",
-    "KL": "KLM",
-    "EK": "Emirates",
-    "QR": "Qatar Airways",
-    "TB": "TUI",
-    "FR": "Ryanair",
-    "W6": "Wizz Air",
-    "U2": "easyJet",
-    "AZ": "ITA Airways",
-    "IB": "Iberia",
-    "OS": "Austrian",
-    "SU": "Aeroflot",
+    "TK": "Turkish Airlines", "PC": "Pegasus", "VF": "AJet",
+    "XQ": "SunExpress", "LH": "Lufthansa", "BA": "British Airways",
+    "AF": "Air France", "KL": "KLM", "EK": "Emirates",
+    "QR": "Qatar Airways", "TB": "TUI", "FR": "Ryanair",
+    "W6": "Wizz Air", "U2": "easyJet", "AZ": "ITA Airways",
+    "IB": "Iberia", "OS": "Austrian", "SU": "Aeroflot",
+    "W9": "Wizz Air Malta",
 }
 
 def airline_name(code: str) -> str:
@@ -498,7 +433,6 @@ async def tp_request(endpoint: str, params: dict) -> dict:
     if not TP_API_TOKEN:
         return {"success": False, "error": "TP_API_TOKEN tanımsız"}
 
-    # Cache key
     cache_key = f"tp:{endpoint}:" + ":".join(f"{k}={v}" for k, v in sorted(params.items()))
     cached = await redis_get_json(cache_key)
     if cached:
@@ -514,7 +448,6 @@ async def tp_request(endpoint: str, params: dict) -> dict:
             )
             if r.status_code == 200:
                 data = r.json()
-                # 1 saat cache
                 await redis_set_json(cache_key, data, TP_CACHE_TTL)
                 return data
             return {"success": False, "error": f"HTTP {r.status_code}", "detail": r.text[:200]}
@@ -523,19 +456,9 @@ async def tp_request(endpoint: str, params: dict) -> dict:
         return {"success": False, "error": str(e)}
 
 
-def build_affiliate_link(
-    origin: str,
-    destination: str,
-    depart_date: str = "",
-    return_date: str = "",
-) -> str:
-    """
-    Aviasales deep-link üretir — marker ID otomatik eklenir.
-    Format örneği:
-      https://www.aviasales.com/search/IST28052026LON05062026?marker=716107
-    """
+def build_affiliate_link(origin: str, destination: str, depart_date: str = "", return_date: str = "") -> str:
+    """Aviasales deep-link üretir — marker ID otomatik eklenir."""
     def fmt(d: str) -> str:
-        # "2026-05-28" → "2805"
         if not d or len(d) < 10:
             return ""
         return d[8:10] + d[5:7]
@@ -544,17 +467,14 @@ def build_affiliate_link(
     if return_date:
         search_code += fmt(return_date)
 
-    url = f"https://www.aviasales.com/search/{search_code}?marker={TP_MARKER_ID}"
-    return url
+    return f"https://www.aviasales.com/search/{search_code}?marker={TP_MARKER_ID}"
 
 
 def format_flight(raw: dict, origin: str, destination: str) -> dict:
-    """API yanıtından UI-friendly uçuş objesi üretir."""
     airline_code = raw.get("airline", "")
     dep = raw.get("departure_at", "")
     ret = raw.get("return_at", "")
 
-    # Tarihleri ayır (T'den önce tarih, sonra saat)
     dep_date = dep[:10] if dep else ""
     dep_time = dep[11:16] if dep else ""
     ret_date = ret[:10] if ret else ""
@@ -585,14 +505,10 @@ def format_flight(raw: dict, origin: str, destination: str) -> dict:
 
 @app.post("/sosyal/travel/flight_search")
 async def flight_search(request: Request):
-    """
-    En ucuz uçuşları getir.
-    Body: { origin, destination, depart_date?, return_date?, currency?, one_way? }
-    """
     body = await request.json()
     origin      = str(body.get("origin", "")).upper()
     destination = str(body.get("destination", "")).upper()
-    depart_date = body.get("depart_date", "")   # "2026-05" veya "2026-05-28"
+    depart_date = body.get("depart_date", "")
     return_date = body.get("return_date", "")
     currency    = body.get("currency", "try")
     one_way     = bool(body.get("one_way", False))
@@ -600,11 +516,7 @@ async def flight_search(request: Request):
     if not origin or not destination:
         return {"success": False, "error": "origin ve destination zorunlu"}
 
-    params = {
-        "origin": origin,
-        "destination": destination,
-        "currency": currency,
-    }
+    params = {"origin": origin, "destination": destination, "currency": currency}
     if depart_date:
         params["depart_date"] = depart_date
     if return_date and not one_way:
@@ -615,13 +527,11 @@ async def flight_search(request: Request):
     if not data.get("success"):
         return {"success": False, "error": data.get("error", "API hatası"), "flights": []}
 
-    # Yanıt formatı: { "data": { "DESTINATION": { "0": {...}, "1": {...} } } }
     raw_flights = data.get("data", {}).get(destination, {})
     flights = []
     for key, flight in raw_flights.items():
         flights.append(format_flight(flight, origin, destination))
 
-    # Fiyata göre sırala
     flights.sort(key=lambda f: f["price"])
 
     return {
@@ -629,18 +539,13 @@ async def flight_search(request: Request):
         "origin": origin,
         "destination": destination,
         "currency": currency.upper(),
-        "flights": flights[:10],   # En ucuz 10 tane
+        "flights": flights[:10],
         "cached": data.get("_cached", False),
     }
 
 
 @app.post("/sosyal/travel/flight_calendar")
 async def flight_calendar(request: Request):
-    """
-    Ay içinde günlük fiyat takvimi.
-    Body: { origin, destination, depart_date, currency? }
-    depart_date: "2026-05" formatında
-    """
     body = await request.json()
     origin      = str(body.get("origin", "")).upper()
     destination = str(body.get("destination", "")).upper()
@@ -651,11 +556,8 @@ async def flight_calendar(request: Request):
         return {"success": False, "error": "origin, destination ve depart_date zorunlu"}
 
     params = {
-        "origin": origin,
-        "destination": destination,
-        "depart_date": depart_date,
-        "calendar_type": "departure_date",
-        "currency": currency,
+        "origin": origin, "destination": destination, "depart_date": depart_date,
+        "calendar_type": "departure_date", "currency": currency,
     }
 
     data = await tp_request("/v1/prices/calendar", params)
@@ -674,7 +576,6 @@ async def flight_calendar(request: Request):
         })
     days.sort(key=lambda d: d["date"])
 
-    # En ucuz günü bul
     cheapest = min(days, key=lambda d: d["price"]) if days else None
 
     return {
@@ -690,10 +591,6 @@ async def flight_calendar(request: Request):
 
 @app.post("/sosyal/travel/flight_click")
 async def flight_click(request: Request):
-    """
-    Kullanıcı uçuş kartındaki 'Bileti Al' butonuna tıkladığında
-    çağrılır — affiliate URL'yi döner + DB'ye log atar.
-    """
     body = await request.json()
     origin      = str(body.get("origin", "")).upper()
     destination = str(body.get("destination", "")).upper()
@@ -703,12 +600,11 @@ async def flight_click(request: Request):
 
     url = build_affiliate_link(origin, destination, depart_date, return_date)
 
-    # Redis'e click log (analytics için)
     try:
         r = await get_redis()
         log_key = f"sos:clicks:flight:{datetime.now().strftime('%Y%m%d')}"
         await r.incr(log_key)
-        await r.expire(log_key, 60 * 60 * 24 * 90)  # 90 gün
+        await r.expire(log_key, 60 * 60 * 24 * 90)
     except Exception:
         pass
 
@@ -722,11 +618,6 @@ async def flight_click(request: Request):
 
 @app.post("/sosyal/travel/flight_parse")
 async def flight_parse(request: Request):
-    """
-    Kullanıcının doğal dilde yazdığı isteği Gemini ile parse eder.
-    Örn: "İstanbul'dan Londra'ya Mayıs sonu 2 kişi"
-    →    { origin: "IST", destination: "LON", depart: "2026-05-28", return: "2026-06-05", passengers: 2 }
-    """
     body = await request.json()
     query = body.get("query", "")
 
@@ -741,7 +632,7 @@ Bugünün tarihi: {today}.
 Kullanıcı bir uçuş tarifi yazar. Senin görevin şu bilgileri JSON olarak çıkarmak:
 
 {{
-  "origin": "IATA kodu (IST, SAW, ESB, AYT, ADB, TZX vs.)",
+  "origin": "IATA kodu (IST, SAW, ESB, AYT, ADB vs.)",
   "destination": "IATA kodu",
   "depart_date": "YYYY-MM-DD formatında (belirsizse YYYY-MM yeter)",
   "return_date": "YYYY-MM-DD formatında (tek yön ise boş)",
@@ -749,32 +640,23 @@ Kullanıcı bir uçuş tarifi yazar. Senin görevin şu bilgileri JSON olarak ç
   "one_way": false
 }}
 
-Türkiye şehirleri IATA kodları:
-  İstanbul=IST (Pegasus: SAW), Ankara=ESB, İzmir=ADB, Antalya=AYT,
+Türkiye şehirleri IATA: İstanbul=IST (SAW), Ankara=ESB, İzmir=ADB, Antalya=AYT,
   Bodrum=BJV, Dalaman=DLM, Trabzon=TZX, Gaziantep=GZT, Kayseri=ASR,
   Konya=KYA, Adana=ADA, Malatya=MLX, Samsun=SZF, Van=VAN
 
 Yurt dışı: Londra=LON, Paris=PAR, Roma=ROM, Amsterdam=AMS, Berlin=BER,
   Madrid=MAD, Dubai=DXB, New York=NYC, Tokyo=TYO
 
-Ay adları: Ocak=01, Şubat=02, Mart=03, Nisan=04, Mayıs=05, Haziran=06,
-  Temmuz=07, Ağustos=08, Eylül=09, Ekim=10, Kasım=11, Aralık=12.
-"Mayıs sonu" → ayın 25-30'u arası seç.
-"Mayıs başı" → 01-10.
-"Gelecek hafta" → bugün + 7 gün.
+Ay: Ocak=01...Aralık=12. "Mayıs sonu" → 25-30. "Mayıs başı" → 01-10.
 
 SADECE JSON döndür, açıklama yazma."""
 
     reply = await smart_llm(
         [{"role": "user", "content": query}],
-        system,
-        max_tokens=300,
-        temperature=0.2,
+        system, max_tokens=300, temperature=0.2,
     )
 
-    # JSON parse et
     try:
-        # Bazen model ```json ile sarıyor
         cleaned = reply.strip().replace("```json", "").replace("```", "").strip()
         parsed = json.loads(cleaned)
         return {"success": True, "parsed": parsed, "raw_query": query}
@@ -788,12 +670,6 @@ SADECE JSON döndür, açıklama yazma."""
 
 @app.get("/sosyal/travel/places")
 async def places_autocomplete(term: str = "", locale: str = "tr", types: str = "city,airport"):
-    """
-    Travelpayouts autocomplete API wrapper.
-    term: Kullanıcının yazdığı metin (min 2 karakter)
-    locale: tr, en, ru...
-    types: "city" / "airport" / "country" veya kombinasyon
-    """
     if len(term) < 2:
         return {"success": True, "results": []}
 
@@ -804,10 +680,7 @@ async def places_autocomplete(term: str = "", locale: str = "tr", types: str = "
 
     try:
         async with httpx.AsyncClient(timeout=8.0) as client:
-            # Travelpayouts autocomplete
             type_list = [t.strip() for t in types.split(",") if t.strip()]
-            params = {"term": term, "locale": locale}
-            # types[] için özel handling — query string'e manuel ekle
             url = "https://autocomplete.travelpayouts.com/places2"
             query_string = "&".join([f"types[]={t}" for t in type_list])
             full_url = f"{url}?term={term}&locale={locale}&{query_string}"
@@ -817,7 +690,6 @@ async def places_autocomplete(term: str = "", locale: str = "tr", types: str = "
                 return {"success": False, "error": f"HTTP {r.status_code}", "results": []}
 
             data = r.json()
-            # Normalize et
             results = []
             for item in data if isinstance(data, list) else []:
                 if item.get("type") == "city":
@@ -850,18 +722,16 @@ async def places_autocomplete(term: str = "", locale: str = "tr", types: str = "
                         "name": item.get("name", ""),
                     })
 
-            # Weight'e göre sırala (popülerlik)
             results.sort(key=lambda x: x.get("weight", 0), reverse=True)
             results = results[:15]
 
             output = {"success": True, "results": results}
-            await redis_set_json(cache_key, output, 60 * 60 * 24)  # 24 saat cache
+            await redis_set_json(cache_key, output, 60 * 60 * 24)
             return output
 
     except Exception as e:
         print(f"[AUTOCOMPLETE] {e}")
         return {"success": False, "error": str(e), "results": []}
-
 
 # ══════════════════════════════════════════════════════
 # DESTINATION BİLGİSİ — AI + Görsel
@@ -869,17 +739,6 @@ async def places_autocomplete(term: str = "", locale: str = "tr", types: str = "
 
 @app.post("/sosyal/travel/destination_info")
 async def destination_info(request: Request):
-    """
-    Şehir/destinasyon hakkında AI ile zengin içerik üretir.
-    Body: { city, country?, code? }
-    Dönen:
-      - summary: 2-3 cümle tanıtım
-      - highlights: 5-6 önemli yer
-      - best_time: "En iyi mevsim" açıklaması
-      - local_tip: Yerel ipucu
-      - budget: Fiyat aralığı
-      - image_url: Wikipedia/Unsplash'tan görsel (varsa)
-    """
     body = await request.json()
     city    = body.get("city", "")
     country = body.get("country", "")
@@ -888,13 +747,11 @@ async def destination_info(request: Request):
     if not city:
         return {"success": False, "error": "city gerekli"}
 
-    # Cache key
     cache_key = f"sos:dest:{city.lower()}:{country.lower()}"
     cached = await redis_get_json(cache_key)
     if cached:
         return cached
 
-    # AI'dan bilgi iste
     system = """Sen deneyimli bir seyahat yazarısın. Türkçe, sıcak, pratik destinasyon bilgileri veriyorsun.
 JSON formatında döndüreceksin, sadece JSON — başka açıklama YOK."""
 
@@ -903,8 +760,7 @@ JSON formatında döndüreceksin, sadece JSON — başka açıklama YOK."""
 {{
   "summary": "Şehri 2-3 cümlede özetle — ne için meşhur, hangi hissi veriyor",
   "highlights": [
-    {{"name": "Yer adı", "desc": "Kısa tanım (1 cümle)", "emoji": "📍"}},
-    ... 5 tane
+    {{"name": "Yer adı", "desc": "Kısa tanım (1 cümle)", "emoji": "📍"}}
   ],
   "best_time": "En iyi ziyaret mevsimi ve sebebi (1-2 cümle)",
   "local_tip": "Sadece yerel birisinin bileceği bir ipucu (1 cümle)",
@@ -913,16 +769,13 @@ JSON formatında döndüreceksin, sadece JSON — başka açıklama YOK."""
   "language_tips": "Dil + temel selamlaşma (Merhaba=???, Teşekkürler=???)"
 }}
 
-SADECE JSON DÖNDÜR. Markdown kullanma, açıklama yazma."""
+SADECE JSON DÖNDÜR. Markdown kullanma."""
 
     reply = await smart_llm(
         [{"role": "user", "content": prompt}],
-        system,
-        max_tokens=1000,
-        temperature=0.6,
+        system, max_tokens=1000, temperature=0.6,
     )
 
-    # Parse
     info = None
     try:
         cleaned = reply.strip().replace("```json", "").replace("```", "").strip()
@@ -936,7 +789,6 @@ SADECE JSON DÖNDÜR. Markdown kullanma, açıklama yazma."""
             "budget": {"class": "orta", "daily_usd": 100, "note": ""},
         }
 
-    # Wikipedia'dan görsel çek
     image_url = await fetch_wikipedia_image(city, country)
 
     result = {
@@ -948,15 +800,13 @@ SADECE JSON DÖNDÜR. Markdown kullanma, açıklama yazma."""
         "image_url": image_url,
     }
 
-    await redis_set_json(cache_key, result, 60 * 60 * 24 * 7)  # 7 gün
+    await redis_set_json(cache_key, result, 60 * 60 * 24 * 7)
     return result
 
 
 async def fetch_wikipedia_image(city: str, country: str = "") -> str:
-    """Wikipedia API'den şehir görseli çek. 3 dil dene: tr, en, fallback."""
     try:
         async with httpx.AsyncClient(timeout=6.0) as client:
-            # Önce Türkçe Wikipedia, sonra İngilizce
             for lang in ["tr", "en"]:
                 url = f"https://{lang}.wikipedia.org/api/rest_v1/page/summary/{city}"
                 r = await client.get(url, headers={"User-Agent": "ONE-BUNE/1.0"})
@@ -965,7 +815,6 @@ async def fetch_wikipedia_image(city: str, country: str = "") -> str:
                     thumb = data.get("thumbnail", {}).get("source", "")
                     orig  = data.get("originalimage", {}).get("source", "")
                     if orig or thumb:
-                        # Büyük boyutu tercih et
                         return orig or thumb
     except Exception as e:
         print(f"[WIKI IMAGE] {e}")
@@ -978,10 +827,6 @@ async def fetch_wikipedia_image(city: str, country: str = "") -> str:
 
 @app.post("/sosyal/travel/flights_same_day")
 async def flights_same_day(request: Request):
-    """
-    Belirli bir günde tüm uçuşları döner (saate göre sıralı).
-    Body: { origin, destination, date (YYYY-MM-DD), currency? }
-    """
     body = await request.json()
     origin      = str(body.get("origin", "")).upper()
     destination = str(body.get("destination", "")).upper()
@@ -991,12 +836,9 @@ async def flights_same_day(request: Request):
     if not origin or not destination or not date:
         return {"success": False, "error": "origin, destination ve date zorunlu"}
 
-    # Önce direkt uçuşları çek
     params_direct = {
-        "origin": origin,
-        "destination": destination,
-        "depart_date": date,
-        "currency": currency,
+        "origin": origin, "destination": destination,
+        "depart_date": date, "currency": currency,
     }
     data = await tp_request("/v1/prices/direct", params_direct)
 
@@ -1006,12 +848,9 @@ async def flights_same_day(request: Request):
         for k, f in raw.items():
             flights.append({**format_flight(f, origin, destination), "is_direct": True})
 
-    # Aktarmalı uçuşlar
     params_cheap = {
-        "origin": origin,
-        "destination": destination,
-        "depart_date": date,
-        "currency": currency,
+        "origin": origin, "destination": destination,
+        "depart_date": date, "currency": currency,
     }
     data2 = await tp_request("/v1/prices/cheap", params_cheap)
 
@@ -1019,11 +858,9 @@ async def flights_same_day(request: Request):
         raw2 = data2.get("data", {}).get(destination, {})
         for k, f in raw2.items():
             flight = format_flight(f, origin, destination)
-            # Dublikasyon önle
             if not any(existing["flight_number"] == flight["flight_number"] for existing in flights):
                 flights.append({**flight, "is_direct": f.get("number_of_changes", 1) == 0})
 
-    # Kalkış saatine göre sırala
     flights.sort(key=lambda f: f.get("depart_time", "00:00"))
 
     return {
@@ -1035,6 +872,252 @@ async def flights_same_day(request: Request):
         "flights": flights,
         "total": len(flights),
     }
+
+
+# ══════════════════════════════════════════════════════
+# KAYITLI SEYAHAT PLANLARI (CRUD)
+# ══════════════════════════════════════════════════════
+
+@app.post("/sosyal/travel/trip_save")
+async def trip_save(request: Request):
+    """Yeni plan kaydet veya mevcut planı güncelle."""
+    body    = await request.json()
+    user_id = str(body.get("user_id", "guest"))
+    trip_id = body.get("id", "")
+
+    if user_id == "guest":
+        return {"success": False, "error": "Kaydetmek için giriş gerekli"}
+
+    trips = await get_saved_trips(user_id)
+
+    # Güncelleme mi yeni mi?
+    if trip_id:
+        # Güncelle
+        found = False
+        for i, t in enumerate(trips):
+            if t.get("id") == trip_id:
+                trips[i] = {
+                    **t,
+                    "from_code":    body.get("from_code", t.get("from_code", "")),
+                    "from_name":    body.get("from_name", t.get("from_name", "")),
+                    "from_country": body.get("from_country", t.get("from_country", "")),
+                    "to_code":      body.get("to_code", t.get("to_code", "")),
+                    "to_name":      body.get("to_name", t.get("to_name", "")),
+                    "to_country":   body.get("to_country", t.get("to_country", "")),
+                    "depart_date":  body.get("depart_date", t.get("depart_date", "")),
+                    "return_date":  body.get("return_date", t.get("return_date", "")),
+                    "one_way":      bool(body.get("one_way", t.get("one_way", False))),
+                    "passengers":   int(body.get("passengers", t.get("passengers", 1))),
+                    "notes":        body.get("notes", t.get("notes", "")),
+                    "pinned":       bool(body.get("pinned", t.get("pinned", False))),
+                    "updated_at":   datetime.now(timezone.utc).isoformat(),
+                }
+                found = True
+                break
+        if not found:
+            return {"success": False, "error": "Plan bulunamadı"}
+    else:
+        # Yeni
+        trip_id = str(uuid.uuid4())[:12]
+        new_trip = {
+            "id": trip_id,
+            "from_code":    body.get("from_code", ""),
+            "from_name":    body.get("from_name", ""),
+            "from_country": body.get("from_country", ""),
+            "to_code":      body.get("to_code", ""),
+            "to_name":      body.get("to_name", ""),
+            "to_country":   body.get("to_country", ""),
+            "depart_date":  body.get("depart_date", ""),
+            "return_date":  body.get("return_date", ""),
+            "one_way":      bool(body.get("one_way", False)),
+            "passengers":   int(body.get("passengers", 1)),
+            "notes":        body.get("notes", ""),
+            "pinned":       bool(body.get("pinned", False)),
+            "created_at":   datetime.now(timezone.utc).isoformat(),
+            "updated_at":   datetime.now(timezone.utc).isoformat(),
+        }
+        trips.append(new_trip)
+
+    # Sabitlenenler önce, sonra güncellenme tarihi (yeni → eski)
+    trips.sort(key=lambda t: (not t.get("pinned", False), t.get("updated_at", "")), reverse=False)
+    pinned_first = [t for t in trips if t.get("pinned")]
+    rest         = sorted([t for t in trips if not t.get("pinned")], key=lambda t: t.get("updated_at", ""), reverse=True)
+    trips = pinned_first + rest
+
+    # Max 50 plan tut
+    trips = trips[:50]
+
+    await set_saved_trips(user_id, trips)
+
+    saved = next((t for t in trips if t.get("id") == trip_id), None)
+    return {"success": True, "trip": saved}
+
+
+@app.get("/sosyal/travel/trips/{user_id}")
+async def trip_list(user_id: str):
+    trips = await get_saved_trips(user_id)
+    return {"success": True, "trips": trips, "total": len(trips)}
+
+
+@app.post("/sosyal/travel/trip_delete")
+async def trip_delete(request: Request):
+    body    = await request.json()
+    user_id = str(body.get("user_id", "guest"))
+    trip_id = body.get("id", "")
+
+    if not trip_id:
+        return {"success": False, "error": "id gerekli"}
+
+    trips = await get_saved_trips(user_id)
+    before = len(trips)
+    trips = [t for t in trips if t.get("id") != trip_id]
+
+    if len(trips) == before:
+        return {"success": False, "error": "Plan bulunamadı"}
+
+    await set_saved_trips(user_id, trips)
+    return {"success": True, "deleted_id": trip_id}
+
+
+@app.post("/sosyal/travel/trip_note")
+async def trip_note(request: Request):
+    """Plana not ekle/güncelle."""
+    body    = await request.json()
+    user_id = str(body.get("user_id", "guest"))
+    trip_id = body.get("id", "")
+    notes   = body.get("notes", "")
+
+    if not trip_id:
+        return {"success": False, "error": "id gerekli"}
+
+    trips = await get_saved_trips(user_id)
+    for t in trips:
+        if t.get("id") == trip_id:
+            t["notes"] = notes
+            t["updated_at"] = datetime.now(timezone.utc).isoformat()
+            await set_saved_trips(user_id, trips)
+            return {"success": True, "trip": t}
+
+    return {"success": False, "error": "Plan bulunamadı"}
+
+# ══════════════════════════════════════════════════════
+# AI SEYAHAT PLANLAYICI (Trip Planner)
+# ══════════════════════════════════════════════════════
+
+@app.post("/sosyal/travel/trip_planner")
+async def trip_planner(request: Request):
+    """
+    Varış şehri için AI günlük plan üretir.
+    Body: { destination_city, destination_country, days, passengers, style }
+    """
+    body = await request.json()
+    city       = body.get("destination_city", "")
+    country    = body.get("destination_country", "")
+    days       = int(body.get("days", 3))
+    passengers = int(body.get("passengers", 1))
+    style      = body.get("style", "dengeli")
+
+    if not city:
+        return {"success": False, "error": "destination_city gerekli"}
+
+    days = max(1, min(14, days))
+
+    cache_key = f"sos:trip_plan:{city.lower()}:{country.lower()}:{days}:{style}:{passengers}"
+    cached = await redis_get_json(cache_key)
+    if cached:
+        cached["_cached"] = True
+        return cached
+
+    system = f"""Sen deneyimli bir seyahat planlayıcısın. Türkçe, pratik, günlük plan üretirsin.
+JSON formatında döndüreceksin, SADECE JSON. Açıklama yazma, markdown kullanma."""
+
+    prompt = f"""{city}{', '+country if country else ''} için {days} günlük seyahat planı üret.
+Yolcu sayısı: {passengers}
+Stil: {style} (dengeli=kültür+eğlence karışımı, kültür=müze+tarih yoğun, lüks=pahalı ve konforlu, bütçe=ucuz ve verimli)
+
+JSON şeması:
+{{
+  "overview": "Plan özeti 1 cümle",
+  "plan": [
+    {{
+      "day_num": 1,
+      "title": "Gün başlığı (örn: 'Eski şehirde tarih yolculuğu')",
+      "activities": [
+        {{
+          "time": "09:00",
+          "icon": "🏛",
+          "title": "Aktivite adı (kısa)",
+          "desc": "2 cümle açıklama — neyi, nerede, neden",
+          "tip": "Küçük yerel ipucu (opsiyonel)"
+        }}
+      ]
+    }}
+  ],
+  "must_do": ["Kaçırılmaması gereken 3-4 şey"],
+  "food_to_try": ["Denenmesi gereken 3-4 yemek"],
+  "what_to_pack": ["Çantaya alınacak 3-4 şey"],
+  "local_tips": ["Yerel ipuçları 3-4 madde"],
+  "avoid": ["Uzak durulması gereken 2-3 şey"],
+  "estimated_budget": {{
+    "per_day_usd": 80,
+    "breakdown": "Konaklama ~30$, yemek ~25$, ulaşım ~15$, aktivite ~10$"
+  }}
+}}
+
+Her günde 4-5 aktivite olsun (sabah, öğle, öğleden sonra, akşam).
+Aktivitelerin icon'u emoji olsun (🏛 müze, 🍽 yemek, 🚶 yürüyüş, ☕ kahve, 🌅 manzara, 🛍 alışveriş, 🍷 eğlence).
+SADECE JSON."""
+
+    reply = await smart_llm(
+        [{"role": "user", "content": prompt}],
+        system,
+        max_tokens=2500,
+        temperature=0.7,
+    )
+
+    try:
+        cleaned = reply.strip().replace("```json", "").replace("```", "").strip()
+        parsed = json.loads(cleaned)
+
+        result = {
+            "success": True,
+            "city": city,
+            "country": country,
+            "days": days,
+            "style": style,
+            **parsed,
+        }
+
+        await redis_set_json(cache_key, result, 60 * 60 * 24 * 3)  # 3 gün
+        return result
+    except Exception as e:
+        print(f"[TRIP PLANNER] parse error: {e}")
+        return {
+            "success": False,
+            "error": "plan_parse_failed",
+            "raw_reply": reply[:300],
+        }
+
+
+# Geriye uyumluluk için eski /itinerary endpoint'i (frontend'in eski action'ı)
+@app.post("/sosyal/travel/itinerary")
+async def itinerary_legacy(request: Request):
+    """Eski /itinerary çağrısı — yeni /trip_planner'a yönlendir."""
+    body = await request.json()
+    # Eski formatı yeni formata çevir
+    mapped = {
+        "destination_city": body.get("destination") or body.get("destination_city", ""),
+        "destination_country": body.get("country") or body.get("destination_country", ""),
+        "days": body.get("days", 3),
+        "passengers": body.get("passengers", 1),
+        "style": body.get("travel_style") or body.get("style", "dengeli"),
+    }
+
+    # Manuel call
+    class FakeRequest:
+        async def json(self):
+            return mapped
+    return await trip_planner(FakeRequest())
 
 
 # ══════════════════════════════════════════════════════
@@ -1079,7 +1162,7 @@ async def get_vertex_token() -> str:
         return ""
 
 async def smart_llm(messages: list, system: str, max_tokens: int = 600, temperature: float = 0.8) -> str:
-    """Vertex AI gemini-2.5-flash-lite (grounding yok) — DeepInfra fallback."""
+    """Vertex AI gemini-2.5-flash-lite — DeepInfra fallback."""
     if not USE_VERTEX:
         return await llm_chat(messages, system, max_tokens, temperature)
     try:
@@ -1227,90 +1310,3 @@ async def get_weather_for_date(city: str, country: str = "", lat: float = 0, lon
         prompt = f"{city}, {country} - {m} ayı tipik hava: sıcaklık, yağış, öneri (2 cümle, Türkçe)."
         result["ai_forecast"] = await smart_llm([{"role":"user","content":prompt}], "Meteoroloji uzmanısın. Kısa Türkçe.", max_tokens=120)
     return result
-
-
-# ══════════════════════════════════════════════════════
-# YEMEK
-# ══════════════════════════════════════════════════════
-
-@app.post("/sosyal/food/recipe")
-async def get_recipe(request: Request):
-    body    = await request.json()
-    dish    = body.get("dish", "")
-    prefs   = body.get("preferences", "")
-    history = body.get("history", [])
-
-    system = """Sen profesyonel bir aşçısın ve yemek yazarısın.
-Detaylı, uygulanabilir Türkçe tarifler yazarsın.
-Malzeme listelerini gram/ölçü birimleriyle verirsin.
-Pişirme süresi, zorluk derecesi ve kalori bilgisi eklersin.
-Alternatif malzeme önerileri sunarsın."""
-
-    prompt = f"{dish} tarifi{' ('+prefs+')' if prefs else ''}"
-    reply  = await smart_llm(history + [{"role": "user", "content": prompt}], system, max_tokens=800)
-    return {"recipe": reply, "dish": dish}
-
-
-@app.post("/sosyal/food/suggest")
-async def suggest_food(request: Request):
-    body = await request.json()
-    ingredients = body.get("ingredients", [])
-    mood        = body.get("mood", "")
-    time_avail  = body.get("time", 30)
-
-    system = "Sen yaratıcı bir ev aşçısısın. Eldeki malzemelerle yapılabilecek pratik tarifler önerirsin."
-    prompt = f"""Elimde şunlar var: {', '.join(ingredients) if ingredients else 'belirsiz'}
-Sürem: {time_avail} dakika
-Ruh halim: {mood or 'normal'}
-
-3 farklı tarif öner (isim + 2 cümle açıklama)."""
-
-    reply = await smart_llm([{"role": "user", "content": prompt}], system, max_tokens=400)
-    return {"suggestions": reply}
-
-
-# ══════════════════════════════════════════════════════
-# GÜNLÜK PLANLAYICI
-# ══════════════════════════════════════════════════════
-
-@app.post("/sosyal/daily/coach")
-async def daily_coach(request: Request):
-    body     = await request.json()
-    user_id  = str(body.get("user_id", "guest"))
-    message  = body.get("message", "")
-    tasks    = body.get("tasks", {})
-    mood     = body.get("mood", "")
-    history  = body.get("history", [])
-
-    task_summary = f"Görevler — Yapılacak:{len(tasks.get('todo',[]))}, Yapılıyor:{len(tasks.get('doing',[]))}, Tamamlandı:{len(tasks.get('done',[]))}"
-
-    system = f"""Sen motive edici bir yaşam koçusun. Adın Can.
-Kullanıcıya günlük planlamasında yardım ediyorsun.
-{task_summary}
-Kullanıcının ruh hali: {mood or 'belirsiz'}
-
-Kısa, motive edici, pratik Türkçe cevaplar ver (3-4 cümle).
-Görev önceliklendirme, zaman yönetimi ve enerji yönetimi konularında uzmansın."""
-
-    reply = await smart_llm(history + [{"role": "user", "content": message}], system, max_tokens=300)
-
-    if tasks:
-        await set_daily_tasks(user_id, tasks)
-
-    return {"reply": reply}
-
-
-@app.get("/sosyal/daily/data/{user_id}")
-async def get_daily_data(user_id: str):
-    tasks  = await get_daily_tasks(user_id)
-    habits = await get_daily_habits(user_id)
-    return {"tasks": tasks, "habits": habits}
-
-
-@app.post("/sosyal/daily/save")
-async def save_daily_data(request: Request):
-    body    = await request.json()
-    user_id = str(body.get("user_id", "guest"))
-    if "tasks"  in body: await set_daily_tasks(user_id,  body["tasks"])
-    if "habits" in body: await set_daily_habits(user_id, body["habits"])
-    return {"status": "ok"}
