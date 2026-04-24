@@ -42,6 +42,7 @@ TRAVEL_TTL      = 60 * 60 * 24 * 30   # 30 gün (eski travel plans)
 COMPANION_TTL   = 60 * 60 * 24 * 7    # 7 gün
 MOOD_TTL        = 60 * 60 * 24 * 30   # 30 gün
 SAVED_TRIPS_TTL = 60 * 60 * 24 * 90   # 90 gün (her erişimde TTL yenilenir — aktif kullanıcı için kalıcı)
+PRICE_ALERTS_TTL = 60 * 60 * 24 * 180 # 6 ay (fiyat alarmları uzun ömürlü olmalı)
 
 _redis: Optional[aioredis.Redis] = None
 
@@ -1442,3 +1443,269 @@ async def get_weather_for_date(city: str, country: str = "", lat: float = 0, lon
         prompt = f"{city}, {country} - {m} ayı tipik hava: sıcaklık, yağış, öneri (2 cümle, Türkçe)."
         result["ai_forecast"] = await smart_llm([{"role":"user","content":prompt}], "Meteoroloji uzmanısın. Kısa Türkçe.", max_tokens=120)
     return result
+
+
+# ══════════════════════════════════════════════════════
+# OTEL ARAMA — Hotellook / Travelpayouts
+# ══════════════════════════════════════════════════════
+# Hotellook endpoint'leri ayrı token istemez, marker ID ile çalışır.
+# Base URL: https://engine.hotellook.com
+# Affiliate tıklama: https://search.hotellook.com/hotels?...&marker=716107
+# Fotoğraf: https://photo.hotellook.com/image_v2/limit/h{hotel_id}_1/800/520.auto
+# ══════════════════════════════════════════════════════
+
+HL_CACHE_TTL = 60 * 30  # 30 dakika (fiyatlar sık değişir)
+
+def build_hotel_affiliate_link(location: str, check_in: str, check_out: str, adults: int = 2, hotel_id: int = None) -> str:
+    """Hotellook deep link — marker ile komisyon."""
+    import urllib.parse
+    base = "https://search.hotellook.com/hotels"
+    params = {
+        "destination": location,
+        "checkIn": check_in,
+        "checkOut": check_out,
+        "adults": adults,
+        "marker": TP_MARKER_ID,
+    }
+    if hotel_id:
+        params["hotelId"] = hotel_id
+    return f"{base}?{urllib.parse.urlencode(params)}"
+
+
+def hotel_photo_url(hotel_id: int, size: str = "800x520") -> str:
+    """Hotellook foto CDN — varsayılan orta boy."""
+    if not hotel_id:
+        return ""
+    w, h = size.split("x") if "x" in size else ("800", "520")
+    return f"https://photo.hotellook.com/image_v2/limit/h{hotel_id}_1/{w}/{h}.auto"
+
+
+@app.post("/sosyal/hotels/search")
+async def hotels_search(request: Request):
+    """
+    Şehir + tarih + kişi → otel listesi (Hotellook cache üzerinden).
+    """
+    body = await request.json()
+    location    = body.get("location", "").strip()         # "Antalya" veya şehir kodu
+    check_in    = body.get("check_in", "")                 # YYYY-MM-DD
+    check_out   = body.get("check_out", "")                # YYYY-MM-DD
+    adults      = int(body.get("adults", 2))
+    currency    = body.get("currency", "try").lower()
+    limit       = int(body.get("limit", 12))
+
+    if not location or not check_in or not check_out:
+        return {"success": False, "error": "location, check_in, check_out zorunlu"}
+
+    cache_key = f"hl:search:{location.lower()}:{check_in}:{check_out}:{adults}:{currency}"
+    cached = await redis_get_json(cache_key)
+    if cached:
+        cached["_cached"] = True
+        return cached
+
+    params = {
+        "location":    location,
+        "checkIn":     check_in,
+        "checkOut":    check_out,
+        "adults":      adults,
+        "limit":       limit,
+        "currency":    currency,
+        "language":    "tr",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.get(
+                "https://engine.hotellook.com/api/v2/cache.json",
+                params=params,
+            )
+            if r.status_code != 200:
+                print(f"[HL] {r.status_code}: {r.text[:200]}")
+                return {"success": False, "error": f"HTTP {r.status_code}", "hotels": []}
+
+            raw_hotels = r.json()
+            if not isinstance(raw_hotels, list):
+                return {"success": False, "error": "Beklenen format değil", "hotels": []}
+
+            nights = max(1, (datetime.strptime(check_out, "%Y-%m-%d") - datetime.strptime(check_in, "%Y-%m-%d")).days)
+
+            hotels = []
+            for h in raw_hotels:
+                hotel_id = h.get("hotelId")
+                if not hotel_id:
+                    continue
+
+                price_avg = h.get("priceAvg", 0)
+                price_from = h.get("priceFrom", 0)
+                stars = h.get("stars", 0)
+                location_name = h.get("locationName", "")
+                hotel_name = h.get("hotelName") or h.get("name", "")
+
+                # Bazı sonuçlarda isim yok → atla
+                if not hotel_name:
+                    continue
+
+                hotels.append({
+                    "id":            hotel_id,
+                    "name":          hotel_name,
+                    "stars":         stars,
+                    "location_name": location_name,
+                    "price_from":    round(price_from),
+                    "price_avg":     round(price_avg),
+                    "price_total":   round(price_from * nights),
+                    "nights":        nights,
+                    "photo_url":     hotel_photo_url(hotel_id, "800x520"),
+                    "photo_thumb":   hotel_photo_url(hotel_id, "400x260"),
+                    "affiliate_url": build_hotel_affiliate_link(location, check_in, check_out, adults, hotel_id),
+                })
+
+            # Fiyat sırala (ucuzdan pahalıya, ama fiyatsızlar sona)
+            hotels.sort(key=lambda h: (h["price_from"] == 0, h["price_from"]))
+
+            result = {
+                "success":    True,
+                "location":   location,
+                "check_in":   check_in,
+                "check_out":  check_out,
+                "nights":     nights,
+                "adults":     adults,
+                "currency":   currency.upper(),
+                "hotels":     hotels[:limit],
+                "total":      len(hotels),
+                "search_url": build_hotel_affiliate_link(location, check_in, check_out, adults),
+            }
+
+            await redis_set_json(cache_key, result, HL_CACHE_TTL)
+            return result
+
+    except Exception as e:
+        print(f"[HL SEARCH] {e}")
+        return {"success": False, "error": str(e), "hotels": []}
+
+
+@app.post("/sosyal/hotels/match")
+async def hotels_match(request: Request):
+    """
+    AI destekli otel eşleştirme.
+    Kullanıcı doğal dille anlatır → AI otelleri sıralar + yorum üretir.
+    """
+    body = await request.json()
+    location    = body.get("location", "").strip()
+    check_in    = body.get("check_in", "")
+    check_out   = body.get("check_out", "")
+    adults      = int(body.get("adults", 2))
+    user_prompt = body.get("prompt", "").strip()
+    mood_tags   = body.get("tags", [])   # ["Romantik","Plaj"] gibi
+
+    if not location or not user_prompt and not mood_tags:
+        return {"success": False, "error": "location + prompt/tags zorunlu"}
+
+    # Önce otelleri getir (cache'den veya canlı)
+    search_req_body = {
+        "location": location, "check_in": check_in, "check_out": check_out,
+        "adults": adults, "limit": 30, "currency": "try",
+    }
+    class _Req:
+        async def json(self): return search_req_body
+    search_result = await hotels_search(_Req())
+
+    if not search_result.get("success") or not search_result.get("hotels"):
+        return {"success": False, "error": "Otel bulunamadı"}
+
+    hotels = search_result["hotels"]
+
+    # AI'ya özet veri hazırla (token tasarrufu için kısa)
+    summary = "\n".join([
+        f"{i+1}. {h['name']} - {h['stars']}★ - {h['location_name']} - ₺{h['price_from']}/gece"
+        for i, h in enumerate(hotels[:30])
+    ])
+
+    tags_text = ", ".join(mood_tags) if mood_tags else ""
+    user_desc = f"{user_prompt}" + (f" (tarz: {tags_text})" if tags_text else "")
+
+    system = """Sen otel seçme konusunda deneyimli bir seyahat danışmanısın.
+Kullanıcının isteğine en uygun otelleri seçip, her biri için kısa Türkçe yorum üretirsin.
+SADECE JSON döndür. Markdown/açıklama yazma."""
+
+    prompt = f"""Kullanıcı isteği: "{user_desc}"
+
+Aşağıdaki otel listesinden kullanıcıya en uygun olan {min(8, len(hotels))} tanesini seç.
+Otel listesi:
+{summary}
+
+JSON formatı:
+{{
+  "matches": [
+    {{"index": 1, "reason": "1 cümle Türkçe yorum — neden uygun (max 15 kelime)"}},
+    ...
+  ]
+}}
+
+Sadece JSON döndür."""
+
+    reply = await smart_llm(
+        [{"role": "user", "content": prompt}],
+        system,
+        max_tokens=800,
+        temperature=0.5,
+    )
+
+    parsed = _safe_json_parse(reply)
+    if not parsed or "matches" not in parsed:
+        # AI parse edemedi → fallback: ilk 8 oteli döndür
+        return {
+            "success": True,
+            "fallback": True,
+            "hotels": hotels[:8],
+            "query": user_desc,
+        }
+
+    # AI seçtiklerini orijinal otellerle birleştir
+    matched = []
+    for m in parsed.get("matches", []):
+        try:
+            idx = int(m.get("index", 0)) - 1
+            if 0 <= idx < len(hotels):
+                hotel_copy = {**hotels[idx]}
+                hotel_copy["ai_reason"] = m.get("reason", "")
+                hotel_copy["ai_matched"] = True
+                matched.append(hotel_copy)
+        except (ValueError, TypeError):
+            continue
+
+    return {
+        "success":  True,
+        "hotels":   matched,
+        "total":    len(matched),
+        "query":    user_desc,
+        "location": location,
+        "check_in": check_in,
+        "check_out": check_out,
+    }
+
+
+@app.post("/sosyal/hotels/click")
+async def hotels_click(request: Request):
+    """
+    Otel tıklama kaydı + affiliate URL dön.
+    Log kaydı tutulur (komisyon takibi için).
+    """
+    body = await request.json()
+    location  = body.get("location", "")
+    check_in  = body.get("check_in", "")
+    check_out = body.get("check_out", "")
+    adults    = int(body.get("adults", 2))
+    hotel_id  = body.get("hotel_id")
+    user_id   = str(body.get("user_id", "guest"))
+
+    url = build_hotel_affiliate_link(location, check_in, check_out, adults, hotel_id)
+
+    # Click log
+    try:
+        r = await get_redis()
+        log_key = f"sos:clicks:hotel:{datetime.now().strftime('%Y%m%d')}"
+        await r.incr(log_key)
+        await r.expire(log_key, 60 * 60 * 24 * 90)
+    except Exception:
+        pass
+
+    return {"success": True, "url": url, "hotel_id": hotel_id}
