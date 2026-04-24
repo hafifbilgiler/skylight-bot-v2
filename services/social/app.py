@@ -516,21 +516,72 @@ async def flight_search(request: Request):
     if not origin or not destination:
         return {"success": False, "error": "origin ve destination zorunlu"}
 
-    params = {"origin": origin, "destination": destination, "currency": currency}
+    # ── 3 endpoint'i paralel çağır ──────────────────────
+    # 1. /v1/prices/cheap — spesifik tarih için
+    params_cheap = {"origin": origin, "destination": destination, "currency": currency}
     if depart_date:
-        params["depart_date"] = depart_date
+        params_cheap["depart_date"] = depart_date
     if return_date and not one_way:
-        params["return_date"] = return_date
+        params_cheap["return_date"] = return_date
 
-    data = await tp_request("/v1/prices/cheap", params)
+    # 2. /v1/prices/cheap — sadece ay için (gevşek)
+    params_month = {"origin": origin, "destination": destination, "currency": currency}
+    if depart_date and len(depart_date) >= 7:
+        params_month["depart_date"] = depart_date[:7]  # YYYY-MM
 
-    if not data.get("success"):
-        return {"success": False, "error": data.get("error", "API hatası"), "flights": []}
+    # 3. /v2/prices/latest — cache'deki son uçuşlar
+    params_latest = {
+        "origin": origin,
+        "destination": destination,
+        "currency": currency,
+        "limit": 30,
+        "period_type": "year",
+    }
 
-    raw_flights = data.get("data", {}).get(destination, {})
+    cheap_task  = tp_request("/v1/prices/cheap", params_cheap)
+    month_task  = tp_request("/v1/prices/cheap", params_month) if params_month.get("depart_date") else None
+    latest_task = tp_request("/v2/prices/latest", params_latest)
+
+    results = await asyncio.gather(
+        cheap_task,
+        month_task if month_task else asyncio.sleep(0, result={"success": False}),
+        latest_task,
+        return_exceptions=True,
+    )
+    cheap_data, month_data, latest_data = results
+
     flights = []
-    for key, flight in raw_flights.items():
-        flights.append(format_flight(flight, origin, destination))
+    seen_keys = set()
+
+    def add_flight(f_raw):
+        flight = format_flight(f_raw, origin, destination)
+        # Aynı uçuş aynı gün? Skip.
+        k = f"{flight['flight_number']}:{flight['depart_date']}"
+        if k in seen_keys:
+            return
+        seen_keys.add(k)
+        flights.append(flight)
+
+    # Cheap (spesifik tarih) sonuçları
+    if isinstance(cheap_data, dict) and cheap_data.get("success"):
+        raw = cheap_data.get("data", {}).get(destination, {})
+        for _, f in (raw.items() if isinstance(raw, dict) else []):
+            add_flight(f)
+
+    # Month (ay için) sonuçları
+    if isinstance(month_data, dict) and month_data.get("success"):
+        raw = month_data.get("data", {}).get(destination, {})
+        for _, f in (raw.items() if isinstance(raw, dict) else []):
+            add_flight(f)
+
+    # Latest (son fiyatlar) sonuçları — format farklı
+    if isinstance(latest_data, dict) and latest_data.get("success"):
+        data_items = latest_data.get("data", [])
+        if isinstance(data_items, list):
+            for f in data_items:
+                if f.get("origin") != origin or f.get("destination") != destination:
+                    continue
+                add_flight(f)
 
     flights.sort(key=lambda f: f["price"])
 
@@ -539,8 +590,13 @@ async def flight_search(request: Request):
         "origin": origin,
         "destination": destination,
         "currency": currency.upper(),
-        "flights": flights[:10],
-        "cached": data.get("_cached", False),
+        "flights": flights[:15],
+        "total_found": len(flights),
+        "sources": {
+            "cheap":  isinstance(cheap_data, dict)  and cheap_data.get("success",  False),
+            "month":  isinstance(month_data, dict)  and month_data.get("success",  False),
+            "latest": isinstance(latest_data, dict) and latest_data.get("success", False),
+        },
     }
 
 
