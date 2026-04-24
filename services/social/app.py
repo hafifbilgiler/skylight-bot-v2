@@ -41,7 +41,7 @@ TP_CACHE_TTL    = 60 * 60  # 1 saat
 TRAVEL_TTL      = 60 * 60 * 24 * 30   # 30 gün (eski travel plans)
 COMPANION_TTL   = 60 * 60 * 24 * 7    # 7 gün
 MOOD_TTL        = 60 * 60 * 24 * 30   # 30 gün
-SAVED_TRIPS_TTL = 60 * 60 * 24 * 90   # 90 gün (yeni kayıtlı planlar)
+SAVED_TRIPS_TTL = 60 * 60 * 24 * 90   # 90 gün (her erişimde TTL yenilenir — aktif kullanıcı için kalıcı)
 
 _redis: Optional[aioredis.Redis] = None
 
@@ -1012,6 +1012,9 @@ async def trip_save(request: Request):
 @app.get("/sosyal/travel/trips/{user_id}")
 async def trip_list(user_id: str):
     trips = await get_saved_trips(user_id)
+    # Kullanıcı her listelemesinde TTL yenilenir → aktif kullanıcı için planlar kalıcı
+    if trips:
+        await set_saved_trips(user_id, trips)
     return {"success": True, "trips": trips, "total": len(trips)}
 
 
