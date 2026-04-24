@@ -1020,7 +1020,7 @@ async def trip_planner(request: Request):
     if not city:
         return {"success": False, "error": "destination_city gerekli"}
 
-    days = max(1, min(14, days))
+    days = max(1, min(7, days))  # 7 gün max (JSON çok büyüme sorunu için)
 
     cache_key = f"sos:trip_plan:{city.lower()}:{country.lower()}:{days}:{style}:{passengers}"
     cached = await redis_get_json(cache_key)
@@ -1028,75 +1028,148 @@ async def trip_planner(request: Request):
         cached["_cached"] = True
         return cached
 
-    system = f"""Sen deneyimli bir seyahat planlayıcısın. Türkçe, pratik, günlük plan üretirsin.
-JSON formatında döndüreceksin, SADECE JSON. Açıklama yazma, markdown kullanma."""
+    system = """Sen deneyimli bir seyahat planlayıcısın. Türkçe, pratik, günlük plan üretirsin.
+SADECE GEÇERLİ JSON döndür. Açıklama yazma, markdown kullanma, ```json bloğu koyma."""
 
     prompt = f"""{city}{', '+country if country else ''} için {days} günlük seyahat planı üret.
 Yolcu sayısı: {passengers}
-Stil: {style} (dengeli=kültür+eğlence karışımı, kültür=müze+tarih yoğun, lüks=pahalı ve konforlu, bütçe=ucuz ve verimli)
+Stil: {style}
 
-JSON şeması:
+JSON şeması (TAM şuna uygun döndür):
 {{
   "overview": "Plan özeti 1 cümle",
   "plan": [
     {{
       "day_num": 1,
-      "title": "Gün başlığı (örn: 'Eski şehirde tarih yolculuğu')",
+      "title": "Kısa başlık",
       "activities": [
-        {{
-          "time": "09:00",
-          "icon": "🏛",
-          "title": "Aktivite adı (kısa)",
-          "desc": "2 cümle açıklama — neyi, nerede, neden",
-          "tip": "Küçük yerel ipucu (opsiyonel)"
-        }}
+        {{"time":"09:00","icon":"🏛","title":"Kısa başlık","desc":"1 cümle","tip":"Kısa ipucu"}}
       ]
     }}
   ],
-  "must_do": ["Kaçırılmaması gereken 3-4 şey"],
-  "food_to_try": ["Denenmesi gereken 3-4 yemek"],
-  "what_to_pack": ["Çantaya alınacak 3-4 şey"],
-  "local_tips": ["Yerel ipuçları 3-4 madde"],
-  "avoid": ["Uzak durulması gereken 2-3 şey"],
-  "estimated_budget": {{
-    "per_day_usd": 80,
-    "breakdown": "Konaklama ~30$, yemek ~25$, ulaşım ~15$, aktivite ~10$"
-  }}
+  "must_do": ["Madde 1","Madde 2","Madde 3"],
+  "food_to_try": ["Yemek 1","Yemek 2","Yemek 3"],
+  "what_to_pack": ["Eşya 1","Eşya 2"],
+  "local_tips": ["İpucu 1","İpucu 2"],
+  "avoid": ["Kaçınılacak 1"],
+  "estimated_budget": {{"per_day_usd":80,"breakdown":"Konaklama ~30$, yemek ~25$, ulaşım ~15$, aktivite ~10$"}}
 }}
 
-Her günde 4-5 aktivite olsun (sabah, öğle, öğleden sonra, akşam).
-Aktivitelerin icon'u emoji olsun (🏛 müze, 🍽 yemek, 🚶 yürüyüş, ☕ kahve, 🌅 manzara, 🛍 alışveriş, 🍷 eğlence).
-SADECE JSON."""
+KURALLAR:
+- Her günde 4 aktivite (sabah/öğle/öğleden sonra/akşam)
+- Tüm metinler KISA olsun (desc max 15 kelime, tip max 10 kelime)
+- Çift tırnak içinde çift tırnak KULLANMA — apostrof kullan
+- JSON'u EKSİKSİZ tamamla, yarıda kesme
+- SADECE JSON, başka hiçbir şey yazma"""
 
     reply = await smart_llm(
         [{"role": "user", "content": prompt}],
         system,
-        max_tokens=2500,
-        temperature=0.7,
+        max_tokens=4000,
+        temperature=0.6,
     )
 
-    try:
-        cleaned = reply.strip().replace("```json", "").replace("```", "").strip()
-        parsed = json.loads(cleaned)
+    parsed = _safe_json_parse(reply)
 
-        result = {
-            "success": True,
-            "city": city,
-            "country": country,
-            "days": days,
-            "style": style,
-            **parsed,
-        }
-
-        await redis_set_json(cache_key, result, 60 * 60 * 24 * 3)  # 3 gün
-        return result
-    except Exception as e:
-        print(f"[TRIP PLANNER] parse error: {e}")
+    if not parsed:
+        print(f"[TRIP PLANNER] parse failed tamamen. Raw (first 500): {reply[:500]}")
         return {
             "success": False,
             "error": "plan_parse_failed",
             "raw_reply": reply[:300],
+            "hint": "AI yanıtı JSON olarak parse edilemedi. Tekrar dene.",
         }
+
+    result = {
+        "success": True,
+        "city": city,
+        "country": country,
+        "days": days,
+        "style": style,
+        **parsed,
+    }
+
+    await redis_set_json(cache_key, result, 60 * 60 * 24 * 3)
+    return result
+
+
+def _safe_json_parse(text: str):
+    """AI JSON çıktısını toleranslı şekilde parse eder."""
+    if not text:
+        return None
+
+    # ```json ``` blokları temizle
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("```", 2)
+        cleaned = cleaned[1] if len(cleaned) > 1 else text
+        if cleaned.startswith("json"):
+            cleaned = cleaned[4:]
+    cleaned = cleaned.replace("```", "").strip()
+
+    # 1. Direkt parse dene
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    # 2. İlk { 'dan son } 'a kadar al
+    try:
+        start = cleaned.find("{")
+        end   = cleaned.rfind("}")
+        if start >= 0 and end > start:
+            candidate = cleaned[start:end+1]
+            return json.loads(candidate)
+    except json.JSONDecodeError:
+        pass
+
+    # 3. Yarım kesilmişse — dengeli parantezlere kadar trunc
+    try:
+        start = cleaned.find("{")
+        if start < 0:
+            return None
+        depth = 0
+        last_valid = -1
+        in_string = False
+        escape_next = False
+        for i, ch in enumerate(cleaned[start:], start=start):
+            if escape_next:
+                escape_next = False
+                continue
+            if ch == "\\":
+                escape_next = True
+                continue
+            if ch == '"' and not escape_next:
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    last_valid = i
+                    break
+        if last_valid > 0:
+            return json.loads(cleaned[start:last_valid+1])
+    except (json.JSONDecodeError, IndexError):
+        pass
+
+    # 4. Bozuk tırnak temizle ve son } kadar kes
+    try:
+        start = cleaned.find("{")
+        end   = cleaned.rfind("}")
+        if start >= 0 and end > start:
+            candidate = cleaned[start:end+1]
+            # Trailing comma'ları temizle
+            import re as _re
+            candidate = _re.sub(r",(\s*[}\]])", r"\1", candidate)
+            return json.loads(candidate)
+    except (json.JSONDecodeError, Exception):
+        pass
+
+    return None
 
 
 # Geriye uyumluluk için eski /itinerary endpoint'i (frontend'in eski action'ı)
