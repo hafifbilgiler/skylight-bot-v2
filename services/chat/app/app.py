@@ -121,6 +121,15 @@ MODE_CONFIGS = {
         "top_p":       0.92,
         "system_prompt": SOCIAL_SYSTEM_PROMPT,
     },
+    # NOT: image_gen normalde gateway'de image-gen servisine route edilir,
+    # buraya gelmemesi gerekir. Geldiyse graceful: assistant config kullan.
+    "image_gen": {
+        "model":       os.getenv("DEEPINFRA_ASSISTANT_MODEL", "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"),
+        "max_tokens":  1024,
+        "temperature": 0.7,
+        "top_p":       0.9,
+        "system_prompt": ASSISTANT_SYSTEM_PROMPT,
+    },
 }
 
 app = FastAPI(title="Skylight Chat Service", version="3.1.0")
@@ -1318,14 +1327,25 @@ async def build_messages(
         system_content += f"\n\n{state_context}"
         print(f"[CHAT] State context injected: {len(state_context)} chars")
 
-    # 3. LIVE DATA — Router kararı varsa direkt kullan, yoksa keyword
-    _router_dec = {
-        "needs_realtime": kwargs.get("needs_realtime"),
-        "tool":           kwargs.get("live_type_hint", "none"),
-        "confidence":     "high" if kwargs.get("live_type_hint") else "low",
-        "intent":         kwargs.get("router_intent", ""),
-    } if kwargs.get("live_type_hint") or kwargs.get("needs_realtime") else None
+    # 3. ROUTER HINT — code_execute / live data intent'leri prompt'a yansıt
+    _router_intent = kwargs.get("router_intent", "")
+    _router_thinking = kwargs.get("router_thinking", "")
 
+    # code_execute → "decode et, hesapla, çevir" gibi → KOD YAZMA, YAP
+    if _router_intent == "code_execute":
+        system_content += (
+            "\n\n[ROUTER HİNTİ — code_execute]\n"
+            "Kullanıcı KOD YAZMANI istemiyor. "
+            "Bir şeyi DÖNÜŞTÜRMENİ veya HESAPLAMANI istiyor "
+            "(decode/encode/hesapla/çevir). "
+            "Direkt sonucu ver. Kod bloğu yazma. "
+            "Cevabı kısa ve net tut.\n"
+            "[/ROUTER HİNTİ]"
+        )
+
+    # Router thinking varsa log için sakla — gerekirse ileride kullan
+    if _router_thinking:
+        print(f"[CHAT] Router thinking: {_router_thinking[:80]}")
 
     # Live data: Gemini fast path /chat endpoint'inde handle edildi.
     live_context   = None
@@ -1498,7 +1518,7 @@ async def chat(request: ChatRequest):
                 if chunk: has = True; yield chunk
             if not has: yield "Üzgünüm, yanıt üretemiyorum."
         return StreamingResponse(_gs(), media_type="text/plain; charset=utf-8")
-    # ─────────────────────────────────────────────────────────config        = MODE_CONFIGS[request.mode]
+    # ─────────────────────────────────────────────────────────
     show_thinking = should_show_thinking(request.prompt, request.mode, request.history or [])
 
     messages = await build_messages(
@@ -1660,7 +1680,7 @@ async def chat_sse(request: ChatRequest):
     async def sse_generator():
         try:
             # ── Deep search mi? ──────────────────────────────────
-            live_type = _detect_live_type(prompt, mode, None, history or [])
+            live_type = _detect_live_type(prompt, mode, None, request.history or [])
             is_deep   = live_type == "deep_search"
             is_tr     = any(c in prompt for c in "çğışöüÇĞİŞÖÜ") or True
 
