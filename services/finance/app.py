@@ -799,6 +799,13 @@ Olasılıksal dil kullanırsın. 3-4 cümle ile öz cevap verirsin."""
 
 @app.get("/news")
 async def get_news(symbol: str = "BTC"):
+    """
+    Çok kaynaklı haber çekici — sırayla dener:
+      1. CryptoCompare (önce, en güvenilir)
+      2. CoinDesk RSS (genel kripto haberleri)
+      3. CoinGecko events (etkinlikler)
+      4. CryptoPanic (yedek)
+    """
     symbol_map = {
         "BTCUSDT": "bitcoin", "ETHUSDT": "ethereum", "BNBUSDT": "binancecoin",
         "SOLUSDT": "solana", "XRPUSDT": "ripple", "ADAUSDT": "cardano",
@@ -806,60 +813,164 @@ async def get_news(symbol: str = "BTC"):
         "DOTUSDT": "polkadot", "MATICUSDT": "matic-network", "UNIUSDT": "uniswap",
     }
     coin_id = symbol_map.get(symbol.upper(), "bitcoin")
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+    coin_short = symbol.upper().replace("USDT", "")
+
+    pos_words = ["bullish", "surge", "rally", "gain", "record", "adoption", "launch",
+                 "partnership", "upgrade", "growth", "approval", "win", "soar", "boom"]
+    neg_words = ["crash", "bear", "drop", "hack", "ban", "lawsuit", "warning", "fear",
+                 "decline", "fall", "scam", "fraud", "exploit", "loss", "plunge"]
+
+    def calc_sentiment(text: str) -> tuple:
+        text = text.lower()
+        pos = sum(1 for w in pos_words if w in text)
+        neg = sum(1 for w in neg_words if w in text)
+        sentiment = "pozitif" if pos > neg else "negatif" if neg > pos else "nötr"
+        return sentiment, pos - neg
+
+    news = []
+
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True,
+                                   headers={"User-Agent": "Mozilla/5.0 (compatible; ONE-BUNE/1.0)"}) as client:
+
+        # ── 1. CryptoCompare (en güvenilir, ücretsiz) ─────────
+        try:
             r = await client.get(
-                f"https://api.coingecko.com/api/v3/coins/{coin_id}/status_updates",
-                headers={"Accept": "application/json"}, params={"per_page": 5}
+                "https://min-api.cryptocompare.com/data/v2/news/",
+                params={"categories": coin_short, "lang": "EN", "sortOrder": "latest"},
             )
-            news = []
             if r.status_code == 200:
-                data = r.json()
-                for item in data.get("status_updates", [])[:5]:
-                    desc = item.get("description", "")[:200]
-                    pos_words = ["launch", "partnership", "upgrade", "bullish", "growth", "adoption", "record"]
-                    neg_words = ["hack", "scam", "crash", "bearish", "lawsuit", "ban", "warning"]
-                    pos = sum(1 for w in pos_words if w in desc.lower())
-                    neg = sum(1 for w in neg_words if w in desc.lower())
-                    sentiment = "pozitif" if pos > neg else "negatif" if neg > pos else "nötr"
+                items = r.json().get("Data", [])[:8]
+                for item in items:
+                    title = item.get("title", "")
+                    body  = item.get("body", "")[:300]
+                    sentiment, score = calc_sentiment(title + " " + body)
                     news.append({
-                        "title": desc[:100] + "..." if len(desc) > 100 else desc,
-                        "category": item.get("category", "genel"),
-                        "created_at": item.get("created_at", ""),
-                        "sentiment": sentiment, "sentiment_score": pos - neg,
-                        "url": item.get("project", {}).get("links", {}).get("homepage", [""])[0] if item.get("project") else "",
+                        "title": title,
+                        "body": body,
+                        "source": item.get("source_info", {}).get("name", "CryptoCompare"),
+                        "sentiment": sentiment,
+                        "sentiment_score": score,
+                        "url": item.get("url", ""),
+                        "published_at": item.get("published_on", 0),
+                        "image": item.get("imageurl", ""),
                     })
-            if not news:
-                r2 = await client.get(
-                    "https://min-api.cryptocompare.com/data/v2/news/",
-                    params={"categories": symbol.replace("USDT","").upper(), "lTs": 0, "lang": "EN"},
+                print(f"[NEWS] CryptoCompare: {len(items)} adet")
+        except Exception as e:
+            print(f"[NEWS] CryptoCompare hata: {e}")
+
+        # ── 2. CoinDesk RSS (genel haberler, BTC dışı için ek) ─
+        if len(news) < 5:
+            try:
+                r = await client.get("https://www.coindesk.com/arc/outboundfeeds/rss/")
+                if r.status_code == 200:
+                    import re as _re
+                    text = r.text
+                    items_raw = _re.findall(r'<item>(.*?)</item>', text, _re.DOTALL)[:6]
+                    for item_xml in items_raw:
+                        title_m = _re.search(r'<title><!\[CDATA\[(.*?)\]\]>', item_xml)
+                        link_m  = _re.search(r'<link>(.*?)</link>', item_xml)
+                        date_m  = _re.search(r'<pubDate>(.*?)</pubDate>', item_xml)
+                        desc_m  = _re.search(r'<description><!\[CDATA\[(.*?)\]\]>', item_xml)
+
+                        if not title_m: continue
+                        title = title_m.group(1)
+
+                        # Coin filtrele (BTC için her şey, diğerleri için sadece coin adı geçenler)
+                        if coin_short != "BTC":
+                            if coin_short.lower() not in title.lower() and coin_short.lower() not in (desc_m.group(1) if desc_m else "").lower():
+                                continue
+
+                        body = desc_m.group(1)[:300] if desc_m else ""
+                        # HTML tag temizle
+                        body = _re.sub(r'<[^>]+>', '', body).strip()
+
+                        sentiment, score = calc_sentiment(title + " " + body)
+
+                        # Pubdate -> timestamp
+                        published = 0
+                        if date_m:
+                            try:
+                                from email.utils import parsedate_to_datetime
+                                dt = parsedate_to_datetime(date_m.group(1))
+                                published = int(dt.timestamp())
+                            except Exception:
+                                pass
+
+                        news.append({
+                            "title": title,
+                            "body": body,
+                            "source": "CoinDesk",
+                            "sentiment": sentiment,
+                            "sentiment_score": score,
+                            "url": link_m.group(1) if link_m else "",
+                            "published_at": published,
+                            "image": "",
+                        })
+                    print(f"[NEWS] CoinDesk RSS eklendi, toplam: {len(news)}")
+            except Exception as e:
+                print(f"[NEWS] CoinDesk hata: {e}")
+
+        # ── 3. CryptoPanic (yedek, ücretsiz public tier) ──────
+        if len(news) < 3:
+            try:
+                r = await client.get(
+                    "https://cryptopanic.com/api/v1/posts/",
+                    params={"public": "true", "currencies": coin_short, "kind": "news"}
                 )
-                if r2.status_code == 200:
-                    items = r2.json().get("Data", [])[:6]
+                if r.status_code == 200:
+                    items = r.json().get("results", [])[:5]
                     for item in items:
                         title = item.get("title", "")
-                        body  = item.get("body", "")[:300]
-                        pos_words = ["bullish", "surge", "rally", "gain", "record", "adoption", "launch"]
-                        neg_words = ["crash", "bear", "drop", "hack", "ban", "lawsuit", "warning", "fear"]
-                        text = (title + " " + body).lower()
-                        pos = sum(1 for w in pos_words if w in text)
-                        neg = sum(1 for w in neg_words if w in text)
-                        sentiment = "pozitif" if pos > neg else "negatif" if neg > pos else "nötr"
+                        sentiment, score = calc_sentiment(title)
+                        # CryptoPanic'in kendi sentiment'ı varsa kullan
+                        votes = item.get("votes", {})
+                        if votes.get("positive", 0) > votes.get("negative", 0):
+                            sentiment = "pozitif"
+                        elif votes.get("negative", 0) > votes.get("positive", 0):
+                            sentiment = "negatif"
+
+                        published = 0
+                        if item.get("published_at"):
+                            try:
+                                from datetime import datetime as _dt
+                                dt = _dt.fromisoformat(item["published_at"].replace("Z", "+00:00"))
+                                published = int(dt.timestamp())
+                            except Exception:
+                                pass
+
                         news.append({
-                            "title": title, "body": body,
-                            "source": item.get("source_info", {}).get("name", ""),
-                            "sentiment": sentiment, "sentiment_score": pos - neg,
+                            "title": title,
+                            "body": "",
+                            "source": item.get("source", {}).get("title", "CryptoPanic"),
+                            "sentiment": sentiment,
+                            "sentiment_score": score,
                             "url": item.get("url", ""),
-                            "published_at": item.get("published_on", 0),
+                            "published_at": published,
+                            "image": "",
                         })
-            return {
-                "symbol": symbol, "coin_id": coin_id, "news": news,
-                "count": len(news),
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            }
-    except Exception as e:
-        print(f"[NEWS] {e}")
-        return {"symbol": symbol, "news": [], "error": str(e)}
+                    print(f"[NEWS] CryptoPanic eklendi, toplam: {len(news)}")
+            except Exception as e:
+                print(f"[NEWS] CryptoPanic hata: {e}")
+
+    # En yeniden eskiye sırala
+    news.sort(key=lambda x: x.get("published_at", 0), reverse=True)
+    # Duplicate başlıkları kaldır
+    seen_titles = set()
+    unique_news = []
+    for n in news:
+        t = n["title"][:80]
+        if t not in seen_titles:
+            seen_titles.add(t)
+            unique_news.append(n)
+    news = unique_news[:12]
+
+    return {
+        "symbol": symbol,
+        "coin_id": coin_id,
+        "news": news,
+        "count": len(news),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
 
 @app.get("/fng")
 async def fear_greed_index():
