@@ -23,14 +23,12 @@ WHALE_USD_THRESH = float(os.getenv("WHALE_USD_THRESH", "500000"))
 
 DEEPINFRA_API_KEY  = os.getenv("DEEPINFRA_API_KEY", "")
 DEEPINFRA_BASE_URL = os.getenv("DEEPINFRA_BASE_URL", "https://api.deepinfra.com/v1/openai")
-# En ucuz + yeterince akıllı model — $0.05/1M token
 FINANS_LLM_MODEL   = os.getenv("FINANS_LLM_MODEL", "Qwen/Qwen3.5-4B")
 
 JWT_SECRET    = os.getenv("JWT_SECRET", "31aad766798d891f4c587d7f3bc925cd7e1e14989c421ae3c38eb80c1d4ede05")
 JWT_ALGORITHM = "HS256"
 
 def verify_token(token: str) -> bool:
-    """Token geçerli mi kontrol et."""
     if not token:
         return False
     try:
@@ -46,7 +44,7 @@ SUPPORTED_COINS = [
 ]
 INTERVALS = ["1m","5m","15m","1h","4h","1d"]
 
-app = FastAPI(title="ONE-BUNE Finans", version="1.0.0")
+app = FastAPI(title="ONE-BUNE Finans", version="1.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
 
@@ -105,54 +103,40 @@ def calc_bollinger(closes: List[float], period: int = 20) -> Dict:
             "lower": round(mid - 2*std, 4), "width": round(4*std/mid*100, 2)}
 
 def detect_candle_patterns(klines: List[Dict]) -> List[Dict]:
-    """Son 3 mum üzerinden formasyon tespiti."""
     if len(klines) < 3: return []
     patterns = []
     c  = klines[-1]
     p  = klines[-2]
     pp = klines[-3]
-
     o,h,l,cl   = float(c["o"]),float(c["h"]),float(c["l"]),float(c["c"])
     po,pcl     = float(p["o"]),float(p["c"])
     ppo,ppcl   = float(pp["o"]),float(pp["c"])
-
     body   = abs(cl - o)
     candle = h - l
     upper  = h - max(o, cl)
     lower  = min(o, cl) - l
-
     if candle < 0.0001: return patterns
-
-    # Çekiç
     if lower > body * 2 and upper < body * 0.5:
         patterns.append({"name":"Çekiç","direction":"bullish","strength":"medium",
                           "emoji":"🔨","desc":"Dip formasyonu — alım sinyali"})
-    # Ters Çekiç
     if upper > body * 2 and lower < body * 0.5:
         patterns.append({"name":"Ters Çekiç","direction":"neutral","strength":"weak",
                           "emoji":"🔨","desc":"Tersine dönüş adayı"})
-    # Doji
     if body < candle * 0.1:
         patterns.append({"name":"Doji","direction":"neutral","strength":"weak",
                           "emoji":"〒","desc":"Kararsızlık — trend değişimi olabilir"})
-    # Ayı Yutan
     if o > po and cl < po and cl < pcl and o > pcl:
         patterns.append({"name":"Ayı Yutan","direction":"bearish","strength":"strong",
                           "emoji":"🐻","desc":"Güçlü satış sinyali"})
-    # Boğa Yutan
     if o < po and cl > po and cl > pcl and o < pcl:
         patterns.append({"name":"Boğa Yutan","direction":"bullish","strength":"strong",
                           "emoji":"🐂","desc":"Güçlü alım sinyali"})
-    # Shooting Star
     if upper > body * 2 and lower < body * 0.3 and cl < o:
         patterns.append({"name":"Shooting Star","direction":"bearish","strength":"medium",
                           "emoji":"⭐","desc":"Tepe formasyonu — satış sinyali"})
-    # Morning Star
-    if (ppcl < ppo and body < candle*0.2 and
-        cl > (ppo + ppcl)/2):
+    if (ppcl < ppo and body < candle*0.2 and cl > (ppo + ppcl)/2):
         patterns.append({"name":"Morning Star","direction":"bullish","strength":"strong",
                           "emoji":"🌅","desc":"3 mum alım formasyonu"})
-    # Marubozu
     if upper < candle*0.02 and lower < candle*0.02:
         if cl > o:
             patterns.append({"name":"Boğa Marubozu","direction":"bullish","strength":"strong",
@@ -163,14 +147,11 @@ def detect_candle_patterns(klines: List[Dict]) -> List[Dict]:
     return patterns
 
 def detect_signals(symbol: str, interval: str = "1h") -> Dict:
-    """RSI, MACD, BB, EMA, hacim + mum formasyonları → sinyal üret."""
     klines_raw = list(kline_cache.get(symbol, {}).get(interval, []))
     if len(klines_raw) < 30:
         return {"error": "Yetersiz veri", "symbol": symbol}
-
     closes  = [float(k["c"]) for k in klines_raw]
     volumes = [float(k["v"]) for k in klines_raw]
-
     rsi  = calc_rsi(closes)
     macd = calc_macd(closes)
     bb   = calc_bollinger(closes)
@@ -178,36 +159,27 @@ def detect_signals(symbol: str, interval: str = "1h") -> Dict:
     e21  = calc_ema(closes, 21)
     e50  = calc_ema(closes, 50)
     patterns = detect_candle_patterns(klines_raw[-3:])
-
     price     = closes[-1]
     avg_vol   = sum(volumes[-20:]) / 20 if len(volumes) >= 20 else sum(volumes)/len(volumes)
     vol_ratio = round(volumes[-1] / avg_vol, 2) if avg_vol else 1.0
-
-    # EMA trend
     trend = "nötr"
     if e9 and e21 and e50:
         if e9[-1] > e21[-1] > e50[-1]: trend = "güçlü yükseliş"
         elif e9[-1] < e21[-1] < e50[-1]: trend = "güçlü düşüş"
         elif e9[-1] > e21[-1]: trend = "kısa vadeli yükseliş"
         else: trend = "kısa vadeli düşüş"
-
-    # BB konumu
     bb_pos = "orta"
     if bb:
         if price >= bb["upper"]: bb_pos = "üst band üstü — aşırı alım"
         elif price <= bb["lower"]: bb_pos = "alt band altı — aşırı satım"
         elif price > bb["mid"]: bb_pos = "üst bölge"
         else: bb_pos = "alt bölge"
-
-    # RSI yorumu
     rsi_comment = "nötr"
     if rsi:
         if rsi > 70: rsi_comment = "aşırı alım"
         elif rsi < 30: rsi_comment = "aşırı satım"
         elif rsi > 55: rsi_comment = "güçlü"
         elif rsi < 45: rsi_comment = "zayıf"
-
-    # Genel sinyal skoru
     score = 0
     reasons = []
     if rsi:
@@ -224,13 +196,11 @@ def detect_signals(symbol: str, interval: str = "1h") -> Dict:
         if p["direction"] == "bullish": score += (2 if p["strength"]=="strong" else 1)
         elif p["direction"] == "bearish": score -= (2 if p["strength"]=="strong" else 1)
         reasons.append(f"{p['emoji']} {p['name']}")
-
-    if score >= 3: overall = "GÜÇLÜ ALIIM"
+    if score >= 3: overall = "GÜÇLÜ ALIM"
     elif score >= 1: overall = "ZAYIF ALIM"
     elif score <= -3: overall = "GÜÇLÜ SATIŞ"
     elif score <= -1: overall = "ZAYIF SATIŞ"
     else: overall = "BEKLE"
-
     return {
         "symbol": symbol, "interval": interval, "price": price,
         "trend": trend,
@@ -252,21 +222,18 @@ def detect_signals(symbol: str, interval: str = "1h") -> Dict:
     }
 
 # ──────────────────────────────────────────────────────────────
-# LLM YORUM — DeepInfra Qwen3.5-4B (ucuz, hızlı)
+# LLM YORUM
 # ──────────────────────────────────────────────────────────────
 
 async def llm_interpret(symbol: str, analysis: Dict) -> str:
-    """DeepInfra Qwen3.5-4B ile teknik analiz yorumu."""
     if not DEEPINFRA_API_KEY:
         return _rule_based_comment(analysis)
-
     sig     = analysis.get("signal", {})
     rsi     = analysis.get("rsi", {})
     macd    = analysis.get("macd", {})
     vol     = analysis.get("volume", {})
     pat     = analysis.get("candle_patterns", [])
     whales  = analysis.get("whales_recent", [])
-
     prompt = f"""{symbol} kripto teknik analizi — kısa Türkçe yorum yaz, max 5 madde, emoji kullan.
 
 Fiyat: ${analysis.get('price','?')} | Trend: {analysis.get('trend','?')}
@@ -280,7 +247,6 @@ Sinyal: {sig.get('overall','?')} (skor: {sig.get('score',0)})
 Sebepler: {', '.join(sig.get('reasons',[]))}
 
 Kısa değerlendirme ve AL/SAT/BEKLE önerisi:"""
-
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             r = await client.post(
@@ -296,14 +262,12 @@ Kısa değerlendirme ve AL/SAT/BEKLE önerisi:"""
             )
             data = r.json()
             text = data["choices"][0]["message"]["content"].strip()
-            print(f"[LLM] ✅ {symbol} | {len(text)} chars | model={FINANS_LLM_MODEL}")
             return text
     except Exception as e:
-        print(f"[LLM] ❌ {e} — kural tabanlı yorum kullanılıyor")
+        print(f"[LLM] {e}")
         return _rule_based_comment(analysis)
 
 def _rule_based_comment(analysis: Dict) -> str:
-    """LLM yoksa kural tabanlı yorum."""
     sig = analysis.get("signal", {})
     lines = [
         f"📊 **{analysis.get('symbol')}** — ${analysis.get('price',0):,.4f}",
@@ -317,42 +281,33 @@ def _rule_based_comment(analysis: Dict) -> str:
     return "\n".join(lines)
 
 # ──────────────────────────────────────────────────────────────
-# OTOMATİK FİNANS YORUMCUSU
-# Kullanıcı sormaz — sistem her N dakikada bir yorum üretir.
-# Kesin öneri değil, olasılıksal yorum.
+# OTOMATİK COMMENTARY
 # ──────────────────────────────────────────────────────────────
 
 COMMENTARY_PROMPT = """Sen ONE-BUNE'nin kripto finans yorumcususun.
 Sana gelen SADECE bu sistem verilerini kullan — dışarıdan bilgi ekleme.
-Yorumunu şu kurallara göre yap:
 
 DÜRÜSTLÜK KURALLARI:
-• "Kesinlikle" veya "mutlaka" kullanma — piyasa tahmin edilemez
-• "Yüksek ihtimalle", "%X olasılıkla", "güçlü sinyal" gibi ifadeler kullan
-• Çelişkili sinyaller varsa bunu belirt
-• Yorumun kısa olsun — max 4 madde, emoji ile başlasın
+• "Kesinlikle" veya "mutlaka" kullanma
+• "Yüksek ihtimalle", "%X olasılıkla" gibi ifadeler kullan
+• Çelişkili sinyaller varsa belirt
+• max 4 madde, emoji ile başla
 
 FORMAT:
-📊 [Genel Durum — 1 cümle]
-📈 veya 📉 [Trend yorumu — ihtimalle]
-⚡ [RSI/MACD yorumu — ne anlama geliyor]
-🐋 [Whale aktivitesi varsa — varsa belirt, yoksa yazma]
-🎯 [Olası senaryo — "eğer X olursa Y ihtimali artar" formatında]
+📊 [Genel Durum]
+📈 veya 📉 [Trend yorumu]
+⚡ [RSI/MACD yorumu]
+🐋 [Whale aktivitesi varsa]
+🎯 [Olası senaryo]
 
 Türkçe yaz. Finansal tavsiye değil, veri yorumu yap."""
 
 async def generate_commentary(symbol: str, interval: str = "1h") -> str:
-    """
-    Mevcut teknik analizi DeepInfra ile yorumla.
-    Otomatik olarak çalışır — kullanıcı sormaz.
-    """
     if not DEEPINFRA_API_KEY:
         return _auto_commentary(symbol, interval)
-
     analysis = detect_signals(symbol, interval)
     if "error" in analysis:
         return "⏳ Veri yükleniyor..."
-
     sig      = analysis.get("signal", {})
     rsi      = analysis.get("rsi", {})
     macd     = analysis.get("macd", {})
@@ -360,7 +315,6 @@ async def generate_commentary(symbol: str, interval: str = "1h") -> str:
     patterns = analysis.get("candle_patterns", [])
     whales   = analysis.get("whales_recent", [])
     bb       = analysis.get("bollinger", {})
-
     data_summary = f"""
 {symbol} | {interval} | Fiyat: ${analysis.get('price', 0):,.4f}
 Trend: {analysis.get('trend')}
@@ -371,9 +325,7 @@ Hacim: {vol.get('ratio', 1):.1f}x ortalama {'⚠️ ANOMALİ' if vol.get('alert'
 Mum Formasyonları: {', '.join(p['name'] + '(' + p['direction'] + ')' for p in patterns) or 'Yok'}
 Sinyal Skoru: {sig.get('score', 0):+d} → {sig.get('overall')}
 Sebepler: {', '.join(sig.get('reasons', []))}
-Son Whale: {len(whales)} işlem {'| En büyük: $' + f"{max((w.get('usd',0) for w in whales), default=0):,.0f}" if whales else ''}
 """
-
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
             r = await client.post(
@@ -391,31 +343,22 @@ Son Whale: {len(whales)} işlem {'| En büyük: $' + f"{max((w.get('usd',0) for 
                 }
             )
             text = r.json()["choices"][0]["message"]["content"].strip()
-            print(f"[COMMENTARY] ✅ {symbol} | {len(text)} chars")
             return text
     except Exception as e:
-        print(f"[COMMENTARY] ❌ {e}")
+        print(f"[COMMENTARY] {e}")
         return _auto_commentary(symbol, interval)
 
-
 def _auto_commentary(symbol: str, interval: str) -> str:
-    """LLM yoksa kural tabanlı otomatik yorum."""
     analysis = detect_signals(symbol, interval)
     if "error" in analysis:
         return "⏳ Veri bekleniyor..."
-
     sig      = analysis.get("signal", {})
     rsi      = analysis.get("rsi", {})
-    vol      = analysis.get("volume", {})
     whales   = analysis.get("whales_recent", [])
-    patterns = analysis.get("candle_patterns", [])
     price    = analysis.get("price", 0)
     trend    = analysis.get("trend", "nötr")
     score    = sig.get("score", 0)
-
     lines = [f"📊 **{symbol}** ${price:,.4f} — {trend}"]
-
-    # Trend ihtimali
     if "güçlü yükseliş" in trend:
         lines.append("📈 Yüksek ihtimalle (%70+) yükseliş momentum'u devam ediyor")
     elif "güçlü düşüş" in trend:
@@ -424,39 +367,28 @@ def _auto_commentary(symbol: str, interval: str) -> str:
         lines.append("📈 Kısa vadede %55-60 ihtimalle alıcı baskısı var")
     else:
         lines.append("↔️ Trend belirsiz, kararsızlık dönemi (%50-50)")
-
-    # RSI
     rsi_val = rsi.get("value", 50) or 50
     if rsi_val > 70:
-        lines.append(f"⚡ RSI {rsi_val} — Aşırı alım bölgesi, düzeltme ihtimali %60-70")
+        lines.append(f"⚡ RSI {rsi_val} — Aşırı alım, düzeltme ihtimali %60-70")
     elif rsi_val < 30:
         lines.append(f"⚡ RSI {rsi_val} — Aşırı satım, toparlanma ihtimali %65+")
     else:
-        lines.append(f"⚡ RSI {rsi_val} — Nötr bölge, yön için ek sinyal gerekiyor")
-
-    # Whale
+        lines.append(f"⚡ RSI {rsi_val} — Nötr bölge")
     if whales:
         buy  = sum(1 for w in whales if w.get("side") == "BUY")
         sell = len(whales) - buy
         if buy > sell:
-            lines.append(f"🐋 {buy} büyük alım vs {sell} satım — kurumsal ilgi sinyali")
+            lines.append(f"🐋 {buy} büyük alım vs {sell} satım")
         elif sell > buy:
-            lines.append(f"🐋 {sell} büyük satım — dikkatli ol, baskı artabilir")
-
-    # Senaryo
+            lines.append(f"🐋 {sell} büyük satım — dikkatli ol")
     if score >= 2:
-        lines.append("🎯 Eğer hacim artmaya devam ederse yükseliş senaryosu güçlenir (%60-65)")
+        lines.append("🎯 Hacim artarsa yükseliş senaryosu güçlenir")
     elif score <= -2:
-        lines.append("🎯 Destek kırılırsa düşüş hızlanabilir — stop-loss önemli")
-    else:
-        lines.append("🎯 Net yön için mum kapanışı beklenmeli")
-
+        lines.append("🎯 Destek kırılırsa düşüş hızlanabilir")
     return "\n".join(lines)
 
-
-
 # ──────────────────────────────────────────────────────────────
-# WHALE TESPİTİ
+# WHALE
 # ──────────────────────────────────────────────────────────────
 
 async def detect_whale(symbol: str, trade: Dict) -> Optional[Dict]:
@@ -473,14 +405,13 @@ async def detect_whale(symbol: str, trade: Dict) -> Optional[Dict]:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
             whale_history[symbol].append(whale)
-            print(f"[WHALE] {whale['emoji']} | {symbol} | ${usd:,.0f}")
             return whale
     except Exception as e:
-        print(f"[WHALE ERROR] {e}")
+        print(f"[WHALE] {e}")
     return None
 
 # ──────────────────────────────────────────────────────────────
-# BİNANCE WEBSOCKET
+# BİNANCE WS
 # ──────────────────────────────────────────────────────────────
 
 async def binance_stream(symbol: str):
@@ -501,7 +432,7 @@ async def binance_stream(symbol: str):
                 async for msg in ws:
                     await process_msg(symbol, json.loads(msg))
         except Exception as e:
-            print(f"[BINANCE WS] {symbol} hata: {e} — {retry}s")
+            print(f"[BINANCE WS] {symbol} hata: {e}")
         await asyncio.sleep(retry)
         retry = min(retry * 2, 60)
 
@@ -509,7 +440,6 @@ async def process_msg(symbol: str, data: Dict):
     d     = data.get("data", data)
     event = d.get("e", "")
     push  = None
-
     if event == "kline":
         k = d["k"]
         iv = k["i"]
@@ -519,10 +449,7 @@ async def process_msg(symbol: str, data: Dict):
         cache = kline_cache[symbol][iv]
         if cache and cache[-1]["t"] == candle["t"]: cache[-1] = candle
         else: cache.append(candle)
-
         push = {"type":"kline","symbol":symbol,"interval":iv,"candle":candle,"closed":k["x"]}
-
-        # Kapanan mumda sinyal kontrolü
         if k["x"] and iv in ("15m", "1h"):
             sig = detect_signals(symbol, iv)
             if sig.get("signal",{}).get("score",0) != 0:
@@ -530,28 +457,23 @@ async def process_msg(symbol: str, data: Dict):
                                 "patterns":sig["candle_patterns"],"rsi":sig["rsi"],"macd":sig["macd"]}
                 signal_history[symbol].append(signal_event)
                 await broadcast(symbol, signal_event)
-
     elif event == "aggTrade":
         price_cache[symbol] = float(d.get("p", 0))
         whale = await detect_whale(symbol, d)
         if whale: push = whale
-
     elif event == "bookTicker":
         bid = float(d.get("b", 0))
         ask = float(d.get("a", 0))
         price_cache[symbol] = (bid + ask) / 2
         push = {"type":"ticker","symbol":symbol,"bid":bid,"ask":ask,
                 "price":round((bid+ask)/2, 6)}
-
     if push:
         await broadcast(symbol, push)
 
 async def broadcast(symbol: str, data: Dict):
-    global all_clients
     msg = json.dumps(data, default=str)
     if symbol not in subscribers:
         return
-    # Kopyasını al — iterasyon sırasında set değişirse hata vermesin
     current_subscribers = list(subscribers[symbol])
     for ws in current_subscribers:
         try:
@@ -561,7 +483,7 @@ async def broadcast(symbol: str, data: Dict):
             all_clients.discard(ws)
 
 # ──────────────────────────────────────────────────────────────
-# GEÇMİŞ VERİ
+# GEÇMİŞ
 # ──────────────────────────────────────────────────────────────
 
 async def fetch_historical(symbol: str, interval: str = "1h", limit: int = 300):
@@ -580,128 +502,7 @@ async def fetch_historical(symbol: str, interval: str = "1h", limit: int = 300):
         return []
 
 # ──────────────────────────────────────────────────────────────
-# STARTUP
-# ──────────────────────────────────────────────────────────────
-
-
-
-@app.get("/commentary/{symbol}")
-async def get_commentary(
-    symbol:   str,
-    interval: str = Query("1h", enum=INTERVALS),
-):
-    """
-    Otomatik finans yorumu — kullanıcı sormaz, sistem üretir.
-    Olasılıksal dil kullanır, kesin tavsiye vermez.
-    """
-    symbol = symbol.upper()
-    if symbol not in SUPPORTED_COINS:
-        raise HTTPException(404, f"{symbol} desteklenmiyor")
-
-    if symbol not in kline_cache or interval not in kline_cache.get(symbol, {}):
-        await fetch_historical(symbol, interval, 300)
-
-    commentary = await generate_commentary(symbol, interval)
-    return {
-        "symbol":     symbol,
-        "interval":   interval,
-        "commentary": commentary,
-        "timestamp":  datetime.now(timezone.utc).isoformat(),
-        "disclaimer": "Bu yorum otomatik oluşturulmuştur. Yatırım tavsiyesi değildir.",
-    }
-
-
-@app.get("/commentary/{symbol}/stream")
-async def stream_commentary(
-    symbol:   str,
-    interval: str = Query("1h", enum=INTERVALS),
-):
-    """
-    Yorum akışı — frontend'e token token gönderir.
-    Kullanıcı sormadan otomatik çalışır.
-    """
-    symbol = symbol.upper()
-    if symbol not in SUPPORTED_COINS:
-        raise HTTPException(404)
-
-    if symbol not in kline_cache or interval not in kline_cache.get(symbol, {}):
-        await fetch_historical(symbol, interval, 300)
-
-    analysis = detect_signals(symbol, interval)
-    if "error" in analysis or not DEEPINFRA_API_KEY:
-        commentary = _auto_commentary(symbol, interval)
-        return StreamingResponse(
-            iter([commentary]),
-            media_type="text/plain; charset=utf-8"
-        )
-
-    sig      = analysis.get("signal", {})
-    rsi      = analysis.get("rsi", {})
-    macd     = analysis.get("macd", {})
-    vol      = analysis.get("volume", {})
-    patterns = analysis.get("candle_patterns", [])
-    whales   = analysis.get("whales_recent", [])
-    bb       = analysis.get("bollinger", {})
-
-    data_summary = f"""{symbol} | {interval} | ${analysis.get('price', 0):,.4f}
-Trend: {analysis.get('trend')} | RSI: {rsi.get('value')} ({rsi.get('comment')})
-MACD: {macd.get('trend')} | Histogram: {macd.get('histogram', 0):+.6f}
-Bollinger: {bb.get('position', 'N/A')} | Genişlik: {bb.get('width', 0):.1f}%
-Hacim: {vol.get('ratio', 1):.1f}x {'ANOMALİ' if vol.get('alert') else 'normal'}
-Formasyonlar: {', '.join(p['name'] for p in patterns) or 'Yok'}
-Sinyal: {sig.get('score', 0):+d} ({sig.get('overall')}) | Sebepler: {', '.join(sig.get('reasons', []))}
-Whale: {len(whales)} büyük işlem"""
-
-    async def _stream():
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                async with client.stream(
-                    "POST",
-                    f"{DEEPINFRA_BASE_URL}/chat/completions",
-                    headers={"Authorization": f"Bearer {DEEPINFRA_API_KEY}",
-                             "Content-Type": "application/json"},
-                    json={
-                        "model":       FINANS_LLM_MODEL,
-                        "messages":    [
-                            {"role": "system", "content": COMMENTARY_PROMPT},
-                            {"role": "user",   "content": f"/no_think\n{symbol} piyasa verisi:\n{data_summary}"},
-                        ],
-                        "max_tokens":  350,
-                        "temperature": 0.4,
-                        "stream":      True,
-                    }
-                ) as resp:
-                    async for line in resp.aiter_lines():
-                        if line.startswith("data: ") and line != "data: [DONE]":
-                            try:
-                                chunk = json.loads(line[6:])
-                                text  = chunk["choices"][0]["delta"].get("content", "")
-                                if text:
-                                    yield text
-                            except Exception:
-                                pass
-        except Exception as e:
-            print(f"[COMMENTARY STREAM] ❌ {e}")
-            yield _auto_commentary(symbol, interval)
-
-    return StreamingResponse(_stream(), media_type="text/plain; charset=utf-8")
-
-@app.on_event("startup")
-async def startup():
-    print("[FINANS] Başlıyor...")
-    tasks = [fetch_historical(s, iv, 300)
-             for s in SUPPORTED_COINS for iv in ["15m","1h","4h","1d"]]
-    await asyncio.gather(*tasks)
-    print(f"[FINANS] ✅ Geçmiş veri yüklendi")
-    for s in SUPPORTED_COINS:
-        asyncio.create_task(binance_stream(s))
-    print(f"[FINANS] ✅ {len(SUPPORTED_COINS)} coin stream aktif")
-        # ⬇⬇ BU SATIRI EKLE
-    from john_alerts_addon import john_startup_task
-    john_startup_task()
-
-# ──────────────────────────────────────────────────────────────
-# REST ENDPOINTS
+# ENDPOINTS
 # ──────────────────────────────────────────────────────────────
 
 @app.get("/health")
@@ -713,7 +514,6 @@ async def get_coins():
     coins = []
     for s in SUPPORTED_COINS:
         price = price_cache.get(s, 0)
-        # 24s değişim hesapla — 1d kline'dan
         change_24h = 0.0
         klines_1d = list(kline_cache.get(s, {}).get("1d", []))
         if len(klines_1d) >= 2:
@@ -727,7 +527,7 @@ async def get_coins():
 async def get_signals(symbol: str, interval: str = Query("1h", enum=INTERVALS)):
     symbol = symbol.upper()
     if symbol not in SUPPORTED_COINS:
-        raise HTTPException(404, f"{symbol} desteklenmiyor")
+        raise HTTPException(404)
     if symbol not in kline_cache or interval not in kline_cache.get(symbol,{}):
         await fetch_historical(symbol, interval, 300)
     return detect_signals(symbol, interval)
@@ -751,40 +551,41 @@ async def get_history(symbol: str,
     return {"symbol":symbol,"interval":interval,
             "klines": await fetch_historical(symbol, interval, limit)}
 
-
-
-@app.get("/support-resistance/{symbol}")
-async def get_support_resistance(
-    symbol: str,
-    interval: str = Query("1h", enum=INTERVALS),
-):
-    """Pivot noktalarından otomatik destek/direnç seviyeleri."""
+@app.get("/commentary/{symbol}")
+async def get_commentary(symbol: str, interval: str = Query("1h", enum=INTERVALS)):
     symbol = symbol.upper()
     if symbol not in SUPPORTED_COINS:
         raise HTTPException(404)
+    if symbol not in kline_cache or interval not in kline_cache.get(symbol, {}):
+        await fetch_historical(symbol, interval, 300)
+    commentary = await generate_commentary(symbol, interval)
+    return {
+        "symbol": symbol, "interval": interval, "commentary": commentary,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "disclaimer": "Bu yorum otomatik oluşturulmuştur. Yatırım tavsiyesi değildir.",
+    }
 
+@app.get("/support-resistance/{symbol}")
+async def get_support_resistance(symbol: str, interval: str = Query("1h", enum=INTERVALS)):
+    symbol = symbol.upper()
+    if symbol not in SUPPORTED_COINS:
+        raise HTTPException(404)
     klines = list(kline_cache.get(symbol, {}).get(interval, []))
     if len(klines) < 20:
         await fetch_historical(symbol, interval, 300)
         klines = list(kline_cache.get(symbol, {}).get(interval, []))
-
     if len(klines) < 20:
         return {"symbol": symbol, "supports": [], "resistances": []}
-
     highs  = [float(k["h"]) for k in klines]
     lows   = [float(k["l"]) for k in klines]
     closes = [float(k["c"]) for k in klines]
     price  = closes[-1]
-
-    # Pivot High/Low tespiti — 5 mum penceresi
     pivots_high, pivots_low = [], []
     for i in range(5, len(klines)-5):
         if all(highs[i] >= highs[i-j] and highs[i] >= highs[i+j] for j in range(1, 6)):
             pivots_high.append(highs[i])
         if all(lows[i] <= lows[i-j] and lows[i] <= lows[i+j] for j in range(1, 6)):
             pivots_low.append(lows[i])
-
-    # Yakın seviyeleri birleştir (%0.5 tolerans)
     def cluster(levels, tol=0.005):
         if not levels: return []
         levels = sorted(set(round(l, 8) for l in levels))
@@ -795,11 +596,8 @@ async def get_support_resistance(
             else:
                 clusters.append([l])
         return [round(sum(c)/len(c), 8) for c in clusters]
-
     supports    = sorted([l for l in cluster(pivots_low)  if l < price], reverse=True)[:3]
     resistances = sorted([l for l in cluster(pivots_high) if l > price])[:3]
-
-    # Son kapanışa göre güç skoru
     def strength(levels, price, is_support):
         result = []
         for l in levels:
@@ -807,66 +605,44 @@ async def get_support_resistance(
             s = "güçlü" if pct < 1 else "orta" if pct < 3 else "zayıf"
             result.append({"level": round(l, 8), "pct_away": round(pct, 2), "strength": s})
         return result
-
     return {
-        "symbol":      symbol,
-        "interval":    interval,
-        "price":       price,
-        "supports":    strength(supports, price, True),
+        "symbol": symbol, "interval": interval, "price": price,
+        "supports": strength(supports, price, True),
         "resistances": strength(resistances, price, False),
-        "timestamp":   datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
-
 
 @app.get("/correlation")
 async def get_correlation():
-    """
-    Coin korelasyon matrisi — son 30 günlük günlük kapanış fiyatlarından hesaplanır.
-    Pearson korelasyon katsayısı: -1 (ters), 0 (bağımsız), +1 (aynı yön)
-    """
-    # Tüm coinler için 1d kapanış fiyatlarını al
     closes = {}
     for symbol in SUPPORTED_COINS:
         klines = list(kline_cache.get(symbol, {}).get("1d", []))
         if len(klines) >= 7:
             closes[symbol] = [float(k["c"]) for k in klines[-30:]]
-
     if len(closes) < 2:
         return {"error": "Yetersiz veri", "matrix": {}}
-
-    # Günlük getiri hesapla (% değişim)
     returns = {}
     for sym, prices in closes.items():
         if len(prices) < 2:
             continue
         ret = [(prices[i] - prices[i-1]) / prices[i-1] for i in range(1, len(prices))]
         returns[sym] = ret
-
-    # Pearson korelasyon
     def pearson(x, y):
         n = min(len(x), len(y))
-        if n < 3:
-            return 0
+        if n < 3: return 0
         x, y = x[:n], y[:n]
         mx, my = sum(x)/n, sum(y)/n
         num = sum((x[i]-mx)*(y[i]-my) for i in range(n))
         dx  = (sum((x[i]-mx)**2 for i in range(n)))**0.5
         dy  = (sum((y[i]-my)**2 for i in range(n)))**0.5
-        if dx == 0 or dy == 0:
-            return 0
+        if dx == 0 or dy == 0: return 0
         return round(num / (dx * dy), 3)
-
     symbols = list(returns.keys())
     matrix = {}
     for s1 in symbols:
         matrix[s1] = {}
         for s2 in symbols:
-            if s1 == s2:
-                matrix[s1][s2] = 1.0
-            else:
-                matrix[s1][s2] = pearson(returns[s1], returns[s2])
-
-    # BTC ile korelasyon sıralaması
+            matrix[s1][s2] = 1.0 if s1 == s2 else pearson(returns[s1], returns[s2])
     btc_corr = []
     if "BTCUSDT" in matrix:
         for sym in symbols:
@@ -878,33 +654,25 @@ async def get_correlation():
                                  "negatif" if matrix["BTCUSDT"].get(sym, 0) < -0.3 else "nötr"
                 })
         btc_corr.sort(key=lambda x: abs(x["correlation"]), reverse=True)
-
     return {
-        "symbols":   symbols,
-        "matrix":    matrix,
-        "btc_corr":  btc_corr,
+        "symbols": symbols, "matrix": matrix, "btc_corr": btc_corr,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
-
-
-# ── Döviz & Emtia cache ──────────────────────────────
+# ── Döviz & Emtia ────────────────────────────────────────
 import time as _time
 _rates_cache = {"data": {}, "ts": 0}
 _metals_cache = {"data": {}, "ts": 0}
 
 @app.get("/rates")
 async def get_rates():
-    """Döviz kurları — Frankfurter API, 2 dakika cache."""
     global _rates_cache
     now = _time.time()
     if now - _rates_cache["ts"] < 120 and _rates_cache["data"]:
         return _rates_cache["data"]
-
     result = {}
     try:
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            # TRY bazlı döviz kurları
             r = await client.get(
                 "https://api.frankfurter.app/latest",
                 params={"from": "TRY", "to": "USD,EUR,GBP,CHF,JPY,CAD,DKK,NOK,SEK,AUD"}
@@ -915,50 +683,32 @@ async def get_rates():
                     result[cur] = {"try": round(1 / val, 4), "raw": val}
     except Exception as e:
         print(f"[RATES] {e}")
-
-    # Önceki veriyi koru, sadece yeni gelirse güncelle
     if result:
         _rates_cache = {"data": {"rates": result, "timestamp": datetime.now(timezone.utc).isoformat()}, "ts": now}
-
     return _rates_cache["data"] or {"rates": {}, "error": "Veri alınamadı"}
-
 
 @app.get("/metals")
 async def get_metals():
-    """Emtia & değerli metaller — Binance PAXG/USDT + GC=F Yahoo fallback — 2 dk cache."""
     global _metals_cache
     now = _time.time()
     if now - _metals_cache["ts"] < 120 and _metals_cache["data"]:
         return _metals_cache["data"]
-
     metals = {}
     usd_try = 38.0
-
     if _rates_cache["data"]:
         usd_try = _rates_cache["data"].get("rates", {}).get("USD", {}).get("try", 38.0)
-
     try:
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            # Altın — Binance PAXG/USDT (1 PAXG = 1 troy ons altın)
-            r = await client.get(
-                "https://api.binance.com/api/v3/ticker/price",
-                params={"symbol": "PAXGUSDT"}
-            )
+            r = await client.get("https://api.binance.com/api/v3/ticker/price",
+                                  params={"symbol": "PAXGUSDT"})
             if r.status_code == 200:
                 gold_usd = round(float(r.json()["price"]), 2)
                 metals["XAU"] = {"usd": gold_usd, "try": round(gold_usd * usd_try, 2)}
-                metals["XAU_GR"] = {
-                    "usd": round(gold_usd / 31.1035, 4),
-                    "try": round(gold_usd / 31.1035 * usd_try, 2)
-                }
-
-            # Gümüş — Binance XAGUSD yok, yaklaşık oran kullan
-            # Altın/Gümüş oranı tarihsel ~80x
+                metals["XAU_GR"] = {"usd": round(gold_usd / 31.1035, 4),
+                                    "try": round(gold_usd / 31.1035 * usd_try, 2)}
             if metals.get("XAU"):
                 silver_usd = round(metals["XAU"]["usd"] / 80, 2)
                 metals["XAG"] = {"usd": silver_usd, "try": round(silver_usd * usd_try, 2)}
-
-            # Brent petrol — Binance yok, Yahoo Finance dene
             try:
                 r_oil = await client.get(
                     "https://query1.finance.yahoo.com/v8/finance/chart/BZ%3DF",
@@ -973,40 +723,28 @@ async def get_metals():
                     metals["OIL"] = {"usd": 74.5, "label": "Yaklaşık"}
             except:
                 metals["OIL"] = {"usd": 74.5, "label": "Yaklaşık"}
-
     except Exception as e:
         print(f"[METALS] {e}")
         metals["OIL"] = {"usd": 74.5, "label": "Yaklaşık"}
-
     if metals:
         _metals_cache = {
             "data": {"metals": metals, "usd_try": usd_try, "timestamp": datetime.now(timezone.utc).isoformat()},
             "ts": now
         }
-
     return _metals_cache["data"] or {"metals": {}}
-
-
 
 @app.post("/currency-commentary")
 async def get_currency_commentary(request: Request):
-    """Döviz/emtia için AI yorumu — kripto commentary ile aynı yapı."""
     try:
         body = await request.json()
         code    = body.get("code", "USD")
         name    = body.get("name", "Amerikan Doları")
         value   = body.get("value", 0)
         context = body.get("context", "")
-
         system = """Sen ONE-BUNE platformunun finansal analiz asistanısın.
 Kullanıcıya döviz ve emtia piyasaları hakkında kısa, net, Türkçe yorumlar yaparsın.
 Olasılıksal dil kullanırsın. Kesin alım/satım tavsiyesi vermezsin. 3-4 cümle ile öz cevap verirsin."""
-
         prompt = code + "/TRY kuru: " + str(round(float(value or 0), 4)) + ". " + str(context) + " " + name + " kuru icin guncel piyasa yorumu yap."
-
-
-
-
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
                 f"{DEEPINFRA_BASE_URL}/chat/completions",
@@ -1017,8 +755,7 @@ Olasılıksal dil kullanırsın. Kesin alım/satım tavsiyesi vermezsin. 3-4 cü
                         {"role": "system", "content": system},
                         {"role": "user",   "content": prompt}
                     ],
-                    "max_tokens": 300,
-                    "temperature": 0.7,
+                    "max_tokens": 300, "temperature": 0.7,
                 }
             )
             if response.status_code == 200:
@@ -1027,22 +764,18 @@ Olasılıksal dil kullanırsın. Kesin alım/satım tavsiyesi vermezsin. 3-4 cü
             return {"commentary": "Şu an yorum yapılamıyor.", "code": code}
     except Exception as e:
         print(f"[CURRENCY-COMMENTARY] {e}")
-        return {"commentary": "Yorum alınamadı.", "code": code}
+        return {"commentary": "Yorum alınamadı.", "code": "USD"}
 
 @app.post("/analyze")
 async def analyze_text(request: Request):
-    """Serbest metin analizi — döviz, emtia, genel piyasa yorumu."""
     try:
         body = await request.json()
         prompt = body.get("prompt", "")
         if not prompt:
             return {"commentary": "Analiz için içerik bulunamadı."}
-
         system = """Sen ONE-BUNE platformunun finansal analiz asistanısın. 
 Kullanıcıya döviz, emtia ve kripto piyasaları hakkında kısa, net, Türkçe yorumlar yaparsın.
-Olasılıksal dil kullanırsın ('olabilir', 'ihtimali var', 'görünüyor' gibi).
-Kesin alım/satım tavsiyesi vermezsin. 3-4 cümle ile öz cevap verirsin."""
-
+Olasılıksal dil kullanırsın. 3-4 cümle ile öz cevap verirsin."""
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
                 f"{DEEPINFRA_BASE_URL}/chat/completions",
@@ -1053,26 +786,19 @@ Kesin alım/satım tavsiyesi vermezsin. 3-4 cümle ile öz cevap verirsin."""
                         {"role": "system", "content": system},
                         {"role": "user", "content": prompt}
                     ],
-                    "max_tokens": 300,
-                    "temperature": 0.7,
+                    "max_tokens": 300, "temperature": 0.7,
                 }
             )
             if response.status_code == 200:
-                data = response.json()
-                text = data["choices"][0]["message"]["content"].strip()
+                text = response.json()["choices"][0]["message"]["content"].strip()
                 return {"commentary": text}
-            else:
-                return {"commentary": "Şu an analiz yapılamıyor, lütfen tekrar deneyin."}
+            return {"commentary": "Şu an analiz yapılamıyor."}
     except Exception as e:
         print(f"[ANALYZE] {e}")
         return {"commentary": "Analiz sırasında hata oluştu."}
 
 @app.get("/news")
 async def get_news(symbol: str = "BTC"):
-    """
-    CoinGecko ücretsiz API'den kripto haberleri çek.
-    Haber başlıkları + AI sentiment skoru.
-    """
     symbol_map = {
         "BTCUSDT": "bitcoin", "ETHUSDT": "ethereum", "BNBUSDT": "binancecoin",
         "SOLUSDT": "solana", "XRPUSDT": "ripple", "ADAUSDT": "cardano",
@@ -1080,39 +806,29 @@ async def get_news(symbol: str = "BTC"):
         "DOTUSDT": "polkadot", "MATICUSDT": "matic-network", "UNIUSDT": "uniswap",
     }
     coin_id = symbol_map.get(symbol.upper(), "bitcoin")
-
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            # CoinGecko status updates (ücretsiz, key gereksiz)
             r = await client.get(
                 f"https://api.coingecko.com/api/v3/coins/{coin_id}/status_updates",
-                headers={"Accept": "application/json"},
-                params={"per_page": 5}
+                headers={"Accept": "application/json"}, params={"per_page": 5}
             )
-            
             news = []
             if r.status_code == 200:
                 data = r.json()
                 for item in data.get("status_updates", [])[:5]:
                     desc = item.get("description", "")[:200]
-                    # Basit sentiment
                     pos_words = ["launch", "partnership", "upgrade", "bullish", "growth", "adoption", "record"]
                     neg_words = ["hack", "scam", "crash", "bearish", "lawsuit", "ban", "warning"]
                     pos = sum(1 for w in pos_words if w in desc.lower())
                     neg = sum(1 for w in neg_words if w in desc.lower())
                     sentiment = "pozitif" if pos > neg else "negatif" if neg > pos else "nötr"
-                    sentiment_score = pos - neg
-                    
                     news.append({
                         "title": desc[:100] + "..." if len(desc) > 100 else desc,
                         "category": item.get("category", "genel"),
                         "created_at": item.get("created_at", ""),
-                        "sentiment": sentiment,
-                        "sentiment_score": sentiment_score,
+                        "sentiment": sentiment, "sentiment_score": pos - neg,
                         "url": item.get("project", {}).get("links", {}).get("homepage", [""])[0] if item.get("project") else "",
                     })
-            
-            # Alternatif: CryptoCompare news (ücretsiz)
             if not news:
                 r2 = await client.get(
                     "https://min-api.cryptocompare.com/data/v2/news/",
@@ -1130,92 +846,61 @@ async def get_news(symbol: str = "BTC"):
                         neg = sum(1 for w in neg_words if w in text)
                         sentiment = "pozitif" if pos > neg else "negatif" if neg > pos else "nötr"
                         news.append({
-                            "title": title,
-                            "body": body,
+                            "title": title, "body": body,
                             "source": item.get("source_info", {}).get("name", ""),
-                            "sentiment": sentiment,
-                            "sentiment_score": pos - neg,
+                            "sentiment": sentiment, "sentiment_score": pos - neg,
                             "url": item.get("url", ""),
                             "published_at": item.get("published_on", 0),
                         })
-
             return {
-                "symbol": symbol,
-                "coin_id": coin_id,
-                "news": news,
+                "symbol": symbol, "coin_id": coin_id, "news": news,
                 "count": len(news),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
-
     except Exception as e:
         print(f"[NEWS] {e}")
         return {"symbol": symbol, "news": [], "error": str(e)}
 
 @app.get("/fng")
 async def fear_greed_index():
-    """
-    Korku & Açgözlülük Endeksi — Binance verilerinden hesaplanır.
-    RSI, volatilite, hacim, momentum kullanılır.
-    """
     scores = []
     labels = []
-
     btc_klines = list(kline_cache.get("BTCUSDT", {}).get("1d", []))
     if len(btc_klines) < 30:
         return {"value": 50, "label": "Nötr", "components": {}}
-
     closes  = [float(k["c"]) for k in btc_klines]
     volumes = [float(k["v"]) for k in btc_klines]
-
-    # 1. RSI (0-100 → 0-100)
     rsi = calc_rsi(closes, 14)
     if rsi:
-        scores.append(rsi)
-        labels.append(f"RSI: {rsi:.1f}")
-
-    # 2. Fiyat Momentum — son 7 günlük değişim
+        scores.append(rsi); labels.append(f"RSI: {rsi:.1f}")
     if len(closes) >= 8:
         mom = (closes[-1] - closes[-8]) / closes[-8] * 100
         mom_score = 50 + min(max(mom * 3, -50), 50)
-        scores.append(mom_score)
-        labels.append(f"Momentum: {mom:.1f}%")
-
-    # 3. Volatilite — düşük volatilite = daha az korku
+        scores.append(mom_score); labels.append(f"Momentum: {mom:.1f}%")
     if len(closes) >= 30:
         import statistics
         std = statistics.stdev(closes[-30:])
         mean = sum(closes[-30:]) / 30
         vol_pct = std / mean * 100
         vol_score = max(0, 100 - vol_pct * 5)
-        scores.append(vol_score)
-        labels.append(f"Vol: {vol_pct:.1f}%")
-
-    # 4. Hacim Momentum
+        scores.append(vol_score); labels.append(f"Vol: {vol_pct:.1f}%")
     if len(volumes) >= 10:
         avg_vol = sum(volumes[-30:]) / 30 if len(volumes) >= 30 else sum(volumes) / len(volumes)
         vol_ratio = volumes[-1] / avg_vol if avg_vol else 1
         vol_mom_score = min(50 + (vol_ratio - 1) * 25, 100)
-        scores.append(max(0, vol_mom_score))
-        labels.append(f"HacimRatio: {vol_ratio:.2f}x")
-
-    # 5. EMA Trend — fiyat EMA50 üstünde mi?
+        scores.append(max(0, vol_mom_score)); labels.append(f"HacimRatio: {vol_ratio:.2f}x")
     ema50 = calc_ema(closes, 50)
     if ema50:
         ema_score = 75 if closes[-1] > ema50[-1] else 25
-        scores.append(ema_score)
-        labels.append(f"EMA50: {'Üstünde' if closes[-1] > ema50[-1] else 'Altında'}")
-
+        scores.append(ema_score); labels.append(f"EMA50: {'Üstünde' if closes[-1] > ema50[-1] else 'Altında'}")
     value = round(sum(scores) / len(scores)) if scores else 50
-
     if value < 20:   label = "Aşırı Korku"
     elif value < 40: label = "Korku"
     elif value < 60: label = "Nötr"
     elif value < 80: label = "Açgözlülük"
     else:            label = "Aşırı Açgözlülük"
-
     return {
-        "value": value,
-        "label": label,
+        "value": value, "label": label,
         "components": dict(zip(["rsi","momentum","volatility","volume","ema"], scores)),
         "details": labels,
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -1240,39 +925,27 @@ async def get_signal_history(symbol: str):
 async def ws_endpoint(ws: WebSocket, symbol: str):
     await ws.accept()
     symbol = symbol.upper()
-
-    # Token kontrolü — nginx bypass edildiği için burada yapıyoruz
     token = ws.query_params.get("token", "")
     if not verify_token(token):
         await ws.send_text(json.dumps({"error": "Yetkisiz"}))
         await ws.close(); return
-
     if symbol not in SUPPORTED_COINS:
         await ws.send_text(json.dumps({"error":"Desteklenmiyor"}))
         await ws.close(); return
-
     subscribers[symbol].add(ws)
     all_clients.add(ws)
-    print(f"[WS] +{symbol} | toplam={len(all_clients)}")
-
     try:
-        # İlk snapshot
         snap = {"type":"snapshot","symbol":symbol,
                 "price":price_cache.get(symbol,0),
                 "signals":detect_signals(symbol,"1h"),
                 "whales":list(whale_history[symbol])[-10:]}
         await ws.send_text(json.dumps(snap, default=str))
-
-        # Ping/keepalive — her 20 saniyede ping gönder, nginx timeout önler
         async def send_ping():
             while True:
                 await asyncio.sleep(20)
-                try:
-                    await ws.send_text(json.dumps({"type": "ping"}))
-                except Exception:
-                    break
+                try: await ws.send_text(json.dumps({"type": "ping"}))
+                except Exception: break
         asyncio.create_task(send_ping())
-
         while True:
             msg = await ws.receive_text()
             d   = json.loads(msg)
@@ -1287,9 +960,8 @@ async def ws_endpoint(ws: WebSocket, symbol: str):
                             "signals":detect_signals(symbol,"1h"),
                             "whales":list(whale_history[symbol])[-10:]}
                     await ws.send_text(json.dumps(snap, default=str))
-
     except WebSocketDisconnect:
-        print(f"[WS] -{symbol}")
+        pass
     except Exception as e:
         print(f"[WS] Hata: {e}")
     finally:
@@ -1297,6 +969,32 @@ async def ws_endpoint(ws: WebSocket, symbol: str):
         all_clients.discard(ws)
 
 
+# ═══════════════════════════════════════════════════════════════
+# JOHN AI — Trader Asistan (Endpoint registration + background)
+# Tüm tanımlardan sonra register edilmeli ki app_module fonksiyonları görsün
+# ═══════════════════════════════════════════════════════════════
+import sys as _sys
+from john_alerts_addon import register_john, john_startup_task
+register_john(app, _sys.modules[__name__])
+
+
+# ──────────────────────────────────────────────────────────────
+# STARTUP — En son tanımlanır (decorator FastAPI'ye registry sırasıyla eklenir)
+# ──────────────────────────────────────────────────────────────
+
+@app.on_event("startup")
+async def startup():
+    print("[FINANS] Başlıyor...")
+    tasks = [fetch_historical(s, iv, 300)
+             for s in SUPPORTED_COINS for iv in ["15m","1h","4h","1d"]]
+    await asyncio.gather(*tasks)
+    print(f"[FINANS] ✅ Geçmiş veri yüklendi")
+    for s in SUPPORTED_COINS:
+        asyncio.create_task(binance_stream(s))
+    print(f"[FINANS] ✅ {len(SUPPORTED_COINS)} coin stream aktif")
+    # John background scanner
+    john_startup_task()
+    print("[FINANS] ✅ John AI scanner aktif")
 
 
 if __name__ == "__main__":
