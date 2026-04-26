@@ -711,6 +711,7 @@ def init_database_schema() -> bool:
         ensure_column(cur, "generated_images", "user_prompt",      "TEXT")
         ensure_column(cur, "generated_images", "generated_prompt", "TEXT")
         ensure_column(cur, "generated_images", "modification_of",  "UUID")
+        ensure_column(cur, "generated_images", "metadata",         "JSONB DEFAULT '{}'::jsonb")
         try:
             ensure_constraint(cur, "generated_images", "fk_generated_images_modification", """
                 CONSTRAINT fk_generated_images_modification
