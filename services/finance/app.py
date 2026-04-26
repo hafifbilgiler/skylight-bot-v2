@@ -1296,16 +1296,7 @@ async def ws_endpoint(ws: WebSocket, symbol: str):
         subscribers[symbol].discard(ws)
         all_clients.discard(ws)
 
-# ═══════════════════════════════════════════════════════════════
-# JOHN AI — Trader Asistan
-# ═══════════════════════════════════════════════════════════════
-from john_alerts_addon import john_register, john_startup_task
-john_register(app)
 
-
-@app.on_event("startup")
-async def _start_john():
-    john_startup_task()
 
 
 if __name__ == "__main__":
