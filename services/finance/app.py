@@ -696,6 +696,9 @@ async def startup():
     for s in SUPPORTED_COINS:
         asyncio.create_task(binance_stream(s))
     print(f"[FINANS] ✅ {len(SUPPORTED_COINS)} coin stream aktif")
+        # ⬇⬇ BU SATIRI EKLE
+    from john_alerts_addon import john_startup_task
+    john_startup_task()
 
 # ──────────────────────────────────────────────────────────────
 # REST ENDPOINTS
@@ -1292,6 +1295,9 @@ async def ws_endpoint(ws: WebSocket, symbol: str):
     finally:
         subscribers[symbol].discard(ws)
         all_clients.discard(ws)
+
+
+
 
 if __name__ == "__main__":
     import uvicorn
