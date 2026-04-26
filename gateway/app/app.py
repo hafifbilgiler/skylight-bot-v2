@@ -3971,3 +3971,16 @@ async def root():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8443)
+
+
+# ═══════════════════════════════════════════════════════════════
+# SHUTDOWN — Router cache bağlantısını temiz kapat
+# ═══════════════════════════════════════════════════════════════
+
+@app.on_event("shutdown")
+async def _shutdown_router_cache():
+    try:
+        from smart_router import close_router_cache
+        await close_router_cache()
+    except Exception as e:
+        print(f"[SHUTDOWN] Router cache close error: {e}")
