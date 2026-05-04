@@ -53,7 +53,7 @@ spec:
         - name: DEEPINFRA_ASSISTANT_MODEL
           value: "deepseek-ai/DeepSeek-V4-Flash"
         - name: DEEPINFRA_ASSISTANT_MAX_TOKENS
-          value: "4096"
+          value: "8192"
         - name: DEEPINFRA_ASSISTANT_TEMPERATURE
           value: "0.7"
         - name: DEEPINFRA_CODE_MODEL
@@ -61,7 +61,7 @@ spec:
         - name: DEEPINFRA_CODE_TEMPERATURE
           value: "0.3"
         - name: DEEPINFRA_CODE_MAX_TOKENS
-          value: "16000"
+          value: "32000"
         
         # Smart Tools
         - name: SMART_TOOLS_URL
