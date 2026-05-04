@@ -2797,36 +2797,64 @@ async def chat_endpoint(
 
     async def stream_response():
         assistant_response = ""
+        client_disconnected = False
         try:
             # Deep search önerisi varsa önce gönder
             if web_suggest_msg:
                 yield f"\n💡 *{web_suggest_msg}*\n\n---\n\n"
 
             generator = await call_service(CHAT_SERVICE_URL, "/chat", data=chat_data, stream=True, timeout=300)
-            async for chunk in generator:
-                assistant_response += chunk
-                yield chunk
-            # ── FIX: Save + increment STREAM SONRASI ────────
-            if conversation_id and user_id:
+            try:
+                async for chunk in generator:
+                    assistant_response += chunk
+                    yield chunk
+            except (asyncio.CancelledError, GeneratorExit):
+                # Kullanıcı sayfayı kapattı / internet gitti
+                client_disconnected = True
+                raise
+            except Exception as stream_err:
+                # Stream exception — yine de elimizdekini kaydet
+                client_disconnected = True
+                print(f"[STREAM ERROR] {stream_err}")
+        finally:
+            # ✅ KRİTİK: Stream koptu mu, bitti mi, fark etmez — DB'ye yaz
+            if conversation_id and user_id and assistant_response.strip():
                 try:
                     pool = _get_pool(); conn = pool.getconn(); cur = conn.cursor()
                     try:
+                        # User mesajı (her durumda)
                         cur.execute("INSERT INTO messages (conversation_id,role,content,mode,created_at) VALUES (%s,%s,%s,%s,NOW())",
                                     (conversation_id, "user", request_body.prompt, mode))
-                        cur.execute("INSERT INTO messages (conversation_id,role,content,mode,created_at) VALUES (%s,%s,%s,%s,NOW())",
-                                    (conversation_id, "assistant", assistant_response, mode))
+                        # Assistant mesajı — koptuysa metadata'da işaretle
+                        if client_disconnected:
+                            try:
+                                cur.execute(
+                                    "INSERT INTO messages (conversation_id,role,content,mode,metadata,created_at) "
+                                    "VALUES (%s,%s,%s,%s,%s::jsonb,NOW())",
+                                    (conversation_id, "assistant", assistant_response, mode,
+                                     '{"interrupted": true}')
+                                )
+                            except Exception:
+                                # metadata kolonu yoksa fallback
+                                cur.execute("INSERT INTO messages (conversation_id,role,content,mode,created_at) VALUES (%s,%s,%s,%s,NOW())",
+                                            (conversation_id, "assistant", assistant_response, mode))
+                        else:
+                            cur.execute("INSERT INTO messages (conversation_id,role,content,mode,created_at) VALUES (%s,%s,%s,%s,NOW())",
+                                        (conversation_id, "assistant", assistant_response, mode))
                         cur.execute("UPDATE conversations SET updated_at=NOW() WHERE id=%s", (conversation_id,))
                         conn.commit()
-                        print(f"[CHAT] Saved messages to conversation {conversation_id}")
+                        status = "INTERRUPTED" if client_disconnected else "OK"
+                        print(f"[CHAT SAVE {status}] {len(assistant_response)} chars → conv {conversation_id}")
                     finally:
                         pool.putconn(conn)
                 except Exception as e:
                     print(f"[MESSAGE SAVE ERROR] {e}")
-            if user_id:
-                increment_usage(user_id, mode)
-        except Exception as e:
-            print(f"[CHAT SERVICE ERROR] {e}")
-            yield f"\n⚠️ Chat service error: {str(e)}"
+            # Usage increment — sadece başarılı tamamlandıysa
+            if user_id and not client_disconnected:
+                try:
+                    increment_usage(user_id, mode)
+                except Exception as _e:
+                    print(f"[USAGE INC ERROR] {_e}")
 
     response = StreamingResponse(stream_response(), media_type="text/plain; charset=utf-8")
     if conversation_id:
