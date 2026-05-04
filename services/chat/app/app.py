@@ -1184,6 +1184,54 @@ Same language as query (Turkish/English). Concise but comprehensive."""
 # DEEPINFRA CLIENT
 # ═══════════════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════════════
+# ADAPTIVE THINKING — mesajın zorluğuna göre seviye seç
+# ═══════════════════════════════════════════════════════════════
+def _adaptive_thinking_level(messages: List[Dict]) -> str:
+    """
+    Son user mesajının uzunluk + içerik analizine göre uygun thinking seviyesi:
+      - none   : selamlaşma, kısa sorular, basit komutlar
+      - low    : orta uzunluk, temel sorular
+      - medium : kod yazma, açıklama isteyen sorular
+      - high   : karmaşık problemler, debug, analiz, mimari
+      - xhigh  : çok zor algoritma, multi-step reasoning gereken
+    """
+    user_msgs = [m for m in messages if m.get("role") == "user"]
+    if not user_msgs:
+        return "none"
+    last = (user_msgs[-1].get("content") or "").lower().strip()
+    n = len(last)
+
+    # Çok kısa → düşünme yok
+    if n < 25:
+        return "none"
+
+    # Karmaşıklık sinyalleri (içerik bazlı)
+    very_hard = any(w in last for w in [
+        "optimize", "algoritma", "algorithm", "mimari", "architecture",
+        "refactor", "performans", "complexity", "big-o", "tasarla", "design",
+    ])
+    hard = any(w in last for w in [
+        "debug", "hata", "error", "neden", "nasıl", "açıkla", "explain",
+        "karşılaştır", "compare", "analiz", "review", "incele",
+    ])
+    code_like = any(w in last for w in [
+        "yaz", "kod", "function", "class", "def ", "endpoint", "api",
+        "fastapi", "react", "python", "javascript",
+    ])
+
+    # Karar
+    if very_hard or n > 600:
+        return "xhigh"
+    if hard or (code_like and n > 100):
+        return "high"
+    if code_like or n > 200:
+        return "medium"
+    if n > 80:
+        return "low"
+    return "none"
+
+
 async def stream_deepinfra_completion(
     messages:    List[Dict],
     model:       str,
@@ -1193,29 +1241,38 @@ async def stream_deepinfra_completion(
     reasoning_effort: Optional[str] = None,
 ) -> AsyncGenerator[str, None]:
     """
-    DeepInfra streaming completion.
+    DeepInfra streaming completion with reasoning support.
 
-    reasoning_effort:
-      - None / "none"  → düşünme yok, hızlı cevap (default)
-      - "high"         → orta düşünce, görünür reasoning
-      - "max"          → derin düşünce, uzun reasoning
+    reasoning_effort (DeepSeek V4 API):
+      - "none"   → düşünme yok, hızlı cevap (default)
+      - "low"    → hafif akıl yürütme
+      - "medium" → orta düşünce
+      - "high"   → derin düşünce
+      - "xhigh"  → maksimum derin düşünce
+      - "auto"   → mesaj zorluğuna göre otomatik seçim (kendi heuristik)
 
-    DeepSeek V4 Flash/Pro reasoning_content alanı döndürür streaming'de.
-    Reasoning chunk'ları <think>...</think> tag'leri içinde yieldlanır,
-    frontend bu tag'leri görünce baloncuğa yazar.
+    Reasoning chunk'ları <think>...</think> tag'leri içinde yieldlanır.
     """
     headers = {
         "Content-Type":  "application/json",
         "Authorization": f"Bearer {DEEPINFRA_API_KEY}",
     }
+    # Adaptive — mesaj zorluğuna göre seviye seç
+    if reasoning_effort == "auto":
+        reasoning_effort = _adaptive_thinking_level(messages)
+
     payload = {
         "model": model, "messages": messages,
         "max_tokens": max_tokens, "temperature": temperature,
         "top_p": top_p, "stream": True,
     }
-    # Thinking mode — sadece DeepSeek V4 destekli ve high/max ise
-    if reasoning_effort and reasoning_effort in ("high", "max"):
+    # Thinking mode — sadece geçerli seviye verildiyse
+    if reasoning_effort and reasoning_effort in ("low", "medium", "high", "xhigh"):
         payload["reasoning_effort"] = reasoning_effort
+        # Reasoning + cevap aynı bütçeyi paylaşır → düşünme uzunsa cevap kalmaz
+        # Bu yüzden thinking modda max_tokens'ı genişlet (reasoning'e ayrı yer aç)
+        extra = {"low": 2000, "medium": 4000, "high": 6000, "xhigh": 10000}.get(reasoning_effort, 0)
+        payload["max_tokens"] = max_tokens + extra
 
     in_thinking = False  # Reasoning baloncuğu açık mı?
 
