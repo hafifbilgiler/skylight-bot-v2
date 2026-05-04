@@ -86,7 +86,7 @@ SUMMARY_INTERVAL = int(os.getenv("SUMMARY_INTERVAL", "15"))
 MODE_CONFIGS = {
     "assistant": {
         "model":       os.getenv("DEEPINFRA_ASSISTANT_MODEL", "deepseek-ai/DeepSeek-V4-Flash"),
-        "max_tokens":  int(os.getenv("DEEPINFRA_ASSISTANT_MAX_TOKENS", "4096")),
+        "max_tokens":  int(os.getenv("DEEPINFRA_ASSISTANT_MAX_TOKENS", "16384")),
         "temperature": float(os.getenv("DEEPINFRA_ASSISTANT_TEMPERATURE", "0.7")),
         "top_p":       0.9,
         "system_prompt": ASSISTANT_SYSTEM_PROMPT,
@@ -94,7 +94,7 @@ MODE_CONFIGS = {
     },
     "code": {
         "model":       os.getenv("DEEPINFRA_CODE_MODEL", "deepseek-ai/DeepSeek-V4-Flash"),
-        "max_tokens":  int(os.getenv("DEEPINFRA_CODE_MAX_TOKENS", "16000")),
+        "max_tokens":  int(os.getenv("DEEPINFRA_CODE_MAX_TOKENS", "32000")),
         "temperature": float(os.getenv("DEEPINFRA_CODE_TEMPERATURE", "0.2")),
         "top_p":       0.85,
         "system_prompt":           CODE_SYSTEM_PROMPT,
@@ -1276,7 +1276,10 @@ async def stream_deepinfra_completion(
 
     in_thinking = False  # Reasoning baloncuğu açık mı?
 
-    async with httpx.AsyncClient(timeout=180) as client:
+    # Uzun kod cevapları için generous timeout
+    # connect=10s, read=300s (chunk başına), write=10s, pool=300s
+    timeout_cfg = httpx.Timeout(connect=10.0, read=300.0, write=10.0, pool=300.0)
+    async with httpx.AsyncClient(timeout=timeout_cfg) as client:
         async with client.stream("POST", f"{DEEPINFRA_BASE_URL}/chat/completions",
                                  headers=headers, json=payload) as response:
             async for line in response.aiter_lines():
