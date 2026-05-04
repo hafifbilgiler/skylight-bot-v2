@@ -58,17 +58,22 @@ from pydantic import BaseModel, Field, EmailStr, validator
 CHAT_SERVICE_URL = os.getenv("CHAT_SERVICE_URL", "http://skylight-chat:8082")
 
 # Smart Router — LLM tabanlı mesaj sınıflandırıcı
-try:
-    from smart_router import route_message, router_to_gateway_mode
-    import smart_router as _sr
-    # Gateway'in API key'ini smart_router'a inject et
-    _sr.DEEPINFRA_API_KEY  = os.getenv("DEEPINFRA_API_KEY", "")
-    _sr.DEEPINFRA_BASE_URL = os.getenv("DEEPINFRA_BASE_URL", "https://api.deepinfra.com/v1/openai")
-    SMART_ROUTER_ENABLED = True
-    print(f"[ROUTER] Smart Router yüklendi ✅ (key={'set' if _sr.DEEPINFRA_API_KEY else 'MISSING'})")
-except ImportError:
+# Env: SMART_ROUTER_ENABLED=true ise aktif, default kapalı (DeepSeek kendisi karar versin)
+_SR_FLAG = os.getenv("SMART_ROUTER_ENABLED", "false").strip().lower() in ("true", "1", "yes", "on")
+if _SR_FLAG:
+    try:
+        from smart_router import route_message, router_to_gateway_mode
+        import smart_router as _sr
+        _sr.DEEPINFRA_API_KEY  = os.getenv("DEEPINFRA_API_KEY", "")
+        _sr.DEEPINFRA_BASE_URL = os.getenv("DEEPINFRA_BASE_URL", "https://api.deepinfra.com/v1/openai")
+        SMART_ROUTER_ENABLED = True
+        print(f"[ROUTER] Smart Router AKTİF ✅ (key={'set' if _sr.DEEPINFRA_API_KEY else 'MISSING'})")
+    except ImportError:
+        SMART_ROUTER_ENABLED = False
+        print("[ROUTER] Smart Router import edilemedi — pasif")
+else:
     SMART_ROUTER_ENABLED = False
-    print("[ROUTER] Smart Router yok — keyword fallback aktif")
+    print("[ROUTER] Smart Router KAPALI (env: SMART_ROUTER_ENABLED=false) — DeepSeek karar veriyor")
 
 # ── SMTP — Destek maili için ──────────────────────────────────
 SMTP_SERVER      = os.getenv("SMTP_SERVER", "").strip()
@@ -2680,16 +2685,9 @@ async def chat_endpoint(
             ):
                 mode = "code"
     elif not SMART_ROUTER_ENABLED:
-        # Router yok — eski keyword mantığı
-        prompt_lower = (prompt or "").lower()
-        _CODE_SIG = ("yaz bana","kod yaz","fonksiyon yaz","implement et","kodla",
-                     "class yaz","script yaz","test yaz","migration yaz",
-                     "connection pool yaz","async def")
-        _IT_SIG   = ("kubernetes","kubectl","docker","nginx","pod","terraform")
-        if any(s in prompt_lower for s in _CODE_SIG):
-            mode = "code"
-        elif any(s in prompt_lower for s in _IT_SIG):
-            mode = "it_expert"
+        # Router kapalı — keyword fallback DA pasif. DeepSeek kendisi karar versin.
+        # Gerekirse SMART_ROUTER_ENABLED=true ile eski mantığa dönülür.
+        pass
 
     # ── KOD CANAVARI MODU ────────────────────────────────────
     if mode == "code" or (
