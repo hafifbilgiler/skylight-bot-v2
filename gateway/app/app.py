@@ -2396,8 +2396,15 @@ async def chat_endpoint(
         is_modification = False
         is_generation   = False
     else:
-        is_modification = detect_image_modification_request(request_body.prompt)
-        is_generation   = detect_image_generation_request(request_body.prompt)
+        # Image keyword detection — env ile kapatılabilir.
+        # Default kapalı: DeepSeek/model kendisi tool çağırsın.
+        # Açmak için: IMAGE_KEYWORD_DETECTION=true
+        if os.getenv("IMAGE_KEYWORD_DETECTION", "false").strip().lower() in ("true","1","yes","on"):
+            is_modification = detect_image_modification_request(request_body.prompt)
+            is_generation   = detect_image_generation_request(request_body.prompt)
+        else:
+            is_modification = False
+            is_generation   = False
 
     # ── 7. GÖRSEL DEĞİŞTİRME ────────────────────────────────
     modification_of_id = None
@@ -2712,7 +2719,11 @@ async def chat_endpoint(
     web_context     = None
     web_suggest_msg = ""
 
-    if _gateway_needs_deep_search(prompt, mode):
+    # Deep search keyword detection — env ile kapatılabilir
+    # Default kapalı: DeepSeek/model kendisi karar versin
+    # Açmak için: GATEWAY_DEEP_SEARCH_DETECTION=true
+    _ds_enabled = os.getenv("GATEWAY_DEEP_SEARCH_DETECTION", "false").strip().lower() in ("true","1","yes","on")
+    if _ds_enabled and _gateway_needs_deep_search(prompt, mode):
         print(f"[GATEWAY] Deep search tetiklendi: '{prompt[:40]}'")
         context_hint = None
         for msg in reversed(conversation_history[-6:]):
