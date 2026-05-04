@@ -530,6 +530,8 @@ class ChatRequest(BaseModel):
     width: Optional[int] = Field(None)
     height: Optional[int] = Field(None)
     num_images: Optional[int] = Field(None)
+    # Düşünme Modu — frontend'den gelir, chat-service'e iletilir
+    thinking_mode: Optional[str] = Field(None, max_length=10)
 
 class ImageGenerationRequest(BaseModel):
     prompt: str = Field(..., max_length=2000)
@@ -2774,6 +2776,8 @@ async def chat_endpoint(
         "router_thinking": request_body.router_thinking if hasattr(request_body, "router_thinking") else None,
         "user_level":      request_body.user_level      if hasattr(request_body, "user_level")      else None,
         "needs_realtime":  request_body.needs_realtime  if hasattr(request_body, "needs_realtime")  else None,
+        # Düşünme Modu — frontend toggle'dan
+        "thinking_mode":   request_body.thinking_mode if hasattr(request_body, "thinking_mode") else None,
     }
 
     # Görsel varsa → chat service'e gönder (multimodal)
@@ -3971,16 +3975,3 @@ async def root():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8443)
-
-
-# ═══════════════════════════════════════════════════════════════
-# SHUTDOWN — Router cache bağlantısını temiz kapat
-# ═══════════════════════════════════════════════════════════════
-
-@app.on_event("shutdown")
-async def _shutdown_router_cache():
-    try:
-        from smart_router import close_router_cache
-        await close_router_cache()
-    except Exception as e:
-        print(f"[SHUTDOWN] Router cache close error: {e}")
