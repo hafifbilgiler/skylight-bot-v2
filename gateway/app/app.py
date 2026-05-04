@@ -2803,7 +2803,7 @@ async def chat_endpoint(
             if web_suggest_msg:
                 yield f"\n💡 *{web_suggest_msg}*\n\n---\n\n"
 
-            generator = await call_service(CHAT_SERVICE_URL, "/chat", data=chat_data, stream=True, timeout=300)
+            generator = await call_service(CHAT_SERVICE_URL, "/chat", data=chat_data, stream=True, timeout=600)
             try:
                 async for chunk in generator:
                     assistant_response += chunk
