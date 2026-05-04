@@ -63,7 +63,7 @@ spec:
         - name: SMTP_SERVER
           value: "in-v3.mailjet.com"
         - name: SMART_ROUTER_ENABLED
-          value: "false" 
+          value: "true" 
         - name: SMTP_PORT
           value: "587"
         - name: SMTP_USER
