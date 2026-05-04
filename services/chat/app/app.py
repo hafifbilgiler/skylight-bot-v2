@@ -85,50 +85,49 @@ SUMMARY_INTERVAL = int(os.getenv("SUMMARY_INTERVAL", "15"))
 
 MODE_CONFIGS = {
     "assistant": {
-        "model":       os.getenv("DEEPINFRA_ASSISTANT_MODEL", "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"),
+        "model":       os.getenv("DEEPINFRA_ASSISTANT_MODEL", "deepseek-ai/DeepSeek-V4-Flash"),
         "max_tokens":  int(os.getenv("DEEPINFRA_ASSISTANT_MAX_TOKENS", "4096")),
         "temperature": float(os.getenv("DEEPINFRA_ASSISTANT_TEMPERATURE", "0.7")),
         "top_p":       0.9,
         "system_prompt": ASSISTANT_SYSTEM_PROMPT,
+        "supports_thinking": True,   # DeepSeek V4 reasoning_effort destekli
     },
     "code": {
-        "model":       os.getenv("DEEPINFRA_CODE_MODEL", "Qwen/Qwen3-Coder-480B-A35B-Instruct-Turbo"),
+        "model":       os.getenv("DEEPINFRA_CODE_MODEL", "deepseek-ai/DeepSeek-V4-Flash"),
         "max_tokens":  int(os.getenv("DEEPINFRA_CODE_MAX_TOKENS", "16000")),
         "temperature": float(os.getenv("DEEPINFRA_CODE_TEMPERATURE", "0.2")),
         "top_p":       0.85,
         "system_prompt":           CODE_SYSTEM_PROMPT,
         "compression_threshold":   20,   # 20 mesajda bir sıkıştır (önceki 12'ydi)
         "large_file_threshold":    2000,
+        "supports_thinking": True,
     },
     "it_expert": {
-        "model":       os.getenv("DEEPINFRA_ASSISTANT_MODEL", "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"),
+        "model":       os.getenv("DEEPINFRA_IT_EXPERT_MODEL",
+                                 os.getenv("DEEPINFRA_ASSISTANT_MODEL", "deepseek-ai/DeepSeek-V4-Flash")),
         "max_tokens":  3500,
         "temperature": 0.5,
         "top_p":       0.88,
         "system_prompt": IT_EXPERT_SYSTEM_PROMPT,
+        "supports_thinking": True,
     },
     "student": {
-        "model":       os.getenv("DEEPINFRA_ASSISTANT_MODEL", "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"),
+        "model":       os.getenv("DEEPINFRA_STUDENT_MODEL",
+                                 os.getenv("DEEPINFRA_ASSISTANT_MODEL", "deepseek-ai/DeepSeek-V4-Flash")),
         "max_tokens":  2500,
         "temperature": 0.8,
         "top_p":       0.9,
         "system_prompt": STUDENT_SYSTEM_PROMPT,
+        "supports_thinking": True,
     },
     "social": {
-        "model":       os.getenv("DEEPINFRA_ASSISTANT_MODEL", "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"),
+        "model":       os.getenv("DEEPINFRA_SOCIAL_MODEL",
+                                 os.getenv("DEEPINFRA_ASSISTANT_MODEL", "deepseek-ai/DeepSeek-V4-Flash")),
         "max_tokens":  2500,
         "temperature": 0.9,
         "top_p":       0.92,
         "system_prompt": SOCIAL_SYSTEM_PROMPT,
-    },
-    # NOT: image_gen normalde gateway'de image-gen servisine route edilir,
-    # buraya gelmemesi gerekir. Geldiyse graceful: assistant config kullan.
-    "image_gen": {
-        "model":       os.getenv("DEEPINFRA_ASSISTANT_MODEL", "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"),
-        "max_tokens":  1024,
-        "temperature": 0.7,
-        "top_p":       0.9,
-        "system_prompt": ASSISTANT_SYSTEM_PROMPT,
+        "supports_thinking": True,
     },
 }
 
@@ -212,6 +211,8 @@ class ChatRequest(BaseModel):
     router_thinking: Optional[str]        = None
     user_level:      Optional[str]        = None
     needs_realtime:  Optional[bool]       = None
+    # Düşünme Modu — Frontend toggle'dan gelir (none/high/max)
+    thinking_mode:   Optional[str]        = "none"
 
 class ThinkingStep(BaseModel):
     emoji:   str
@@ -1189,7 +1190,20 @@ async def stream_deepinfra_completion(
     max_tokens:  int,
     temperature: float,
     top_p:       float,
+    reasoning_effort: Optional[str] = None,
 ) -> AsyncGenerator[str, None]:
+    """
+    DeepInfra streaming completion.
+
+    reasoning_effort:
+      - None / "none"  → düşünme yok, hızlı cevap (default)
+      - "high"         → orta düşünce, görünür reasoning
+      - "max"          → derin düşünce, uzun reasoning
+
+    DeepSeek V4 Flash/Pro reasoning_content alanı döndürür streaming'de.
+    Reasoning chunk'ları <think>...</think> tag'leri içinde yieldlanır,
+    frontend bu tag'leri görünce baloncuğa yazar.
+    """
     headers = {
         "Content-Type":  "application/json",
         "Authorization": f"Bearer {DEEPINFRA_API_KEY}",
@@ -1199,20 +1213,43 @@ async def stream_deepinfra_completion(
         "max_tokens": max_tokens, "temperature": temperature,
         "top_p": top_p, "stream": True,
     }
-    async with httpx.AsyncClient(timeout=120) as client:
+    # Thinking mode — sadece DeepSeek V4 destekli ve high/max ise
+    if reasoning_effort and reasoning_effort in ("high", "max"):
+        payload["reasoning_effort"] = reasoning_effort
+
+    in_thinking = False  # Reasoning baloncuğu açık mı?
+
+    async with httpx.AsyncClient(timeout=180) as client:
         async with client.stream("POST", f"{DEEPINFRA_BASE_URL}/chat/completions",
                                  headers=headers, json=payload) as response:
             async for line in response.aiter_lines():
                 if line.startswith("data: "):
                     data_str = line[6:]
                     if data_str == "[DONE]":
+                        # Eğer hâlâ thinking modundaysak kapat
+                        if in_thinking:
+                            yield "</think>"
+                            in_thinking = False
                         break
                     try:
                         data    = json.loads(data_str)
-                        content = data.get("choices",[{}])[0].get("delta",{}).get("content","")
+                        delta   = data.get("choices",[{}])[0].get("delta",{})
+                        # 1. Reasoning content (düşünme akışı)
+                        reasoning = delta.get("reasoning_content", "")
+                        if reasoning:
+                            if not in_thinking:
+                                yield "<think>"
+                                in_thinking = True
+                            yield reasoning
+                            continue
+                        # 2. Normal content (cevap)
+                        content = delta.get("content", "")
                         if content:
+                            if in_thinking:
+                                yield "</think>"
+                                in_thinking = False
                             yield content
-                    except:
+                    except Exception:
                         continue
 
 
@@ -1327,25 +1364,14 @@ async def build_messages(
         system_content += f"\n\n{state_context}"
         print(f"[CHAT] State context injected: {len(state_context)} chars")
 
-    # 3. ROUTER HINT — code_execute / live data intent'leri prompt'a yansıt
-    _router_intent = kwargs.get("router_intent", "")
-    _router_thinking = kwargs.get("router_thinking", "")
+    # 3. LIVE DATA — Router kararı varsa direkt kullan, yoksa keyword
+    _router_dec = {
+        "needs_realtime": kwargs.get("needs_realtime"),
+        "tool":           kwargs.get("live_type_hint", "none"),
+        "confidence":     "high" if kwargs.get("live_type_hint") else "low",
+        "intent":         kwargs.get("router_intent", ""),
+    } if kwargs.get("live_type_hint") or kwargs.get("needs_realtime") else None
 
-    # code_execute → "decode et, hesapla, çevir" gibi → KOD YAZMA, YAP
-    if _router_intent == "code_execute":
-        system_content += (
-            "\n\n[ROUTER HİNTİ — code_execute]\n"
-            "Kullanıcı KOD YAZMANI istemiyor. "
-            "Bir şeyi DÖNÜŞTÜRMENİ veya HESAPLAMANI istiyor "
-            "(decode/encode/hesapla/çevir). "
-            "Direkt sonucu ver. Kod bloğu yazma. "
-            "Cevabı kısa ve net tut.\n"
-            "[/ROUTER HİNTİ]"
-        )
-
-    # Router thinking varsa log için sakla — gerekirse ileride kullan
-    if _router_thinking:
-        print(f"[CHAT] Router thinking: {_router_thinking[:80]}")
 
     # Live data: Gemini fast path /chat endpoint'inde handle edildi.
     live_context   = None
@@ -1518,7 +1544,7 @@ async def chat(request: ChatRequest):
                 if chunk: has = True; yield chunk
             if not has: yield "Üzgünüm, yanıt üretemiyorum."
         return StreamingResponse(_gs(), media_type="text/plain; charset=utf-8")
-    # ─────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────config        = MODE_CONFIGS[request.mode]
     show_thinking = should_show_thinking(request.prompt, request.mode, request.history or [])
 
     messages = await build_messages(
@@ -1582,13 +1608,14 @@ async def chat(request: ChatRequest):
                 yield "[STEPS_DONE]\n"
 
             # Model log — hangi model cevaplıyor
-            print(f"[MODEL] mode={request.mode} | model={config['model']} | max_tokens={config['max_tokens']}")
+            print(f"[MODEL] mode={request.mode} | model={config['model']} | max_tokens={config['max_tokens']} | thinking={request.thinking_mode}")
 
             # Streaming response
             async for chunk in stream_deepinfra_completion(
                 messages=messages,
                 model=config["model"], max_tokens=config["max_tokens"],
                 temperature=config["temperature"], top_p=config["top_p"],
+                reasoning_effort=request.thinking_mode if config.get("supports_thinking") else None,
             ):
                 buffer    += chunk
                 full_text += chunk
@@ -1680,7 +1707,7 @@ async def chat_sse(request: ChatRequest):
     async def sse_generator():
         try:
             # ── Deep search mi? ──────────────────────────────────
-            live_type = _detect_live_type(prompt, mode, None, request.history or [])
+            live_type = _detect_live_type(prompt, mode, None, history or [])
             is_deep   = live_type == "deep_search"
             is_tr     = any(c in prompt for c in "çğışöüÇĞİŞÖÜ") or True
 
@@ -1757,6 +1784,7 @@ async def chat_sse(request: ChatRequest):
                 max_tokens=config["max_tokens"],
                 temperature=config["temperature"],
                 top_p=config["top_p"],
+                reasoning_effort=request.thinking_mode if config.get("supports_thinking") else None,
             ):
                 full_text += chunk
                 yield sse_event("text", chunk)
