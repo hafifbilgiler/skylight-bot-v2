@@ -2289,8 +2289,11 @@ async def chat_endpoint(
                 print(f"[SMART ROUTING] Follow-up image question but no image in history")
 
     # ── 6. GÖRSEL YÜKLENDIYSE → IMAGE ANALYSIS ──────────────
-    if request_body.image_data:
-        print(f"[SMART ROUTING] Image uploaded → Image Analysis Service")
+    # Env: USE_IMAGE_ANALYSIS_SERVICE=false (default) → chat-service multimodal halleder (Gemini)
+    # Env: USE_IMAGE_ANALYSIS_SERVICE=true             → eski yapı (image-analysis servisine gider)
+    _use_img_svc = os.getenv("USE_IMAGE_ANALYSIS_SERVICE", "false").strip().lower() in ("true","1","yes","on")
+    if request_body.image_data and _use_img_svc:
+        print(f"[SMART ROUTING] Image uploaded → Image Analysis Service (legacy)")
         try:
             enriched_analysis_prompt = build_image_analysis_context_prompt(
                 request_body.prompt,

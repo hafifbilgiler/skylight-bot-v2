@@ -33,6 +33,7 @@ from typing import Optional, List, Dict, AsyncGenerator
 import httpx
 import json
 import os
+import base64
 import asyncpg
 import asyncio
 import re
@@ -1232,6 +1233,168 @@ def _adaptive_thinking_level(messages: List[Dict]) -> str:
     return "none"
 
 
+# ═══════════════════════════════════════════════════════════════
+# GEMINI VISION STREAM — Multimodal (image + text + history)
+# ═══════════════════════════════════════════════════════════════
+async def gemini_vision_stream(
+    prompt: str,
+    image_data: str,
+    image_type: str,
+    history: List[Dict],
+    system_prompt: str,
+    max_tokens: int = 4096,
+    temperature: float = 0.4,
+) -> AsyncGenerator[str, None]:
+    """
+    Gemini 2.5 Flash Lite ile multimodal vision stream.
+    Görsel + soru + history → Gemini'ye gider, text stream olarak döner.
+    History sayesinde bağlam korunur.
+    """
+    try:
+        from google import genai
+        from google.genai import types as gtypes
+    except ImportError:
+        yield "⚠️ Gemini SDK yok (google-genai)."
+        return
+
+    # Vertex AI client (Service Account key ile)
+    try:
+        if os.path.exists(GEMINI_SA_KEY_PATH) and GEMINI_PROJECT:
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = GEMINI_SA_KEY_PATH
+            client = genai.Client(
+                vertexai=True,
+                project=GEMINI_PROJECT,
+                location=GEMINI_LOCATION,
+            )
+        elif GEMINI_API_KEY:
+            client = genai.Client(api_key=GEMINI_API_KEY)
+        else:
+            yield "⚠️ Gemini yapılandırması eksik (Vertex SA veya GEMINI_API_KEY)."
+            return
+    except Exception as e:
+        print(f"[GEMINI VISION] Client init hatası: {e}")
+        yield f"⚠️ Gemini istemcisi: {e}"
+        return
+
+    # History'i Gemini formatına çevir (önceki mesajlar — bağlam için)
+    contents = []
+    for msg in (history or [])[-20:]:  # son 20 mesaj yeterli
+        role = msg.get("role")
+        content = msg.get("content") or ""
+        if not content or role == "system":
+            continue
+        gem_role = "user" if role == "user" else "model"
+        contents.append(gtypes.Content(
+            role=gem_role,
+            parts=[gtypes.Part.from_text(text=str(content)[:4000])]
+        ))
+
+    # Yeni kullanıcı mesajı — görselli veya text-only
+    img_bytes = b""
+    if image_data:
+        try:
+            img_bytes = base64.b64decode(image_data)
+            mime = image_type if image_type and image_type.startswith("image/") else f"image/{image_type or 'jpeg'}"
+            new_parts = [
+                gtypes.Part.from_bytes(data=img_bytes, mime_type=mime),
+                gtypes.Part.from_text(text=prompt or "Bu görseli analiz et."),
+            ]
+        except Exception as e:
+            print(f"[GEMINI VISION] Image parse hatası: {e}")
+            yield f"⚠️ Görsel okunamadı: {e}"
+            return
+    else:
+        # Text-only akış (CHAT_PROVIDER=gemini)
+        new_parts = [
+            gtypes.Part.from_text(text=prompt or ""),
+        ]
+
+    contents.append(gtypes.Content(role="user", parts=new_parts))
+
+    # Vision modeli — flash-lite multimodal
+    vision_model = os.getenv("GEMINI_VISION_MODEL", "gemini-2.5-flash-lite")
+
+    # Stream
+    try:
+        # Gemini 2.5 thinking config — adaptive thinking modunda aç
+        thinking_budget = -1  # -1 = dynamic (Gemini kendisi karar verir, "auto" gibi)
+        gen_config_kwargs = {
+            "system_instruction": system_prompt or None,
+            "temperature": temperature,
+            "max_output_tokens": max_tokens,
+        }
+        try:
+            # thinking_config + include_thoughts=True → reasoning_text döner
+            gen_config_kwargs["thinking_config"] = gtypes.ThinkingConfig(
+                thinking_budget=thinking_budget,
+                include_thoughts=True,
+            )
+        except Exception:
+            # SDK eski versiyonsa thinking_config yoktur, düş
+            pass
+
+        config = gtypes.GenerateContentConfig(**gen_config_kwargs)
+        print(f"[GEMINI VISION] ▶ {vision_model} | history={len(contents)-1} | image={len(img_bytes)}B | thinking=auto")
+
+        def _stream_call():
+            return client.models.generate_content_stream(
+                model=vision_model,
+                contents=contents,
+                config=config,
+            )
+
+        # genai stream sync — to_thread ile sar
+        stream = await asyncio.to_thread(_stream_call)
+        emitted = False
+        in_thinking = False
+        for chunk in stream:
+            # Yeni: parts'ta thought=True olan kısımları reasoning olarak gönder
+            cands = getattr(chunk, "candidates", None) or []
+            if cands:
+                parts = getattr(cands[0].content, "parts", None) or []
+                for p in parts:
+                    is_thought = getattr(p, "thought", False)
+                    text = getattr(p, "text", None)
+                    if not text:
+                        continue
+                    if is_thought:
+                        # Reasoning chunk → <think> tag'leri ile sar
+                        if not in_thinking:
+                            yield "<think>"
+                            in_thinking = True
+                        yield text
+                        emitted = True
+                    else:
+                        # Normal cevap
+                        if in_thinking:
+                            yield "</think>"
+                            in_thinking = False
+                        yield text
+                        emitted = True
+                continue
+            # Eski path — sadece text alanı varsa
+            text = getattr(chunk, "text", None)
+            if text:
+                if in_thinking:
+                    yield "</think>"
+                    in_thinking = False
+                emitted = True
+                yield text
+            await asyncio.sleep(0)
+
+        # Thinking açık kaldıysa kapat
+        if in_thinking:
+            yield "</think>"
+
+        if not emitted:
+            print(f"[GEMINI VISION] Empty response")
+            yield "Bu görselle ilgili bir cevap üretemedim. Sorunuzu yeniden ifade eder misin?"
+
+    except Exception as e:
+        print(f"[GEMINI VISION] Stream hatası: {e}")
+        yield f"⚠️ Görsel analiz hatası: {e}"
+
+
 async def stream_deepinfra_completion(
     messages:    List[Dict],
     model:       str,
@@ -1639,44 +1802,53 @@ async def chat(request: ChatRequest):
                     )
                 )
 
-            # ── Deep search adımları — gerçek pipeline çalışırken göster ──
-            live_type_check = _detect_live_type(request.prompt, request.mode or "assistant", None, request.history or [])
-            is_deep = live_type_check == "deep_search"
-
-            # Gemini: /chat endpoint başında handle edildi
-            is_tr   = any(c in request.prompt for c in "çğışöüÇĞİŞÖÜ") or True
-
-            if is_deep:
-                ds_steps = get_deep_search_steps(is_tr)
-                # Adım 1-4 hemen göster (search + scrape + chunk + rerank)
-                for step in ds_steps[:4]:
-                    yield f"[STEP]{step.emoji} {step.message}[/STEP]\n"
-                    await asyncio.sleep(0.1)
-
-            # Thinking display (deep search değilse)
-            elif show_thinking:
-                steps = await generate_thinking_steps(request.prompt, request.mode, request.history or [])
-                for step in steps:
-                    yield f"[STEP]{step.emoji} {step.message}[/STEP]\n"
-                yield "\n"
-
-            # Deep search kalan adımları — generate + reflect
-            if is_deep:
-                for step in ds_steps[4:]:
-                    yield f"[STEP]{step.emoji} {step.message}[/STEP]\n"
-                    await asyncio.sleep(0.1)
-                yield "[STEPS_DONE]\n"
+            # Fake step'ler kaldırıldı (deep search + thinking_steps).
+            # Gerçek reasoning için: adaptive thinking → reasoning_effort
+            # → DeepSeek <think>...</think> tag'leri frontend'de baloncuk olarak gösterilir.
 
             # Model log — hangi model cevaplıyor
-            print(f"[MODEL] mode={request.mode} | model={config['model']} | max_tokens={config['max_tokens']} | thinking={request.thinking_mode}")
+            _has_image = bool(request.image_data)
+            _model_name = "gemini-2.5-flash-lite (vision)" if _has_image else config["model"]
+            print(f"[MODEL] mode={request.mode} | model={_model_name} | max_tokens={config['max_tokens']} | thinking={request.thinking_mode} | vision={_has_image}")
 
-            # Streaming response
-            async for chunk in stream_deepinfra_completion(
-                messages=messages,
-                model=config["model"], max_tokens=config["max_tokens"],
-                temperature=config["temperature"], top_p=config["top_p"],
-                reasoning_effort=request.thinking_mode if config.get("supports_thinking") else None,
-            ):
+            # Streaming response — Görsel varsa Gemini, yoksa text provider'a göre
+            # CHAT_PROVIDER env: deepseek (default) | gemini
+            _chat_provider = os.getenv("CHAT_PROVIDER", "deepseek").strip().lower()
+
+            if _has_image:
+                # Multimodal akış — Gemini Flash Lite (her durumda)
+                _sys_prompt = config.get("system_prompt", "")
+                stream_iter = gemini_vision_stream(
+                    prompt=request.prompt,
+                    image_data=request.image_data,
+                    image_type=request.image_type or "image/jpeg",
+                    history=request.history or [],
+                    system_prompt=_sys_prompt,
+                    max_tokens=config["max_tokens"],
+                    temperature=config["temperature"],
+                )
+            elif _chat_provider == "gemini":
+                # Text akışı — Gemini (env ile aktif)
+                _sys_prompt = config.get("system_prompt", "")
+                stream_iter = gemini_vision_stream(
+                    prompt=request.prompt,
+                    image_data="",  # boş → text-only mode
+                    image_type="",
+                    history=request.history or [],
+                    system_prompt=_sys_prompt,
+                    max_tokens=config["max_tokens"],
+                    temperature=config["temperature"],
+                )
+            else:
+                # Text akışı — DeepSeek V4 Flash (default)
+                stream_iter = stream_deepinfra_completion(
+                    messages=messages,
+                    model=config["model"], max_tokens=config["max_tokens"],
+                    temperature=config["temperature"], top_p=config["top_p"],
+                    reasoning_effort=request.thinking_mode if config.get("supports_thinking") else None,
+                )
+
+            async for chunk in stream_iter:
                 buffer    += chunk
                 full_text += chunk
                 if any(c in buffer for c in [' ','.','!','?','\n',',']) or len(buffer) > 10:
@@ -1766,63 +1938,12 @@ async def chat_sse(request: ChatRequest):
 
     async def sse_generator():
         try:
-            # ── Deep search mi? ──────────────────────────────────
-            live_type = _detect_live_type(prompt, mode, None, history or [])
-            is_deep   = live_type == "deep_search"
-            is_tr     = any(c in prompt for c in "çğışöüÇĞİŞÖÜ") or True
-
-            if is_deep:
-                steps = get_deep_search_steps(is_tr)
-                step_names = ["search","scrape","chunk","rerank","generate","reflect"]
-
-                # Adım 1-4: search → rerank (live data çekilirken göster)
-                for i, step in enumerate(steps[:4]):
-                    yield sse_event("step", {
-                        "index":  i,
-                        "name":   step_names[i],
-                        "emoji":  step.emoji,
-                        "text":   step.message,
-                        "status": "running",
-                    })
-                    await asyncio.sleep(0.05)
-
-                # Live data: Gemini /chat fast path'te handle edildi
-                live_context, sources_block = None, ""
-
-                # Adım 4'ü tamamla
-                yield sse_event("step", {
-                    "index":  3,
-                    "name":   "rerank",
-                    "emoji":  "⚡",
-                    "text":   "En alakalı kaynaklar seçildi" if is_tr else "Best sources selected",
-                    "status": "done",
-                })
-
-                # Adım 5: generate
-                yield sse_event("step", {
-                    "index":  4,
-                    "name":   "generate",
-                    "emoji":  steps[4].emoji,
-                    "text":   steps[4].message,
-                    "status": "running",
-                })
-
-            else:
-                live_context, sources_block = None, ""
-
-                # Normal thinking steps
-                show_thinking = should_show_thinking(prompt, mode, request.history or [])
-                if show_thinking:
-                    think_steps = await generate_thinking_steps(prompt, mode, request.history or [])
-                    for i, step in enumerate(think_steps):
-                        yield sse_event("step", {
-                            "index":  i,
-                            "name":   "thinking",
-                            "emoji":  step.emoji,
-                            "text":   step.message,
-                            "status": "running",
-                        })
-                        await asyncio.sleep(0.05)
+            # Fake step'ler kaldırıldı.
+            # Gerçek reasoning için: adaptive thinking → reasoning_effort (DeepSeek)
+            #                       veya Gemini thinking_config (vision/Gemini akışı)
+            live_context, sources_block = None, ""
+            is_deep = False
+            is_tr   = any(c in prompt for c in "çğışöüÇĞİŞÖÜ") or True
 
             # Mesajları hazırla
             messages = await build_messages(
@@ -1849,15 +1970,7 @@ async def chat_sse(request: ChatRequest):
                 full_text += chunk
                 yield sse_event("text", chunk)
 
-            # Reflect adımı — deep search sonrası
-            if is_deep:
-                yield sse_event("step", {
-                    "index":  5,
-                    "name":   "reflect",
-                    "emoji":  "🔎",
-                    "text":   "Yanıt doğrulandı" if is_tr else "Answer verified",
-                    "status": "done",
-                })
+            # Reflect step kaldırıldı (deep search fake-step temizliği)
 
             # Kaynak listesi — ayrı event olarak gönder (LLM yanıtına bağımlı değil)
             if sources_block:
