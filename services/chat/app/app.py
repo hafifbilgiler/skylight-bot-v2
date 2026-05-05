@@ -1748,17 +1748,86 @@ async def chat(request: ChatRequest):
 
     config        = MODE_CONFIGS[request.mode]
 
-    # ── FAST PATH — Canlı veri (KEYWORD-BASED, DEPRECATED) ────
-    # Default: KAPALI. Açmak için: LIVE_DATA_FASTPATH=true
-    # Default kapalı çünkü:
-    #   - "kodu devam ettir" gibi mesajları yanlış yorumluyordu
-    #   - Modern yaklaşım: function calling (DeepSeek tools'u kendisi seçer)
-    #   - Kullanıcı net "dolar kaç" derse bile DeepSeek anlayıp yine smart-tools'u çağırır
-    _fastpath_enabled = os.getenv("LIVE_DATA_FASTPATH", "false").strip().lower() in ("true","1","yes","on")
+    # ── INTENT DETECTION — Canlı veri vs sohbet ───────────────
+    #
+    # Mantık: Sadece NET canlı veri ifadeleri smart-tools'a yönlendirilir.
+    # Şüpheli ya da kod/devam ifadeleri DeepSeek'e gider.
+    #
+    # Net canlı veri sinyalleri:
+    #   - "hava durumu", "hava nasıl"           → weather
+    #   - "dolar kaç", "kur ne", "döviz kuru"   → currency
+    #   - "bitcoin fiyat", "btc ne kadar"       → crypto
+    #   - "saat kaç"                            → time
+    #   - "son haberler", "gündem ne"           → news
+    #
+    # NOT: "kodu devam ettir", "açıkla", "yaz" gibi ifadeler
+    # asla canlı veri olarak yorumlanmaz.
+
+    _q = (request.prompt or "").lower().strip()
+    _words = _q.split()
+    _wc = len(_words)
+
+    # Konuşma kod/devam niyetinde mi? Bu varsa hiç canlı veri tetikleme.
+    _NON_LIVE_INTENT = (
+        "kod", "kodu", "yaz", "yazsana", "yazar mısın", "yazabilir",
+        "düzelt", "fix", "refactor", "refaktör",
+        "devam", "ettir", "tamamla", "bitir",
+        "açıkla", "anlat", "açıklar mısın",
+        "fonksiyon", "function", "class", "import", "method",
+        "hata", "error", "bug", "exception", "traceback",
+        "test yaz", "test ekle", "unit test",
+        "örnek ver", "örnek göster",
+        "nasıl yaparım", "nasıl yapılır",
+    )
+    _has_non_live = any(w in _q for w in _NON_LIVE_INTENT)
+
+    # NET canlı veri pattern'leri (cümlede gerçekten canlı veri sorulmuş)
+    _NET_WEATHER  = ("hava durumu", "hava nasıl", "havalar nasıl",
+                     "hava kaç derece", "kaç derece", "yağmur yağıyor",
+                     "kar yağıyor", "bugün hava", "yarın hava")
+    _NET_CURRENCY = ("dolar kaç", "euro kaç", "sterlin kaç", "tl kaç",
+                     "dolar kuru", "euro kuru", "döviz kuru", "kur ne",
+                     "kaç tl", "exchange rate", "usd kaç", "eur kaç")
+    _NET_CRYPTO   = ("bitcoin kaç", "btc kaç", "bitcoin fiyat", "btc fiyat",
+                     "ethereum kaç", "eth kaç", "kripto fiyat",
+                     "btc ne kadar", "bitcoin ne kadar")
+    _NET_TIME     = ("saat kaç", "saat kac", "şimdi saat", "şu an saat",
+                     "günün saati", "what time")
+    _NET_NEWS     = ("son haberler", "güncel haberler", "son dakika",
+                     "gündem ne", "haberleri getir", "breaking news",
+                     "latest news", "today's news")
+
     _lt = None
-    if _fastpath_enabled:
-        _lt = _detect_live_type(request.prompt, request.mode or "assistant",
-                                None, request.history or [])
+    if not _has_non_live:
+        # Sadece NET ifade varsa canlı veriye yönlendir
+        if   any(s in _q for s in _NET_WEATHER):  _lt = "weather"
+        elif any(s in _q for s in _NET_CURRENCY): _lt = "currency"
+        elif any(s in _q for s in _NET_CRYPTO):   _lt = "crypto"
+        elif any(s in _q for s in _NET_TIME):     _lt = "time"
+        elif any(s in _q for s in _NET_NEWS):     _lt = "news"
+
+        # Kısa mesaj follow-up: önceki cevap canlı veriyse devam
+        # ÖRN: "İstanbul ne kadar?" (önceki: "Ankara'da hava 22°C")
+        if not _lt and _wc <= 4 and request.history:
+            for msg in reversed(request.history[-4:]):
+                if msg.get("role") != "assistant":
+                    continue
+                c = (msg.get("content") or "").lower()
+                if any(x in c for x in ["°c", "°f", "sıcaklık", "hissedilen", "rüzgar"]):
+                    # Şehir adı gerekli (yoksa devam etme)
+                    cities = ["istanbul","ankara","izmir","antalya","bursa","adana",
+                              "konya","berlin","london","paris","tokyo","dubai",
+                              "amsterdam","madrid","rome","new york"]
+                    if any(c2 in _q for c2 in cities):
+                        _lt = "weather"
+                    break
+                if "1 usd" in c or "1 eur" in c or " try" in c:
+                    if any(x in _q for x in ["dolar","euro","sterlin","kur","tl","gbp","jpy","chf"]):
+                        _lt = "currency"
+                    break
+
+    if _lt:
+        print(f"[DETECT] '{request.prompt[:50]}' → {_lt}")
 
     # Ücretsiz API: weather, currency, crypto, time → smart_tools (limit yok)
     if _lt in _FREE_API_TYPES and SMART_TOOLS_URL:
