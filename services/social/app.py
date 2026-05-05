@@ -1334,6 +1334,73 @@ async def smart_llm(messages: list, system: str, max_tokens: int = 600, temperat
     return await llm_chat(messages, system, max_tokens, temperature)
 
 
+# ══════════════════════════════════════════════════════
+# GEMINI GROUNDING — Google Search ile gerçek otel bilgisi
+# ══════════════════════════════════════════════════════
+
+VERTEX_GROUNDING_MODEL = os.getenv("GEMINI_GROUNDING_MODEL", "gemini-2.5-flash")
+
+async def gemini_grounding_search(query: str, max_tokens: int = 1500) -> dict:
+    """
+    Vertex AI + Google Search Grounding.
+    Gerçek web sonuçlarına dayalı cevap döner.
+    Returns: {"text": "...", "sources": [...]}
+    """
+    if not USE_VERTEX:
+        return {"text": "", "sources": []}
+    try:
+        token = await get_vertex_token()
+        if not token:
+            return {"text": "", "sources": []}
+
+        url = (
+            f"https://{VERTEX_LOCATION}-aiplatform.googleapis.com/v1/"
+            f"projects/{VERTEX_PROJECT}/locations/{VERTEX_LOCATION}/"
+            f"publishers/google/models/{VERTEX_GROUNDING_MODEL}:generateContent"
+        )
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(
+                url,
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json={
+                    "contents": [{"role": "user", "parts": [{"text": query}]}],
+                    "tools": [{"google_search": {}}],
+                    "generationConfig": {
+                        "maxOutputTokens": max_tokens,
+                        "temperature": 1.0,  # Grounding için ideal
+                    }
+                }
+            )
+
+            if r.status_code != 200:
+                print(f"[GEMINI GROUNDING] {r.status_code}: {r.text[:200]}")
+                return {"text": "", "sources": []}
+
+            data = r.json()
+            cand = data.get("candidates", [{}])[0]
+            content = cand.get("content", {})
+            parts = content.get("parts", [])
+            text = "".join(p.get("text", "") for p in parts).strip()
+
+            # Kaynakları topla
+            sources = []
+            grounding = cand.get("groundingMetadata", {})
+            for chunk in grounding.get("groundingChunks", []):
+                web = chunk.get("web", {})
+                if web.get("uri"):
+                    sources.append({
+                        "title":  web.get("title", ""),
+                        "uri":    web.get("uri", ""),
+                        "domain": web.get("domain", ""),
+                    })
+
+            return {"text": text, "sources": sources}
+    except Exception as e:
+        print(f"[GEMINI GROUNDING] Hata: {e}")
+        return {"text": "", "sources": []}
+
+
 WMO_CODES = {
     0:"Açık",1:"Hafif bulutlu",2:"Parçalı bulutlu",3:"Kapalı",
     45:"Sisli",48:"Kırağılı sis",51:"Hafif çiseleme",53:"Çiseleme",55:"Yoğun çiseleme",
@@ -1585,8 +1652,12 @@ async def hotels_search(request: Request):
 @app.post("/sosyal/hotels/match")
 async def hotels_match(request: Request):
     """
-    AI destekli otel eşleştirme.
-    Kullanıcı doğal dille anlatır → AI otelleri sıralar + yorum üretir.
+    AI destekli otel eşleştirme — Gemini Grounding ile gerçek yorum.
+    Akış:
+      1. Hotellook'tan otel listesi al
+      2. Gemini'ye GROUNDING ile yolla — gerçek Google Search yorumlar/yıldızlar
+      3. Her oteli kullanıcı isteğiyle eşleştirip Türkçe yorum üret
+      4. JSON dön (yorum + kaynak)
     """
     body = await request.json()
     location    = body.get("location", "").strip()
@@ -1594,12 +1665,12 @@ async def hotels_match(request: Request):
     check_out   = body.get("check_out", "")
     adults      = int(body.get("adults", 2))
     user_prompt = body.get("prompt", "").strip()
-    mood_tags   = body.get("tags", [])   # ["Romantik","Plaj"] gibi
+    mood_tags   = body.get("tags", [])
 
-    if not location or not user_prompt and not mood_tags:
+    if not location or (not user_prompt and not mood_tags):
         return {"success": False, "error": "location + prompt/tags zorunlu"}
 
-    # Önce otelleri getir (cache'den veya canlı)
+    # 1. Önce Hotellook'tan otelleri al (mevcut akış)
     search_req_body = {
         "location": location, "check_in": check_in, "check_out": check_out,
         "adults": adults, "limit": 30, "currency": "try",
@@ -1613,20 +1684,52 @@ async def hotels_match(request: Request):
 
     hotels = search_result["hotels"]
 
-    # AI'ya özet veri hazırla (token tasarrufu için kısa)
-    summary = "\n".join([
-        f"{i+1}. {h['name']} - {h['stars']}★ - {h['location_name']} - ₺{h['price_from']}/gece"
-        for i, h in enumerate(hotels[:30])
-    ])
-
     tags_text = ", ".join(mood_tags) if mood_tags else ""
     user_desc = f"{user_prompt}" + (f" (tarz: {tags_text})" if tags_text else "")
 
-    system = """Sen otel seçme konusunda deneyimli bir seyahat danışmanısın.
+    # 2. GEMINI GROUNDING — Gerçek otel önerilerini Google'dan çek
+    # Hotellook listesindeki otel adlarını Gemini'ye verip, gerçek yorum/puan toplat
+    hotel_names_summary = "\n".join([
+        f"{i+1}. {h['name']} ({h['stars']}★, {h.get('location_name','')}, ₺{h['price_from']}/gece)"
+        for i, h in enumerate(hotels[:20])
+    ])
+
+    grounding_query = f"""{location} şehrinde otel önerisi. Kullanıcı isteği: "{user_desc}"
+
+Aşağıdaki Hotellook otellerinden kullanıcıya en uygun olanlarını seç (max 8):
+{hotel_names_summary}
+
+Her seçilen otel için Google'da arama yap ve gerçek yorum/puan bilgisini topla.
+Çıktı KESİNLİKLE bu JSON formatında olsun, başka hiçbir şey yazma:
+
+{{
+  "matches": [
+    {{
+      "index": 1,
+      "reason": "Kısa Türkçe yorum (max 18 kelime) — neden uygun, gerçek yorumlardan örnek",
+      "google_rating": "4.5/5 (1200+ değerlendirme)",
+      "highlights": ["Plaja yakın", "Aile dostu"]
+    }}
+  ]
+}}
+
+JSON DIŞINDA HİÇBİR ŞEY YAZMA. Markdown bloğu kullanma."""
+
+    grounding = await gemini_grounding_search(grounding_query, max_tokens=2500)
+
+    parsed = _safe_json_parse(grounding.get("text", "")) if grounding.get("text") else None
+
+    # 3. Fallback: Grounding fail → eski smart_llm akışı
+    if not parsed or "matches" not in parsed:
+        print(f"[HOTELS MATCH] Grounding fail, smart_llm fallback")
+        summary = "\n".join([
+            f"{i+1}. {h['name']} - {h['stars']}★ - {h.get('location_name','')} - ₺{h['price_from']}/gece"
+            for i, h in enumerate(hotels[:30])
+        ])
+        system = """Sen otel seçme konusunda deneyimli bir seyahat danışmanısın.
 Kullanıcının isteğine en uygun otelleri seçip, her biri için kısa Türkçe yorum üretirsin.
 SADECE JSON döndür. Markdown/açıklama yazma."""
-
-    prompt = f"""Kullanıcı isteği: "{user_desc}"
+        prompt = f"""Kullanıcı isteği: "{user_desc}"
 
 Aşağıdaki otel listesinden kullanıcıya en uygun olan {min(8, len(hotels))} tanesini seç.
 Otel listesi:
@@ -1635,51 +1738,48 @@ Otel listesi:
 JSON formatı:
 {{
   "matches": [
-    {{"index": 1, "reason": "1 cümle Türkçe yorum — neden uygun (max 15 kelime)"}},
-    ...
+    {{"index": 1, "reason": "1 cümle Türkçe yorum — neden uygun (max 15 kelime)"}}
   ]
 }}
 
 Sadece JSON döndür."""
+        reply = await smart_llm(
+            [{"role": "user", "content": prompt}], system,
+            max_tokens=800, temperature=0.5,
+        )
+        parsed = _safe_json_parse(reply)
+        if not parsed or "matches" not in parsed:
+            # En son fallback — ilk 8
+            return {
+                "success": True, "fallback": True,
+                "hotels": hotels[:8], "query": user_desc,
+            }
 
-    reply = await smart_llm(
-        [{"role": "user", "content": prompt}],
-        system,
-        max_tokens=800,
-        temperature=0.5,
-    )
-
-    parsed = _safe_json_parse(reply)
-    if not parsed or "matches" not in parsed:
-        # AI parse edemedi → fallback: ilk 8 oteli döndür
-        return {
-            "success": True,
-            "fallback": True,
-            "hotels": hotels[:8],
-            "query": user_desc,
-        }
-
-    # AI seçtiklerini orijinal otellerle birleştir
+    # 4. AI seçtiklerini orijinal Hotellook otellerine yorumlarla birleştir
     matched = []
     for m in parsed.get("matches", []):
         try:
             idx = int(m.get("index", 0)) - 1
             if 0 <= idx < len(hotels):
                 hotel_copy = {**hotels[idx]}
-                hotel_copy["ai_reason"] = m.get("reason", "")
-                hotel_copy["ai_matched"] = True
+                hotel_copy["ai_reason"]      = m.get("reason", "")
+                hotel_copy["ai_matched"]     = True
+                hotel_copy["google_rating"]  = m.get("google_rating", "")
+                hotel_copy["highlights"]     = m.get("highlights", [])
                 matched.append(hotel_copy)
         except (ValueError, TypeError):
             continue
 
     return {
-        "success":  True,
-        "hotels":   matched,
-        "total":    len(matched),
-        "query":    user_desc,
-        "location": location,
-        "check_in": check_in,
+        "success":   True,
+        "hotels":    matched,
+        "total":     len(matched),
+        "query":     user_desc,
+        "location":  location,
+        "check_in":  check_in,
         "check_out": check_out,
+        "sources":   grounding.get("sources", []),
+        "powered_by_grounding": bool(grounding.get("text")),
     }
 
 
