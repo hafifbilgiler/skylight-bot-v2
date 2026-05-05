@@ -4,7 +4,7 @@ metadata:
   name: skylight-chat
   namespace: skylight-bot-v2
 spec:
-  replicas: 1
+  replicas: 2                        # ⬆️ 1 → 2 (yüksek erişilebilirlik)
   selector:
     matchLabels:
       app: skylight-chat
@@ -15,45 +15,38 @@ spec:
     spec:
       containers:
       - name: chat
-        image: docker.io/hafifbilgiler/skylight-chat:9.5 # ✅ YENİ IMAGE 8.5 8.4 8.3 6.7,5.6, 4.8,3.8,2.6, 2.7,2.8,2.9, 3.3,3.5,3.6,4.1,4.6
+        image: docker.io/hafifbilgiler/skylight-chat:9.6
         imagePullPolicy: Always
         ports:
         - containerPort: 8082
         env:
-        # Database
+        # ── Database ────────────────────────────────────
         - name: DB_HOST
           value: "postgres"
-        - name: GEMINI_API_KEY
-          value: "aa"
         - name: DB_PORT
           value: "5432"
         - name: DB_NAME
-          valueFrom:
-            secretKeyRef:
-              name: pg-secret
-              key: dbname
+          valueFrom: { secretKeyRef: { name: pg-secret, key: dbname } }
         - name: DB_USER
-          valueFrom:
-            secretKeyRef:
-              name: pg-secret
-              key: username
+          valueFrom: { secretKeyRef: { name: pg-secret, key: username } }
         - name: DB_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: pg-secret
-              key: password
-        
-        # DeepInfra API
+          valueFrom: { secretKeyRef: { name: pg-secret, key: password } }
+
+        # ── DeepInfra (Text + Code) ─────────────────────
         - name: DEEPINFRA_API_KEY
           value: "4hcNLCkZvisyP6wuD2sdY5NPFU2GjBSn"
         - name: DEEPINFRA_BASE_URL
           value: "https://api.deepinfra.com/v1/openai"
-        
+        - name: DEEPINFRA_MODEL
+          value: "deepseek-ai/DeepSeek-V4-Flash"
+        - name: DEEPINFRA_READ_TIMEOUT          # ✨ YENİ
+          value: "900"
+
         # Models
         - name: DEEPINFRA_ASSISTANT_MODEL
           value: "deepseek-ai/DeepSeek-V4-Flash"
         - name: DEEPINFRA_ASSISTANT_MAX_TOKENS
-          value: "8192"
+          value: "16384"                        # ⬆️ 8192 → 16384
         - name: DEEPINFRA_ASSISTANT_TEMPERATURE
           value: "0.7"
         - name: DEEPINFRA_CODE_MODEL
@@ -62,32 +55,51 @@ spec:
           value: "0.3"
         - name: DEEPINFRA_CODE_MAX_TOKENS
           value: "32000"
-        
-        # Smart Tools
+
+        # ── Smart Tools ─────────────────────────────────
         - name: SMART_TOOLS_URL
           value: "http://skylight-smart-tools:8081"
 
-        # Vertex AI — Google Search Grounding
+        # ── Chat Provider Switch ────────────────────────
+        - name: CHAT_PROVIDER                   # ✨ YENİ
+          value: "deepseek"
+
+        # ── Vertex AI Gemini ────────────────────────────
         - name: GEMINI_PROJECT
           value: "gen-lang-client-0907571701"
         - name: GEMINI_LOCATION
           value: "us-central1"
         - name: GEMINI_MODEL
-          value: "gemini-2.5-flash-lite"
+          value: "gemini-2.5-flash-lite"        # vision + chat (ucuz)
+        - name: GEMINI_GROUNDING_MODEL
+          value: "gemini-2.5-flash"             # web search (lite bug nedeniyle ayrı)
 
-        # Vertex SA key mount
+        # ── Vertex SA key mount ─────────────────────────
         volumeMounts:
         - name: vertex-sa-key
           mountPath: /etc/vertex-sa
           readOnly: true
 
+        # ── Resources (artırıldı) ───────────────────────
         resources:
           requests:
-            memory: "256Mi"
-            cpu: "200m"
+            memory: "512Mi"     # ⬆️ 256 → 512
+            cpu: "300m"         # ⬆️ 200 → 300
           limits:
-            memory: "512Mi"
-            cpu: "500m"
+            memory: "1.5Gi"     # ⬆️ 512 → 1.5Gi
+            cpu: "1000m"        # ⬆️ 500 → 1000
+
+        # ── Health checks (öneri) ───────────────────────
+        livenessProbe:
+          httpGet: { path: /health, port: 8082 }
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+        readinessProbe:
+          httpGet: { path: /health, port: 8082 }
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 3
 
       volumes:
       - name: vertex-sa-key
