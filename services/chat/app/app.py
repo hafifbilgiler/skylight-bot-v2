@@ -71,6 +71,9 @@ GEMINI_PROJECT     = os.getenv("GEMINI_PROJECT", "gen-lang-client-0907571701")  
 GEMINI_LOCATION    = os.getenv("GEMINI_LOCATION", "us-central1")
 GEMINI_SA_KEY_PATH = "/etc/vertex-sa/key.json"             # K8s secret mount
 GEMINI_MODEL       = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
+# Grounding (Google Search) için ayrı model — flash-lite grounding'de bug yapıyor
+# Default: gemini-2.5-flash (grounding güvenilir çalışıyor)
+GEMINI_GROUNDING_MODEL = os.getenv("GEMINI_GROUNDING_MODEL", "gemini-2.5-flash")
 # Bu live_type'lar → Gemini'ye gider, DeepInfra'ya gitmez
 _GEMINI_TYPES = {"web_search", "news", "deep_search", "price_search"}
 _FREE_API_TYPES = {"weather", "currency", "crypto", "time"}
@@ -488,20 +491,22 @@ async def gemini_live_stream(query: str, live_type: str):
 
         def _call():
             return client.models.generate_content(
-                model=GEMINI_MODEL,
+                model=GEMINI_GROUNDING_MODEL,   # Grounding için flash (lite değil)
                 contents=query,
                 config=types.GenerateContentConfig(
                     system_instruction=(
                         f"Sen ONE-BUNE AI asistanısın. {instruction} "
+                        "Google'da arama yap ve gerçek, güncel sonuçları kullan. "
+                        "ASLA 'web kaynaklarında bulunamadı' deme — search tool kullan. "
                         "Varsa kaynakları yanıtın sonuna ekle. Markdown kullan."
                     ),
                     tools=[types.Tool(google_search=types.GoogleSearch())],
-                    temperature=0.1,
+                    temperature=1.0,   # Google docs: grounding için ideal 1.0
                     max_output_tokens=2048 if live_type == "deep_search" else 1024,
                 ),
             )
 
-        print(f"[GEMINI] ▶ {live_type} | '{query[:60]}'")
+        print(f"[GEMINI GROUNDING] ▶ {GEMINI_GROUNDING_MODEL} | {live_type} | '{query[:60]}'")
         response = await asyncio.to_thread(_call)
         text = response.text or ""
 
