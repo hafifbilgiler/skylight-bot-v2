@@ -1839,30 +1839,58 @@ async def chat(request: ChatRequest):
 
     # Ücretsiz API: weather, currency, crypto, time → smart_tools (limit yok)
     if _lt in _FREE_API_TYPES and SMART_TOOLS_URL:
-        print(f"[FREE API] '{request.prompt[:50]}' → {_lt}")
-        async def _free_api_stream():
-            try:
-                async with httpx.AsyncClient(timeout=6.0) as _c:
-                    _r = await _c.post(
-                        f"{SMART_TOOLS_URL}/unified",
-                        json={"query": request.prompt, "tool_type": _lt},
-                    )
-                    if _r.status_code == 200:
-                        _d = _r.json()
-                        if _d.get("success"):
-                            _data = _d.get("data", {})
-                            text = (_data.get("formatted") or
-                                    _data.get("formatted_tr") or
-                                    _data.get("short") or "")
-                            if text:
-                                print(f"[FREE API] ✅ {_lt} | {len(text)} chars")
-                                yield text
-                                return
-            except Exception as _e:
-                print(f"[FREE API] ❌ {_e} — Gemini fallback")
-            async for chunk in gemini_live_stream(request.prompt, _lt):
-                if chunk: yield chunk
-        return StreamingResponse(_free_api_stream(), media_type="text/plain; charset=utf-8")
+        print(f"[FREE API + RAG] '{request.prompt[:50]}' → {_lt}")
+        # Yeni akış (RAG):
+        #   1. Smart-tools'tan ham veri al (hava, kur, kripto, saat)
+        #   2. DeepSeek'e bu veriyi context olarak ver
+        #   3. DeepSeek doğal Türkçe cevap yazar
+        _live_data_text = ""
+        try:
+            async with httpx.AsyncClient(timeout=6.0) as _c:
+                _r = await _c.post(
+                    f"{SMART_TOOLS_URL}/unified",
+                    json={"query": request.prompt, "tool_type": _lt},
+                )
+                if _r.status_code == 200:
+                    _d = _r.json()
+                    if _d.get("success"):
+                        _data = _d.get("data", {})
+                        _live_data_text = (_data.get("formatted") or
+                                           _data.get("formatted_tr") or
+                                           _data.get("short") or "")
+                        if _live_data_text:
+                            print(f"[FREE API + RAG] ✅ {_lt} | {len(_live_data_text)} chars → DeepSeek yorumlayacak")
+        except Exception as _e:
+            print(f"[FREE API + RAG] ⚠ smart-tools fail: {_e}")
+
+        if not _live_data_text:
+            # Smart-tools başarısızsa Gemini grounding'e düş
+            print(f"[FREE API + RAG] Veri yok → Gemini grounding fallback")
+            async def _gemini_fallback():
+                async for chunk in gemini_live_stream(request.prompt, _lt):
+                    if chunk: yield chunk
+            return StreamingResponse(_gemini_fallback(), media_type="text/plain; charset=utf-8")
+
+        # Veriyi context'e koy → normal DeepSeek akışına devam et
+        # request.context'a inject ediyoruz, build_messages bunu system prompt'a alacak
+        _label = {
+            "weather":  "🌤 GÜNCEL HAVA DURUMU",
+            "currency": "💱 GÜNCEL DÖVİZ KURU",
+            "crypto":   "₿ GÜNCEL KRİPTO FİYATI",
+            "time":     "🕐 GÜNCEL TARİH/SAAT",
+        }.get(_lt, "📊 GÜNCEL VERİ")
+
+        _injected = (
+            f"\n\n[{_label} — bu veriyi kullan, kendin uydurma]\n"
+            f"{_live_data_text}\n"
+            f"[BU VERİYE GÖRE KULLANICININ SORUSUNU CEVAPLA - DOĞAL TÜRKÇE]\n"
+        )
+        # Mevcut context'e ekle
+        if request.context:
+            request.context = (request.context or "") + _injected
+        else:
+            request.context = _injected
+        # Devam et — ana DeepSeek akışına düşecek (return YOK, akış aşağı iniyor)
 
     # Gemini: web_search, news, deep_search, price_search → Google Search Grounding
     if _lt in _GEMINI_TYPES:
