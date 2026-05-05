@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
       - name: image-analysis
-        image: docker.io/hafifbilgiler/skylight-image-analysis:1.1
+        image: docker.io/hafifbilgiler/skylight-image-analysis:1.2  # ⬆️ Hibrit (Gemini + DeepInfra fallback)
         imagePullPolicy: Always
         ports:
         - containerPort: 8002
@@ -25,21 +25,43 @@ spec:
           value: "redis://skylight-redis:6379/0"
         - name: REDIS_TTL
           value: "86400"
-        
-        # DeepInfra API
+
+        # ═══════════════════════════════════════════════════
+        # VISION PROVIDER — gemini (default) | deepinfra
+        # ═══════════════════════════════════════════════════
+        - name: VISION_PROVIDER
+          value: "gemini"
+
+        # Gemini (Vertex AI) — Aktif
+        - name: GEMINI_PROJECT
+          value: "gen-lang-client-0907571701"
+        - name: GEMINI_LOCATION
+          value: "us-central1"
+        - name: GEMINI_VISION_MODEL
+          value: "gemini-2.5-flash-lite"
+        - name: GEMINI_VISION_MAX_TOKENS
+          value: "4096"
+        - name: GEMINI_VISION_TEMPERATURE
+          value: "0.4"
+
+        # DeepInfra (Fallback) — VISION_PROVIDER=deepinfra ile aktif olur
         - name: DEEPINFRA_API_KEY
           value: "4hcNLCkZvisyP6wuD2sdY5NPFU2GjBSn"
         - name: DEEPINFRA_BASE_URL
           value: "https://api.deepinfra.com/v1/openai"
-        
-        # Vision Model
         - name: DEEPINFRA_VISION_MODEL
           value: "Qwen/Qwen3-VL-30B-A3B-Instruct"
         - name: DEEPINFRA_VISION_MAX_TOKENS
           value: "4096"
         - name: DEEPINFRA_VISION_TEMPERATURE
           value: "0.4"
-        
+
+        # Vertex SA key mount (chat-service ile aynı secret)
+        volumeMounts:
+        - name: vertex-sa-key
+          mountPath: /etc/vertex-sa
+          readOnly: true
+
         resources:
           requests:
             memory: "256Mi"
@@ -47,6 +69,12 @@ spec:
           limits:
             memory: "512Mi"
             cpu: "500m"
+
+      volumes:
+      - name: vertex-sa-key
+        secret:
+          secretName: vertex-sa-key
+
 ---
 apiVersion: v1
 kind: Service

@@ -15,6 +15,7 @@ SKYLIGHT IMAGE ANALYSIS SERVICE v2.0 - PRODUCTION
 import os
 import logging
 import json
+import base64
 from typing import Optional, List, Dict
 from datetime import datetime
 
@@ -41,7 +42,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# DeepInfra Configuration
+# ═══════════════════════════════════════════════════════════════
+# VISION PROVIDER — gemini (default) | deepinfra (fallback)
+# ═══════════════════════════════════════════════════════════════
+VISION_PROVIDER = os.getenv("VISION_PROVIDER", "gemini").strip().lower()
+
+# Gemini (Vertex AI) Configuration
+GEMINI_PROJECT     = os.getenv("GEMINI_PROJECT", "gen-lang-client-0907571701")
+GEMINI_LOCATION    = os.getenv("GEMINI_LOCATION", "us-central1")
+GEMINI_MODEL       = os.getenv("GEMINI_VISION_MODEL", "gemini-2.5-flash-lite")
+GEMINI_SA_KEY_PATH = os.getenv("GEMINI_SA_KEY_PATH", "/etc/vertex-sa/key.json")
+GEMINI_API_KEY     = os.getenv("GEMINI_API_KEY", "")  # AI Studio fallback
+GEMINI_MAX_TOKENS  = int(os.getenv("GEMINI_VISION_MAX_TOKENS", "4096"))
+GEMINI_TEMPERATURE = float(os.getenv("GEMINI_VISION_TEMPERATURE", "0.4"))
+
+# DeepInfra Configuration (fallback)
 DEEPINFRA_API_KEY = os.getenv("DEEPINFRA_API_KEY", "")
 DEEPINFRA_BASE_URL = os.getenv("DEEPINFRA_BASE_URL", "https://api.deepinfra.com/v1/openai")
 DEEPINFRA_VISION_MODEL = os.getenv("DEEPINFRA_VISION_MODEL", "Qwen/Qwen3-VL-30B-A3B-Instruct")
@@ -65,8 +80,19 @@ except Exception as e:
     ENABLE_REDIS_CACHE = False
     redis_client = None
 
-if not DEEPINFRA_API_KEY:
-    logger.error("⚠️ DEEPINFRA_API_KEY is not set!")
+if VISION_PROVIDER == "gemini":
+    _has_sa = os.path.exists(GEMINI_SA_KEY_PATH)
+    if not (_has_sa or GEMINI_API_KEY):
+        logger.error("⚠️ GEMINI provider seçildi ama Vertex SA key veya GEMINI_API_KEY yok!")
+    else:
+        logger.info(f"✓ Vision provider: GEMINI ({GEMINI_MODEL}, {'Vertex SA' if _has_sa else 'AI Studio'})")
+elif VISION_PROVIDER == "deepinfra":
+    if not DEEPINFRA_API_KEY:
+        logger.error("⚠️ DEEPINFRA provider seçildi ama DEEPINFRA_API_KEY yok!")
+    else:
+        logger.info(f"✓ Vision provider: DEEPINFRA ({DEEPINFRA_VISION_MODEL})")
+else:
+    logger.error(f"⚠️ Bilinmeyen VISION_PROVIDER: {VISION_PROVIDER}")
 
 # ═══════════════════════════════════════════════════════════════
 # FASTAPI APP
@@ -243,6 +269,143 @@ def build_vision_messages(
 # VISION API STREAMING
 # ═══════════════════════════════════════════════════════════════
 
+def _stream_gemini_vision(
+    messages: List[Dict],
+    max_tokens: int,
+    temperature: float,
+):
+    """
+    Vertex AI Gemini Flash Lite ile multimodal vision stream.
+    OpenAI formatındaki messages'ı Gemini formatına çevirir.
+    """
+    try:
+        from google import genai
+        from google.genai import types as gtypes
+    except ImportError:
+        logger.error("[GEMINI] google-genai paketi yok!")
+        yield "⚠️ Gemini SDK eksik (google-genai)"
+        return
+
+    # Vertex AI client
+    try:
+        if os.path.exists(GEMINI_SA_KEY_PATH) and GEMINI_PROJECT:
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = GEMINI_SA_KEY_PATH
+            client = genai.Client(
+                vertexai=True,
+                project=GEMINI_PROJECT,
+                location=GEMINI_LOCATION,
+            )
+            logger.info(f"[GEMINI] Vertex AI ({GEMINI_PROJECT}/{GEMINI_LOCATION})")
+        elif GEMINI_API_KEY:
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            logger.info("[GEMINI] AI Studio (API key)")
+        else:
+            yield "⚠️ Gemini için Vertex SA key veya GEMINI_API_KEY gerekli."
+            return
+    except Exception as e:
+        logger.error(f"[GEMINI] Client init hatası: {e}")
+        yield f"⚠️ Gemini istemcisi başlatılamadı: {e}"
+        return
+
+    # OpenAI messages → Gemini contents
+    system_text = ""
+    contents = []
+    for msg in messages:
+        role = msg.get("role")
+        content = msg.get("content")
+        if role == "system":
+            # System tek string olarak biriktir
+            if isinstance(content, str):
+                system_text += (("\n\n" if system_text else "") + content)
+            continue
+        # role: user / assistant → user / model
+        gem_role = "user" if role == "user" else "model"
+        parts = []
+        if isinstance(content, str):
+            parts.append(gtypes.Part.from_text(text=content))
+        elif isinstance(content, list):
+            for item in content:
+                itype = item.get("type")
+                if itype == "text":
+                    parts.append(gtypes.Part.from_text(text=item.get("text", "")))
+                elif itype == "image_url":
+                    url = item.get("image_url", {}).get("url", "")
+                    if url.startswith("data:"):
+                        # data:image/png;base64,XXX
+                        try:
+                            header, b64 = url.split(",", 1)
+                            mime = header.split(";")[0].replace("data:", "") or "image/jpeg"
+                            img_bytes = base64.b64decode(b64)
+                            parts.append(gtypes.Part.from_bytes(data=img_bytes, mime_type=mime))
+                        except Exception as e:
+                            logger.error(f"[GEMINI] Image parse hatası: {e}")
+        if parts:
+            contents.append(gtypes.Content(role=gem_role, parts=parts))
+
+    # Streaming çağrı
+    try:
+        config = gtypes.GenerateContentConfig(
+            system_instruction=system_text or None,
+            temperature=temperature,
+            max_output_tokens=max_tokens,
+        )
+        logger.info(f"[GEMINI] ▶ Vision stream | model={GEMINI_MODEL} | parts={sum(len(c.parts) for c in contents)}")
+        stream = client.models.generate_content_stream(
+            model=GEMINI_MODEL,
+            contents=contents,
+            config=config,
+        )
+        for chunk in stream:
+            text = getattr(chunk, "text", None)
+            if text:
+                yield text
+    except Exception as e:
+        logger.error(f"[GEMINI] Stream hatası: {e}")
+        yield f"⚠️ Gemini vision stream hatası: {e}"
+
+
+def _stream_deepinfra_vision(
+    messages: List[Dict],
+    max_tokens: int,
+    temperature: float,
+):
+    """DeepInfra Qwen-VL ile vision stream (fallback)."""
+    headers = {
+        "Authorization": f"Bearer {DEEPINFRA_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": DEEPINFRA_VISION_MODEL,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "stream": True
+    }
+    logger.info(f"[VISION-DI] Stream | model={DEEPINFRA_VISION_MODEL}")
+    response = requests.post(
+        f"{DEEPINFRA_BASE_URL}/chat/completions",
+        headers=headers, json=payload, stream=True, timeout=120
+    )
+    if response.status_code != 200:
+        yield f"⚠️ Vision API error (HTTP {response.status_code})"
+        return
+    for line in response.iter_lines():
+        if not line: continue
+        line_str = line.decode('utf-8')
+        if not line_str.strip() or "[DONE]" in line_str:
+            continue
+        if line_str.startswith("data: "):
+            line_str = line_str[6:]
+        try:
+            chunk_data = json.loads(line_str)
+            if "choices" in chunk_data and chunk_data["choices"]:
+                content = chunk_data["choices"][0].get("delta", {}).get("content", "")
+                if content:
+                    yield content
+        except json.JSONDecodeError:
+            continue
+
+
 def stream_vision_analysis(
     messages: List[Dict],
     max_tokens: int,
@@ -250,71 +413,30 @@ def stream_vision_analysis(
     conversation_id: Optional[str] = None,
     preserve_analysis: bool = True
 ):
-    """Stream vision analysis with context caching"""
+    """
+    Stream vision analysis — provider'a göre yönlendirir.
+    VISION_PROVIDER=gemini (default) veya deepinfra
+    """
+    full_response = []
     try:
-        headers = {
-            "Authorization": f"Bearer {DEEPINFRA_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        
-        payload = {
-            "model": DEEPINFRA_VISION_MODEL,
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "stream": True
-        }
-        
-        logger.info(f"[VISION] Streaming analysis (max_tokens={max_tokens})")
-        
-        response = requests.post(
-            f"{DEEPINFRA_BASE_URL}/chat/completions",
-            headers=headers,
-            json=payload,
-            stream=True,
-            timeout=120
-        )
-        
-        if response.status_code == 200:
-            full_response = []
-            
-            for line in response.iter_lines():
-                if line:
-                    line_str = line.decode('utf-8')
-                    
-                    if not line_str.strip() or "[DONE]" in line_str:
-                        continue
-                    
-                    if line_str.startswith("data: "):
-                        line_str = line_str[6:]
-                    
-                    try:
-                        chunk_data = json.loads(line_str)
-                        
-                        if "choices" in chunk_data and len(chunk_data["choices"]) > 0:
-                            delta = chunk_data["choices"][0].get("delta", {})
-                            content = delta.get("content", "")
-                            
-                            if content:
-                                full_response.append(content)
-                                yield content
-                    
-                    except json.JSONDecodeError:
-                        continue
-            
-            # Cache the full response
-            if preserve_analysis and conversation_id and full_response:
-                complete_analysis = "".join(full_response)
-                VisionContextManager.cache_analysis(conversation_id, complete_analysis)
-        
+        if VISION_PROVIDER == "gemini":
+            stream = _stream_gemini_vision(messages, max_tokens, temperature)
         else:
-            error_msg = f"⚠️ Vision API error (HTTP {response.status_code})"
-            logger.error(f"[VISION] {error_msg}")
-            yield error_msg
-    
+            stream = _stream_deepinfra_vision(messages, max_tokens, temperature)
+
+        for chunk in stream:
+            if chunk:
+                full_response.append(chunk)
+                yield chunk
+
+        # Cache the full response
+        if preserve_analysis and conversation_id and full_response:
+            complete_analysis = "".join(full_response)
+            VisionContextManager.cache_analysis(conversation_id, complete_analysis)
+
     except requests.exceptions.Timeout:
         logger.error("[VISION] Timeout")
-        yield "⚠️ Vision analysis timeout (120s)"
+        yield "⚠️ Vision analysis timeout"
     except Exception as e:
         logger.error(f"[VISION] Exception: {e}")
         yield f"⚠️ Vision analysis error: {str(e)}"
@@ -327,16 +449,19 @@ def stream_vision_analysis(
 @app.get("/health")
 async def health_check():
     """Health check"""
+    active_model = GEMINI_MODEL if VISION_PROVIDER == "gemini" else DEEPINFRA_VISION_MODEL
     return {
         "status": "healthy",
         "service": "skylight-image-analysis",
-        "version": "2.0.0",
-        "model": DEEPINFRA_VISION_MODEL,
+        "version": "3.0.0",
+        "provider": VISION_PROVIDER,
+        "model": active_model,
         "features": {
             "context_aware": True,
             "follow_up_questions": True,
             "conversation_memory": ENABLE_REDIS_CACHE,
             "mode_specific_analysis": True,
+            "multi_provider": True,
         }
     }
 
@@ -366,8 +491,12 @@ async def analyze_endpoint(request: AnalyzeRequest):
         )
         
         # Get parameters
-        max_tokens = request.max_tokens or DEEPINFRA_VISION_MAX_TOKENS
-        temperature = request.temperature or DEEPINFRA_VISION_TEMPERATURE
+        if VISION_PROVIDER == "gemini":
+            max_tokens = request.max_tokens or GEMINI_MAX_TOKENS
+            temperature = request.temperature or GEMINI_TEMPERATURE
+        else:
+            max_tokens = request.max_tokens or DEEPINFRA_VISION_MAX_TOKENS
+            temperature = request.temperature or DEEPINFRA_VISION_TEMPERATURE
         
         # Stream response
         return StreamingResponse(
@@ -395,13 +524,18 @@ async def analyze_endpoint(request: AnalyzeRequest):
 
 @app.on_event("startup")
 async def startup_event():
+    active_model = GEMINI_MODEL if VISION_PROVIDER == "gemini" else DEEPINFRA_VISION_MODEL
+    active_mt    = GEMINI_MAX_TOKENS if VISION_PROVIDER == "gemini" else DEEPINFRA_VISION_MAX_TOKENS
+    active_tmp   = GEMINI_TEMPERATURE if VISION_PROVIDER == "gemini" else DEEPINFRA_VISION_TEMPERATURE
     logger.info("=" * 60)
-    logger.info("🔍 SKYLIGHT IMAGE ANALYSIS SERVICE v2.0")
-    logger.info(f"   Model: {DEEPINFRA_VISION_MODEL}")
-    logger.info(f"   Max Tokens: {DEEPINFRA_VISION_MAX_TOKENS}")
-    logger.info(f"   Temperature: {DEEPINFRA_VISION_TEMPERATURE}")
+    logger.info("🔍 SKYLIGHT IMAGE ANALYSIS SERVICE v3.0")
+    logger.info(f"   Provider: {VISION_PROVIDER.upper()}")
+    logger.info(f"   Model: {active_model}")
+    logger.info(f"   Max Tokens: {active_mt}")
+    logger.info(f"   Temperature: {active_tmp}")
     logger.info(f"   Redis Cache: {'✓' if ENABLE_REDIS_CACHE else '✗'}")
     logger.info("   Features:")
+    logger.info("     ✓ Hybrid: Gemini Flash Lite (default) + DeepInfra fallback")
     logger.info("     ✓ Context-Aware Analysis")
     logger.info("     ✓ Follow-Up Questions")
     logger.info("     ✓ Conversation Memory")
