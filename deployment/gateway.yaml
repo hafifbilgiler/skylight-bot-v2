@@ -24,6 +24,14 @@ spec:
           mountPath: /tls
           readOnly: true
         env:
+        - name: SMART_ROUTER_ENABLED
+          value: "false"           # ✅ Smart Router pasif
+        - name: IMAGE_KEYWORD_DETECTION
+          value: "false"           # ✅ "amblem yap" keyword bypass
+        - name: GATEWAY_DEEP_SEARCH_DETECTION
+          value: "false"           # ✅ Deep search keyword bypass
+        - name: USE_IMAGE_ANALYSIS_SERVICE
+          value: "false"   
         # Database
         - name: DB_HOST
           value: "postgres"
@@ -62,8 +70,6 @@ spec:
         # value: "smtp.hostinger.com"
         - name: SMTP_SERVER
           value: "in-v3.mailjet.com"
-        - name: SMART_ROUTER_ENABLED
-          value: "false" 
         - name: SMTP_PORT
           value: "587"
         - name: SMTP_USER
