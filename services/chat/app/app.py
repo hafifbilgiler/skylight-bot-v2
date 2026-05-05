@@ -1840,10 +1840,10 @@ async def chat(request: ChatRequest):
     # Ücretsiz API: weather, currency, crypto, time → smart_tools (limit yok)
     if _lt in _FREE_API_TYPES and SMART_TOOLS_URL:
         print(f"[FREE API + RAG] '{request.prompt[:50]}' → {_lt}")
-        # Yeni akış (RAG):
-        #   1. Smart-tools'tan ham veri al (hava, kur, kripto, saat)
-        #   2. DeepSeek'e bu veriyi context olarak ver
-        #   3. DeepSeek doğal Türkçe cevap yazar
+        # YENİ AKIŞ:
+        #   1. Smart-tools'tan formatlı çıktı al (sembollü)
+        #   2. Bu çıktıyı önce STREAM olarak frontend'e gönder
+        #   3. Sonra DeepSeek'e gönder, kısa yorumu yazdır (4-5 cümle max)
         _live_data_text = ""
         try:
             async with httpx.AsyncClient(timeout=6.0) as _c:
@@ -1859,38 +1859,51 @@ async def chat(request: ChatRequest):
                                            _data.get("formatted_tr") or
                                            _data.get("short") or "")
                         if _live_data_text:
-                            print(f"[FREE API + RAG] ✅ {_lt} | {len(_live_data_text)} chars → DeepSeek yorumlayacak")
+                            print(f"[FREE API + RAG] ✅ {_lt} | {len(_live_data_text)} chars")
         except Exception as _e:
             print(f"[FREE API + RAG] ⚠ smart-tools fail: {_e}")
 
         if not _live_data_text:
-            # Smart-tools başarısızsa Gemini grounding'e düş
             print(f"[FREE API + RAG] Veri yok → Gemini grounding fallback")
             async def _gemini_fallback():
                 async for chunk in gemini_live_stream(request.prompt, _lt):
                     if chunk: yield chunk
             return StreamingResponse(_gemini_fallback(), media_type="text/plain; charset=utf-8")
 
-        # Veriyi context'e koy → normal DeepSeek akışına devam et
-        # request.context'a inject ediyoruz, build_messages bunu system prompt'a alacak
-        _label = {
-            "weather":  "🌤 GÜNCEL HAVA DURUMU",
-            "currency": "💱 GÜNCEL DÖVİZ KURU",
-            "crypto":   "₿ GÜNCEL KRİPTO FİYATI",
-            "time":     "🕐 GÜNCEL TARİH/SAAT",
-        }.get(_lt, "📊 GÜNCEL VERİ")
+        # Smart-tools verisi geldi → hybrid stream
+        async def _hybrid_stream():
+            # 1. Önce ham sembollü veriyi yaz
+            yield _live_data_text
+            yield "\n\n---\n\n"
 
-        _injected = (
-            f"\n\n[{_label} — bu veriyi kullan, kendin uydurma]\n"
-            f"{_live_data_text}\n"
-            f"[BU VERİYE GÖRE KULLANICININ SORUSUNU CEVAPLA - DOĞAL TÜRKÇE]\n"
-        )
-        # Mevcut context'e ekle
-        if request.context:
-            request.context = (request.context or "") + _injected
-        else:
-            request.context = _injected
-        # Devam et — ana DeepSeek akışına düşecek (return YOK, akış aşağı iniyor)
+            # 2. Sonra DeepSeek'in kısa yorumunu yaz
+            _comment_prompt = (
+                f"Aşağıdaki güncel veriye bakıp kullanıcının sorusunu KISA yorumla. "
+                f"Veriyi tekrar yazma, sadece YORUM yap. Maksimum 2-3 cümle. "
+                f"Pratik öneri ekle (örn. ne giysem, dikkat edilecek şey).\n\n"
+                f"Kullanıcı sorusu: {request.prompt}\n\n"
+                f"Güncel veri:\n{_live_data_text}\n\n"
+                f"YORUMUN (sadece yorum, başka şey yazma):"
+            )
+            _comment_msgs = [
+                {"role": "system", "content": "Sen kısa, pratik, doğal yorumlar yazan bir asistansın. Veriyi tekrar etme, kısa öneri ver."},
+                {"role": "user",   "content": _comment_prompt},
+            ]
+            try:
+                async for chunk in stream_deepinfra_completion(
+                    messages=_comment_msgs,
+                    model=os.getenv("DEEPINFRA_MODEL", "deepseek-ai/DeepSeek-V4-Flash"),
+                    max_tokens=300,
+                    temperature=0.4,
+                    top_p=0.9,
+                    reasoning_effort=None,
+                ):
+                    if chunk:
+                        yield chunk
+            except Exception as _ee:
+                print(f"[FREE API + RAG] yorum hatası: {_ee}")
+
+        return StreamingResponse(_hybrid_stream(), media_type="text/plain; charset=utf-8")
 
     # Gemini: web_search, news, deep_search, price_search → Google Search Grounding
     if _lt in _GEMINI_TYPES:
