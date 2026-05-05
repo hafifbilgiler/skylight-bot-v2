@@ -1816,7 +1816,19 @@ async def chat(request: ChatRequest):
 
         # Kısa mesaj follow-up: önceki cevap canlı veriyse devam
         # ÖRN: "İstanbul ne kadar?" (önceki: "Ankara'da hava 22°C")
-        if not _lt and _wc <= 4 and request.history:
+        # AMA: "Antalyadaki en iyi oteller" gibi YENİ KONU varsa follow-up iptal
+        _NEW_TOPIC_KW = (
+            "otel", "hotel", "restoran", "restaurant", "yemek", "gezi", "tur",
+            "müze", "müzesi", "plaj", "kafe", "bar", "alışveriş", "avm", "mağaza",
+            "tarih", "tarihi", "kültür", "etkinlik", "konser", "festival",
+            "uçak", "bilet", "ucuz", "öneri", "tavsiye", "nereye", "ne yapılır",
+            "ne yenir", "ne içilir", "nerede yenir", "popüler", "ünlü", "iyi yer",
+            "haritalar", "harita", "yol tarifi", "ulaşım",
+            "iyi", "en iyi", "en güzel",  # "en iyi oteller", "en güzel plajlar"
+        )
+        _has_new_topic = any(w in _q for w in _NEW_TOPIC_KW)
+
+        if not _lt and _wc <= 5 and request.history and not _has_new_topic:
             for msg in reversed(request.history[-4:]):
                 if msg.get("role") != "assistant":
                     continue
@@ -1826,7 +1838,9 @@ async def chat(request: ChatRequest):
                     cities = ["istanbul","ankara","izmir","antalya","bursa","adana",
                               "konya","berlin","london","paris","tokyo","dubai",
                               "amsterdam","madrid","rome","new york"]
-                    if any(c2 in _q for c2 in cities):
+                    # SADECE şehir + "ne kadar"/"orada"/"peki" gibi takip soruları olursa
+                    _followup_phrases = ["ne kadar", "orada", "orası", "peki", "ya ", "ne durumda"]
+                    if any(c2 in _q for c2 in cities) and any(p in _q for p in _followup_phrases):
                         _lt = "weather"
                     break
                 if "1 usd" in c or "1 eur" in c or " try" in c:
@@ -1836,6 +1850,29 @@ async def chat(request: ChatRequest):
 
     if _lt:
         print(f"[DETECT] '{request.prompt[:50]}' → {_lt}")
+
+    # ── Web araştırma sinyalleri (deep_search/Gemini grounding) ──
+    # "en iyi oteller", "antalyada ne yapılır", "ucuz uçak bileti" gibi
+    # güncel internet bilgisi gerektiren sorular
+    if not _lt and not _has_non_live:
+        _WEB_RESEARCH_PATTERNS = (
+            # Yer/mekan önerisi
+            "en iyi otel", "en güzel otel", "iyi otel", "lüks otel",
+            "en iyi restoran", "iyi restoran", "ünlü restoran",
+            "en iyi kafe", "iyi kafe", "popüler kafe",
+            "gezilecek yer", "görülecek yer", "yapılacak şey",
+            "ne yapılır", "nereye gid", "nereler gez",
+            "tatil yeri", "tatil için", "tatil önerisi",
+            # Alışveriş
+            "en iyi laptop", "en iyi telefon", "en iyi kulaklık",
+            "ucuz", "uygun fiyat",
+            # Bilgi
+            "ne yenir", "nerede yenir", "ne içilir",
+            "öneri ver", "tavsiye et", "önerebilir",
+        )
+        if any(p in _q for p in _WEB_RESEARCH_PATTERNS):
+            _lt = "deep_search"
+            print(f"[DETECT] '{request.prompt[:50]}' → deep_search (web research)")
 
     # Ücretsiz API: weather, currency, crypto, time → smart_tools (limit yok)
     if _lt in _FREE_API_TYPES and SMART_TOOLS_URL:
