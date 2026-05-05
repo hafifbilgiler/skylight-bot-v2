@@ -1768,18 +1768,26 @@ async def chat(request: ChatRequest):
     _wc = len(_words)
 
     # Konuşma kod/devam niyetinde mi? Bu varsa hiç canlı veri tetikleme.
+    # ÖNEMLİ: Kelime SINIRI ile kontrol — "bug" "bugün" içinde tetiklemesin.
     _NON_LIVE_INTENT = (
-        "kod", "kodu", "yaz", "yazsana", "yazar mısın", "yazabilir",
+        "kod", "kodu", "yaz", "yazsana",
         "düzelt", "fix", "refactor", "refaktör",
         "devam", "ettir", "tamamla", "bitir",
-        "açıkla", "anlat", "açıklar mısın",
+        "açıkla", "anlat",
         "fonksiyon", "function", "class", "import", "method",
         "hata", "error", "bug", "exception", "traceback",
-        "test yaz", "test ekle", "unit test",
-        "örnek ver", "örnek göster",
-        "nasıl yaparım", "nasıl yapılır",
+        "test", "örnek",
     )
-    _has_non_live = any(w in _q for w in _NON_LIVE_INTENT)
+    # Kelime bazlı bool kontrolü (substring değil)
+    import re as _re
+    _q_tokens = set(_re.findall(r"[a-zA-ZçğıöşüÇĞİÖŞÜ]+", _q))
+    _has_non_live = any(w in _q_tokens for w in _NON_LIVE_INTENT)
+    # Çok-kelimeli phrase'ler için ayrıca substring kontrolü
+    _NON_LIVE_PHRASES = ("test yaz", "test ekle", "unit test", "örnek ver",
+                         "örnek göster", "nasıl yaparım", "nasıl yapılır",
+                         "yazar mısın", "yazabilir mis")
+    if not _has_non_live:
+        _has_non_live = any(p in _q for p in _NON_LIVE_PHRASES)
 
     # NET canlı veri pattern'leri (cümlede gerçekten canlı veri sorulmuş)
     _NET_WEATHER  = ("hava durumu", "hava nasıl", "havalar nasıl",
