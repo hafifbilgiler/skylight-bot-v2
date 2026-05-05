@@ -342,26 +342,41 @@ def _detect_live_type(
                      "berlin","london","paris","tokyo","dubai","amsterdam","madrid",
                      "rome","vienna","moscow","beijing","new york","los angeles",
                      "zurich","geneva","barcelona","milan","stockholm","oslo","helsinki"]
-            # q'da şehir var mı? (ekleri de kaldırarak)
-            q_clean = q
-            for suf in ["da","de","ta","te","'da","'de","'ta","'te",
-                        "nin","nın","nun","nün","in","ın","un","ün"]:
-                q_clean = q_clean.replace(suf, " ").strip()
-            for city in known:
-                if city in q or city in q_clean:
-                    print(f"[DETECT] Bağlam weather → {city}")
+            # Non-weather intent guard
+            non_weather_intent = ["kod", "kodu", "yaz", "düzelt", "devam", "ettir",
+                                  "açıkla", "anlat", "fonksiyon", "class"]
+            has_non_weather = any(w in q for w in non_weather_intent)
+
+            if not has_non_weather:
+                # q'da şehir var mı? (ekleri de kaldırarak)
+                q_clean = q
+                for suf in ["da","de","ta","te","'da","'de","'ta","'te",
+                            "nin","nın","nun","nün","in","ın","un","ün"]:
+                    q_clean = q_clean.replace(suf, " ").strip()
+                for city in known:
+                    if city in q or city in q_clean:
+                        print(f"[DETECT] Bağlam weather → {city}")
+                        return "weather"
+                # "peki" "ya" "ya da" ile başlayan kısa soru → devam
+                if any(q.startswith(w) for w in ["peki","ya ","ya da","orası","orada"]):
+                    print(f"[DETECT] Bağlam weather devam (peki/ya)")
                     return "weather"
-            # "peki" "ya" "ya da" ile başlayan kısa soru → devam
-            if any(q.startswith(w) for w in ["peki","ya ","ya da","orası","orada"]):
-                print(f"[DETECT] Bağlam weather devam (peki/ya)")
-                return "weather"
 
         if last_live_tool == "currency":
             currency_words = ["dolar","euro","sterlin","gbp","usd","eur","btc",
-                              "bitcoin","frank","yen","chf","jpy"]
-            if any(k in q for k in currency_words):
-                print(f"[DETECT] Bağlam currency devam")
-                return "currency"
+                              "bitcoin","frank","yen","chf","jpy","kur","fiyat"]
+            # KRİTİK: Sadece currency kelimesi GERÇEKTEN varsa devam.
+            # "kodu devam ettir" gibi mesajlar currency'e gitmesin.
+            if any(k in q.split() or k in q for k in currency_words):
+                # Ek koruma: kod/yazma/devam gibi non-currency niyetler varsa skip
+                non_currency_intent = ["kod", "kodu", "yaz", "düzelt", "devam", "ettir",
+                                       "açıkla", "anlat", "fonksiyon", "class", "import",
+                                       "hata", "error", "bug", "test", "refactor"]
+                if not any(w in q for w in non_currency_intent):
+                    print(f"[DETECT] Bağlam currency devam")
+                    return "currency"
+                else:
+                    print(f"[DETECT] Currency bağlamı var ama kod/devam niyeti → skip")
     
     q = query.lower()
 
@@ -1316,25 +1331,22 @@ async def gemini_vision_stream(
 
     # Stream
     try:
-        # Gemini 2.5 thinking config — adaptive thinking modunda aç
-        thinking_budget = -1  # -1 = dynamic (Gemini kendisi karar verir, "auto" gibi)
         gen_config_kwargs = {
             "system_instruction": system_prompt or None,
             "temperature": temperature,
             "max_output_tokens": max_tokens,
         }
+        # Gemini 2.5 thinking — opsiyonel, SDK desteklemezse skip
+        thinking_enabled = False
         try:
-            # thinking_config + include_thoughts=True → reasoning_text döner
-            gen_config_kwargs["thinking_config"] = gtypes.ThinkingConfig(
-                thinking_budget=thinking_budget,
-                include_thoughts=True,
-            )
-        except Exception:
-            # SDK eski versiyonsa thinking_config yoktur, düş
-            pass
+            tc = gtypes.ThinkingConfig(thinking_budget=-1, include_thoughts=True)
+            gen_config_kwargs["thinking_config"] = tc
+            thinking_enabled = True
+        except Exception as _te:
+            print(f"[GEMINI VISION] ThinkingConfig desteklenmiyor: {_te}")
 
         config = gtypes.GenerateContentConfig(**gen_config_kwargs)
-        print(f"[GEMINI VISION] ▶ {vision_model} | history={len(contents)-1} | image={len(img_bytes)}B | thinking=auto")
+        print(f"[GEMINI VISION] ▶ {vision_model} | history={len(contents)-1} | image={len(img_bytes)}B | thinking={thinking_enabled}")
 
         def _stream_call():
             return client.models.generate_content_stream(
@@ -1343,56 +1355,64 @@ async def gemini_vision_stream(
                 config=config,
             )
 
-        # genai stream sync — to_thread ile sar
         stream = await asyncio.to_thread(_stream_call)
         emitted = False
         in_thinking = False
+
         for chunk in stream:
-            # Yeni: parts'ta thought=True olan kısımları reasoning olarak gönder
-            cands = getattr(chunk, "candidates", None) or []
-            if cands:
-                parts = getattr(cands[0].content, "parts", None) or []
-                for p in parts:
-                    is_thought = getattr(p, "thought", False)
-                    text = getattr(p, "text", None)
-                    if not text:
-                        continue
-                    if is_thought:
-                        # Reasoning chunk → <think> tag'leri ile sar
-                        if not in_thinking:
-                            yield "<think>"
-                            in_thinking = True
-                        yield text
-                        emitted = True
-                    else:
-                        # Normal cevap
+            # 1. Önce parts'a bak (thinking destekli)
+            handled = False
+            try:
+                cands = getattr(chunk, "candidates", None) or []
+                if cands:
+                    content_obj = getattr(cands[0], "content", None)
+                    parts = getattr(content_obj, "parts", None) if content_obj else None
+                    if parts:
+                        for p in parts:
+                            text = getattr(p, "text", None) or ""
+                            if not text:
+                                continue
+                            is_thought = bool(getattr(p, "thought", False))
+                            if is_thought:
+                                if not in_thinking:
+                                    yield "<think>"
+                                    in_thinking = True
+                                yield text
+                            else:
+                                if in_thinking:
+                                    yield "</think>"
+                                    in_thinking = False
+                                yield text
+                            emitted = True
+                            handled = True
+            except Exception as _pe:
+                print(f"[GEMINI VISION] parts parse: {_pe}")
+
+            # 2. Fallback: chunk.text (eski/sade SDK)
+            if not handled:
+                try:
+                    text = getattr(chunk, "text", None)
+                    if text:
                         if in_thinking:
                             yield "</think>"
                             in_thinking = False
                         yield text
                         emitted = True
-                continue
-            # Eski path — sadece text alanı varsa
-            text = getattr(chunk, "text", None)
-            if text:
-                if in_thinking:
-                    yield "</think>"
-                    in_thinking = False
-                emitted = True
-                yield text
+                except Exception:
+                    pass
+
             await asyncio.sleep(0)
 
-        # Thinking açık kaldıysa kapat
         if in_thinking:
             yield "</think>"
 
         if not emitted:
-            print(f"[GEMINI VISION] Empty response")
-            yield "Bu görselle ilgili bir cevap üretemedim. Sorunuzu yeniden ifade eder misin?"
+            print(f"[GEMINI VISION] ⚠️ Empty response")
+            yield "Bu mesajla ilgili bir cevap üretemedim. Lütfen sorunu yeniden ifade eder misin?"
 
     except Exception as e:
-        print(f"[GEMINI VISION] Stream hatası: {e}")
-        yield f"⚠️ Görsel analiz hatası: {e}"
+        print(f"[GEMINI VISION] Stream hatası: {type(e).__name__}: {e}")
+        yield f"⚠️ Stream hatası: {e}"
 
 
 async def stream_deepinfra_completion(
@@ -1440,8 +1460,9 @@ async def stream_deepinfra_completion(
     in_thinking = False  # Reasoning baloncuğu açık mı?
 
     # Uzun kod cevapları için generous timeout
-    # connect=10s, read=300s (chunk başına), write=10s, pool=300s
-    timeout_cfg = httpx.Timeout(connect=10.0, read=300.0, write=10.0, pool=300.0)
+    # connect=10s, read=900s (15dk - çok uzun kodlar için), write=30s, pool=900s
+    _to_read = float(os.getenv("DEEPINFRA_READ_TIMEOUT", "900"))
+    timeout_cfg = httpx.Timeout(connect=10.0, read=_to_read, write=30.0, pool=_to_read)
     async with httpx.AsyncClient(timeout=timeout_cfg) as client:
         async with client.stream("POST", f"{DEEPINFRA_BASE_URL}/chat/completions",
                                  headers=headers, json=payload) as response:
@@ -1727,9 +1748,17 @@ async def chat(request: ChatRequest):
 
     config        = MODE_CONFIGS[request.mode]
 
-    # ── FAST PATH — Canlı veri ────────────────────────────────
-    _lt = _detect_live_type(request.prompt, request.mode or "assistant",
-                            None, request.history or [])
+    # ── FAST PATH — Canlı veri (KEYWORD-BASED, DEPRECATED) ────
+    # Default: KAPALI. Açmak için: LIVE_DATA_FASTPATH=true
+    # Default kapalı çünkü:
+    #   - "kodu devam ettir" gibi mesajları yanlış yorumluyordu
+    #   - Modern yaklaşım: function calling (DeepSeek tools'u kendisi seçer)
+    #   - Kullanıcı net "dolar kaç" derse bile DeepSeek anlayıp yine smart-tools'u çağırır
+    _fastpath_enabled = os.getenv("LIVE_DATA_FASTPATH", "false").strip().lower() in ("true","1","yes","on")
+    _lt = None
+    if _fastpath_enabled:
+        _lt = _detect_live_type(request.prompt, request.mode or "assistant",
+                                None, request.history or [])
 
     # Ücretsiz API: weather, currency, crypto, time → smart_tools (limit yok)
     if _lt in _FREE_API_TYPES and SMART_TOOLS_URL:
