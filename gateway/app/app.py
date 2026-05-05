@@ -3503,6 +3503,83 @@ async def admin_reset_usage(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ── /admin/users/{id}/delete ────────────────────────────────
+# Kullanıcıyı kalıcı olarak siler veya pasifleştirir
+@app.post("/admin/users/{user_id}/delete")
+async def admin_delete_user(
+    user_id: int,
+    payload: Dict[str, Any] = Body(...),
+    authorization: str = Header(None),
+):
+    require_admin(authorization)
+    hard = bool(payload.get("hard", False))
+
+    # Admin kendini silemesin (token'dan admin id çek)
+    admin_id = None
+    try:
+        if authorization and authorization.startswith("Bearer "):
+            token = authorization.split(" ", 1)[1]
+            payload_jwt = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+            admin_id = payload_jwt.get("user_id")
+    except Exception:
+        pass
+    if admin_id and admin_id == user_id:
+        raise HTTPException(status_code=400, detail="Kendinizi silemezsiniz")
+
+    try:
+        pool = _get_pool()
+        conn = pool.getconn()
+        cur  = conn.cursor()
+        try:
+            # Kullanıcı var mı?
+            cur.execute("SELECT id, email, is_admin FROM users WHERE id=%s", (user_id,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı")
+            uid, uemail, is_adm = row
+            if is_adm:
+                raise HTTPException(status_code=400, detail="Admin kullanıcı silinemez (önce admin yetkisini kaldırın)")
+
+            if hard:
+                # KALICI SİLME — Foreign key bağımlılıkları ile birlikte
+                # Önce bağlı kayıtları sil
+                cur.execute("DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE user_id=%s)", (user_id,))
+                cur.execute("DELETE FROM conversations WHERE user_id=%s", (user_id,))
+                cur.execute("DELETE FROM usage_tracking WHERE user_id=%s", (user_id,))
+                cur.execute("DELETE FROM conversation_summaries WHERE user_id=%s", (user_id,))
+                # Tablo varsa sil — yoksa hata vermesin
+                for tbl in ("payment_history","subscriptions","user_files","user_sessions"):
+                    try:
+                        cur.execute(f"DELETE FROM {tbl} WHERE user_id=%s", (user_id,))
+                    except Exception:
+                        conn.rollback()
+                        cur = conn.cursor()
+                # Son olarak kullanıcı
+                cur.execute("DELETE FROM users WHERE id=%s", (user_id,))
+                conn.commit()
+                print(f"[ADMIN DELETE] Hard delete user {user_id} ({uemail}) by admin {admin_id}")
+                return {"success": True, "user_id": user_id, "mode": "hard_deleted"}
+            else:
+                # SOFT DELETE — kullanıcıyı pasifleştir
+                cur.execute("""
+                    UPDATE users
+                    SET is_banned = TRUE,
+                        ban_reason = COALESCE(ban_reason, '') || ' [DELETED by admin]',
+                        email      = email || '.deleted.' || %s
+                    WHERE id = %s
+                """, (str(int(time.time())), user_id))
+                conn.commit()
+                print(f"[ADMIN DELETE] Soft delete user {user_id} ({uemail}) by admin {admin_id}")
+                return {"success": True, "user_id": user_id, "mode": "soft_deleted"}
+        finally:
+            pool.putconn(conn)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[ADMIN DELETE ERROR] {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ── /admin/payments ──────────────────────────────────────────
 @app.get("/admin/payments")
 async def admin_payments(
