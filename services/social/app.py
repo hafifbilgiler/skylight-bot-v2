@@ -1400,46 +1400,55 @@ async def gemini_grounding_search(query: str, max_tokens: int = 1500) -> dict:
         url = (
             f"https://{VERTEX_LOCATION}-aiplatform.googleapis.com/v1/"
             f"projects/{VERTEX_PROJECT}/locations/{VERTEX_LOCATION}/"
-            f"publishers/google/models/{VERTEX_GROUNDING_MODEL}:generateContent"
+            f"publishers/google/models/{VERTEX_GROUNDING_MODEL}:streamGenerateContent?alt=sse"
         )
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            r = await client.post(
-                url,
+        full_text = ""
+        sources = []
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            async with client.stream(
+                "POST", url,
                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
                 json={
                     "contents": [{"role": "user", "parts": [{"text": query}]}],
                     "tools": [{"googleSearch": {}}],
                     "generationConfig": {
                         "maxOutputTokens": max_tokens,
-                        "temperature": 1.0,  # Grounding için ideal
+                        "temperature": 1.0,
                     }
                 }
-            )
+            ) as r:
+                if r.status_code != 200:
+                    body = await r.aread()
+                    print(f"[GEMINI GROUNDING STREAM] {r.status_code}: {body[:200]}")
+                    return {"text": "", "sources": []}
 
-            if r.status_code != 200:
-                print(f"[GEMINI GROUNDING] {r.status_code}: {r.text[:200]}")
-                return {"text": "", "sources": []}
+                async for line in r.aiter_lines():
+                    if not line or not line.startswith("data: "):
+                        continue
+                    payload = line[6:].strip()
+                    if not payload or payload == "[DONE]":
+                        continue
+                    try:
+                        chunk = json.loads(payload)
+                    except Exception:
+                        continue
+                    cand = (chunk.get("candidates") or [{}])[0]
+                    parts = (cand.get("content") or {}).get("parts", [])
+                    for p in parts:
+                        if "text" in p:
+                            full_text += p["text"]
+                    # Sources biriktir
+                    for ch in (cand.get("groundingMetadata") or {}).get("groundingChunks", []):
+                        web = ch.get("web", {})
+                        if web.get("uri"):
+                            sources.append({
+                                "title":  web.get("title", ""),
+                                "uri":    web.get("uri", ""),
+                                "domain": web.get("domain", ""),
+                            })
 
-            data = r.json()
-            cand = data.get("candidates", [{}])[0]
-            content = cand.get("content", {})
-            parts = content.get("parts", [])
-            text = "".join(p.get("text", "") for p in parts).strip()
-
-            # Kaynakları topla
-            sources = []
-            grounding = cand.get("groundingMetadata", {})
-            for chunk in grounding.get("groundingChunks", []):
-                web = chunk.get("web", {})
-                if web.get("uri"):
-                    sources.append({
-                        "title":  web.get("title", ""),
-                        "uri":    web.get("uri", ""),
-                        "domain": web.get("domain", ""),
-                    })
-
-            return {"text": text, "sources": sources}
+        return {"text": full_text.strip(), "sources": sources}
     except Exception as e:
         import traceback
         print(f"[GEMINI GROUNDING] Hata tipi: {type(e).__name__}")
@@ -1627,23 +1636,15 @@ async def hotels_match(request: Request):
     if not pref_text:
         pref_text = "popüler ve yüksek puanlı"
 
-    # ─── Gemini Grounding: minimum, basit, insancıl ───
-    grounding_query = f"""{location} en iyi 12 oteli ver.
+    # ─── Gemini Grounding: minimum, çok hızlı ───
+    grounding_query = f"""{location} 8 popüler otel listesi.
 
-ai_reason için şöyle yaz: "Ben olsam burada kalırdım, kahvaltısı muhteşem" gibi senin tavsiye ettiğin, samimi, kişisel yorumlar. Robot gibi değil — bir arkadaş anlatır gibi.
+JSON dön:
+{{"hotels":[{{"name":"...","stars":5,"district":"...","google_rating":4.7,"ai_reason":"Ben olsam burada kalırdım, kahvaltısı çok iyi"}}]}}
 
-Örnekler:
-- "Ben olsam burada kalırdım, plaja yürüyüş mesafesi"
-- "Sessiz tatil isteyene tam uygun, manzarası da harika"
-- "Ailemle gitsem buraya giderdim, çocuklara çok ilgili"
-- "Bütçeyi zorlamak istemeyen için ideal, temizliği iyi"
+3 tane 5⭐, 3 tane 4⭐, 2 tane 3⭐. ai_reason samimi tavsiye gibi olsun."""
 
-Format (sadece JSON):
-{{"hotels":[{{"name":"otel adı","stars":5,"district":"bölge","google_rating":4.7,"ai_reason":"samimi tavsiye"}}]}}
-
-12 otel: 4 tane 5⭐, 4 tane 4⭐, 4 tane 3⭐."""
-
-    grounding = await gemini_grounding_search(grounding_query, max_tokens=2800)
+    grounding = await gemini_grounding_search(grounding_query, max_tokens=1500)
     text = grounding.get("text", "")
     sources = grounding.get("sources", [])
 
@@ -1676,7 +1677,7 @@ Format (sadece JSON):
     # ─── Normalize ───
     from urllib.parse import quote_plus
     hotels = []
-    for i, h in enumerate(parsed.get("hotels", [])[:12]):
+    for i, h in enumerate(parsed.get("hotels", [])[:8]):
         name = (h.get("name") or "").strip()
         if not name:
             continue
