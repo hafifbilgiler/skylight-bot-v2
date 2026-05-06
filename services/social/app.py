@@ -44,6 +44,25 @@ MOOD_TTL        = 60 * 60 * 24 * 30   # 30 gün
 SAVED_TRIPS_TTL = 60 * 60 * 24 * 14   # 14 gün — her erişimde TTL yenilenir
 PRICE_ALERTS_TTL = 60 * 60 * 24 * 180 # 6 ay (fiyat alarmları uzun ömürlü olmalı)
 
+# JWT — gateway ile aynı secret
+JWT_SECRET = os.getenv("JWT_SECRET", "")
+
+def user_id_from_token(token: str) -> str:
+    """
+    JWT token'dan user_id (veya email) çıkarır.
+    Geçerli değilse 'guest' döner.
+    """
+    if not token or not JWT_SECRET:
+        return "guest"
+    try:
+        import jwt as pyjwt
+        payload = pyjwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        # user_id, email, sub — hangisi varsa
+        uid = payload.get("user_id") or payload.get("email") or payload.get("sub")
+        return str(uid) if uid else "guest"
+    except Exception:
+        return "guest"
+
 _redis: Optional[aioredis.Redis] = None
 
 async def get_redis() -> aioredis.Redis:
@@ -939,7 +958,11 @@ async def flights_same_day(request: Request):
 async def trip_save(request: Request):
     """Yeni plan kaydet veya mevcut planı güncelle."""
     body    = await request.json()
-    user_id = str(body.get("user_id", "guest"))
+    # Önce token'dan user_id çıkar — yoksa body'den fallback
+    token   = body.get("token", "") or body.get("auth_token", "")
+    user_id = user_id_from_token(token)
+    if user_id == "guest":
+        user_id = str(body.get("user_id", "guest"))
     trip_id = body.get("id", "")
 
     if user_id == "guest":
@@ -1019,12 +1042,33 @@ async def trip_list(user_id: str):
     return {"success": True, "trips": trips, "total": len(trips)}
 
 
+@app.post("/sosyal/travel/trip_list")
+async def trip_list_post(request: Request):
+    """POST endpoint — token'dan user_id çıkar, planları döner."""
+    body    = await request.json()
+    token   = body.get("token", "") or body.get("auth_token", "")
+    user_id = user_id_from_token(token)
+    if user_id == "guest":
+        user_id = str(body.get("user_id", "guest"))
+    if user_id == "guest":
+        return {"success": True, "trips": [], "total": 0}
+    trips = await get_saved_trips(user_id)
+    if trips:
+        await set_saved_trips(user_id, trips)
+    return {"success": True, "trips": trips, "total": len(trips)}
+
+
 @app.post("/sosyal/travel/trip_delete")
 async def trip_delete(request: Request):
     body    = await request.json()
-    user_id = str(body.get("user_id", "guest"))
+    token   = body.get("token", "") or body.get("auth_token", "")
+    user_id = user_id_from_token(token)
+    if user_id == "guest":
+        user_id = str(body.get("user_id", "guest"))
     trip_id = body.get("id", "")
 
+    if user_id == "guest":
+        return {"success": False, "error": "Giriş gerekli"}
     if not trip_id:
         return {"success": False, "error": "id gerekli"}
 
