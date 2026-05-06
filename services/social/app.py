@@ -1627,15 +1627,22 @@ async def hotels_match(request: Request):
     if not pref_text:
         pref_text = "popüler ve yüksek puanlı"
 
-    # ─── Gemini Grounding: basit ve hızlı ───
-    grounding_query = f"""{location} en iyi 5 oteli Google'da bul. Tercih: {pref_text}.
+    # ─── Gemini Grounding: 18 otel (6×5⭐ + 6×4⭐ + 6×3⭐), fiyatsız ───
+    grounding_query = f"""{location} otel listesi Google'da bul. Tercih: {pref_text}.
 
-Her otel için: ad, yıldız, bölge, Google rating (4.7 gibi), yorum sayısı, 1 cümle Türkçe yorum, 1 örnek müşteri yorumu.
+KURALLAR:
+- 6 adet 5 yıldızlı otel (en yüksek Google rating'lilerden)
+- 6 adet 4 yıldızlı otel
+- 6 adet 3 yıldızlı otel
+- Toplam 18 otel, sırasıyla yıldızdan azalan, her grup içinde rating'e göre azalan
+- Fiyat YAZMA — sadece otel bilgisi
+- Her ai_reason MAX 12 kelime
+- Her sample_review MAX 10 kelime
 
-Sadece bu JSON, başka metin yok:
-{{"hotels":[{{"name":"...","stars":5,"district":"...","google_rating":4.7,"review_count":2000,"ai_reason":"...","sample_review":"...","price_from":2500}}]}}"""
+SADECE bu JSON, başka metin yok:
+{{"hotels":[{{"name":"...","stars":5,"district":"...","google_rating":4.8,"review_count":2000,"ai_reason":"...","sample_review":"..."}}]}}"""
 
-    grounding = await gemini_grounding_search(grounding_query, max_tokens=3000)
+    grounding = await gemini_grounding_search(grounding_query, max_tokens=4500)
     text = grounding.get("text", "")
     sources = grounding.get("sources", [])
 
@@ -1668,25 +1675,25 @@ Sadece bu JSON, başka metin yok:
     # ─── Normalize ───
     from urllib.parse import quote_plus
     hotels = []
-    for i, h in enumerate(parsed.get("hotels", [])[:8]):
+    for i, h in enumerate(parsed.get("hotels", [])[:18]):
         name = (h.get("name") or "").strip()
         if not name:
             continue
-        # Booking arama URL'i
         booking_url = f"https://www.booking.com/searchresults.html?ss={quote_plus(name + ' ' + location)}"
 
         google_rating_raw = h.get("google_rating")
         rating_text = ""
+        rating_num = 0.0
         if google_rating_raw is not None:
             review_count = h.get("review_count", 0)
             try:
-                rating_text = f"{float(google_rating_raw):.1f}/5"
+                rating_num = float(google_rating_raw)
+                rating_text = f"{rating_num:.1f}/5"
                 if review_count:
                     rating_text += f" ({int(review_count):,} yorum)".replace(",", ".")
             except Exception:
                 rating_text = str(google_rating_raw)
 
-        # sample_review (tekil) varsa, sample_reviews (liste) içine sar
         sample_one = h.get("sample_review")
         sample_list = h.get("sample_reviews", [])
         if sample_one and not sample_list:
@@ -1697,18 +1704,24 @@ Sadece bu JSON, başka metin yok:
             "name":           name,
             "stars":          int(h.get("stars", 0) or 0),
             "location_name":  h.get("district") or h.get("location_name") or "",
-            "price_from":     h.get("price_from", 0) or 0,
-            "price_currency": "TRY",
+            "price_from":     0,            # Fiyat gösterilmeyecek
+            "price_currency": "",
             "photo_url":      "",
             "ai_matched":     True,
             "ai_reason":      h.get("ai_reason", ""),
             "google_rating":  rating_text,
+            "_rating_num":    rating_num,   # sıralama için
             "highlights":     h.get("highlights", []) or [],
             "sample_reviews": sample_list,
             "booking_url":    booking_url,
             "affiliate_url":  booking_url,
         }
         hotels.append(hotel)
+
+    # Sırala: yıldız desc, sonra rating desc
+    hotels.sort(key=lambda x: (-x["stars"], -x["_rating_num"]))
+    # _rating_num'u temizle (frontend'e gerek yok)
+    for h in hotels: h.pop("_rating_num", None)
 
     if not hotels:
         return {"success": False, "error": "Geçerli otel bulunamadı", "hotels": []}
