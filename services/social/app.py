@@ -41,7 +41,7 @@ TP_CACHE_TTL    = 60 * 60  # 1 saat
 TRAVEL_TTL      = 60 * 60 * 24 * 30   # 30 gün (eski travel plans)
 COMPANION_TTL   = 60 * 60 * 24 * 7    # 7 gün
 MOOD_TTL        = 60 * 60 * 24 * 30   # 30 gün
-SAVED_TRIPS_TTL = 60 * 60 * 24 * 90   # 90 gün (her erişimde TTL yenilenir — aktif kullanıcı için kalıcı)
+SAVED_TRIPS_TTL = 60 * 60 * 24 * 14   # 14 gün — her erişimde TTL yenilenir
 PRICE_ALERTS_TTL = 60 * 60 * 24 * 180 # 6 ay (fiyat alarmları uzun ömürlü olmalı)
 
 _redis: Optional[aioredis.Redis] = None
@@ -1365,7 +1365,7 @@ async def gemini_grounding_search(query: str, max_tokens: int = 1500) -> dict:
                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
                 json={
                     "contents": [{"role": "user", "parts": [{"text": query}]}],
-                    "tools": [{"google_search": {}}],
+                    "tools": [{"googleSearch": {}}],
                     "generationConfig": {
                         "maxOutputTokens": max_tokens,
                         "temperature": 1.0,  # Grounding için ideal
@@ -1397,7 +1397,10 @@ async def gemini_grounding_search(query: str, max_tokens: int = 1500) -> dict:
 
             return {"text": text, "sources": sources}
     except Exception as e:
-        print(f"[GEMINI GROUNDING] Hata: {e}")
+        import traceback
+        print(f"[GEMINI GROUNDING] Hata tipi: {type(e).__name__}")
+        print(f"[GEMINI GROUNDING] Hata mesaj: {e!r}")
+        print(f"[GEMINI GROUNDING] Traceback:\n{traceback.format_exc()}")
         return {"text": "", "sources": []}
 
 
