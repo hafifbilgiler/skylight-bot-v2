@@ -53,7 +53,7 @@ spec:
     spec:
       containers:
         - name: sosyal
-          image: docker.io/hafifbilgiler/skylight-sosyal:2.6 #2.2
+          image: docker.io/hafifbilgiler/skylight-sosyal:2.7 #2.2
           ports:
             - containerPort: 8091
 
@@ -74,8 +74,6 @@ spec:
               value: "gen-lang-client-0907571701"
             - name: GEMINI_LOCATION
               value: "us-central1"
-            - name: GEMINI_MODEL
-              value: "gemini-2.5-flash-lite"
             - name: GEMINI_GROUNDING_MODEL
               value: "gemini-2.5-flash"
 
