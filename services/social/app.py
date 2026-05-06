@@ -1403,7 +1403,7 @@ async def gemini_grounding_search(query: str, max_tokens: int = 1500) -> dict:
             f"publishers/google/models/{VERTEX_GROUNDING_MODEL}:generateContent"
         )
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             r = await client.post(
                 url,
                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
@@ -1627,17 +1627,15 @@ async def hotels_match(request: Request):
     if not pref_text:
         pref_text = "popüler ve yüksek puanlı"
 
-    # ─── Gemini Grounding sorgu — kompakt ───
-    grounding_query = f"""{location} otel öner. Tercih: "{pref_text}", {nights} gece, {adults} kişi.
+    # ─── Gemini Grounding: basit ve hızlı ───
+    grounding_query = f"""{location} en iyi 5 oteli Google'da bul. Tercih: {pref_text}.
 
-Google'da "{location} best hotels" ara. Booking/Tripadvisor yorumlarına bak.
+Her otel için: ad, yıldız, bölge, Google rating (4.7 gibi), yorum sayısı, 1 cümle Türkçe yorum, 1 örnek müşteri yorumu.
 
-En iyi 6 oteli seç. SADECE bu kompakt JSON:
-{{"hotels":[{{"name":"...","stars":5,"district":"Bölge","google_rating":4.7,"review_count":2341,"ai_reason":"15 kelime Türkçe","highlights":["E1","E2"],"sample_review":"Tek örnek Türkçe yorum","price_from":2500}}]}}
+Sadece bu JSON, başka metin yok:
+{{"hotels":[{{"name":"...","stars":5,"district":"...","google_rating":4.7,"review_count":2000,"ai_reason":"...","sample_review":"...","price_from":2500}}]}}"""
 
-Açıklama yok, markdown yok, sadece JSON."""
-
-    grounding = await gemini_grounding_search(grounding_query, max_tokens=6000)
+    grounding = await gemini_grounding_search(grounding_query, max_tokens=3000)
     text = grounding.get("text", "")
     sources = grounding.get("sources", [])
 
