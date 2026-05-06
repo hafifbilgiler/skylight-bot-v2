@@ -1550,6 +1550,115 @@ def hotel_photo_url(hotel_id: int, size: str = "800x520") -> str:
 @app.post("/sosyal/hotels/search")
 async def hotels_search(request: Request):
     """
+    Otel arama — Gemini Grounding (Google Search) ile gerçek oteller.
+    Booking, Trivago, Otelz, Tripadvisor gibi sitelerden gerçek liste döner.
+    """
+    body = await request.json()
+    location    = body.get("location", "").strip()
+    check_in    = body.get("check_in", "")
+    check_out   = body.get("check_out", "")
+    adults      = int(body.get("adults", 2))
+    currency    = body.get("currency", "try").lower()
+    limit       = int(body.get("limit", 12))
+
+    if not location or not check_in or not check_out:
+        return {"success": False, "error": "location, check_in, check_out zorunlu", "hotels": []}
+
+    # Cache kontrol
+    cache_key = f"hg:search:{location.lower()}:{check_in}:{check_out}:{adults}:{limit}"
+    cached = await redis_get_json(cache_key)
+    if cached:
+        cached["_cached"] = True
+        return cached
+
+    # Gece sayısı
+    try:
+        nights = max(1, (datetime.strptime(check_out, "%Y-%m-%d") - datetime.strptime(check_in, "%Y-%m-%d")).days)
+    except Exception:
+        nights = 1
+
+    # Gemini Grounding sorgusu — gerçek Google Search yapar
+    query = f"""{location} şehrinde {check_in} - {check_out} tarihleri arasında {adults} kişilik konaklama için en iyi {limit} oteli listele.
+
+Booking.com, Trivago, Tripadvisor, Otelz gibi sitelerden gerçek bilgi topla.
+
+ÇIKTI KESİNLİKLE bu JSON formatında olsun, başka HİÇBİR şey yazma (markdown bloğu yok, açıklama yok):
+
+{{
+  "hotels": [
+    {{
+      "name": "Otel adı",
+      "stars": 5,
+      "location_name": "Lara / Konyaaltı gibi bölge",
+      "price_from": 2500,
+      "currency": "TRY",
+      "google_rating": "4.5/5 (1200+ değerlendirme)",
+      "highlights": ["Plaja yakın", "Aile dostu"],
+      "summary": "Kısa Türkçe yorum (max 20 kelime)",
+      "booking_url": "https://www.booking.com/... (varsa gerçek URL)"
+    }}
+  ]
+}}
+
+Fiyatlar TL cinsinden, gecelik. {limit} otel listele. Sadece JSON, başka şey yazma."""
+
+    grounding = await gemini_grounding_search(query, max_tokens=3500)
+
+    if not grounding.get("text"):
+        return {"success": False, "error": "Otel bulunamadı (grounding fail)", "hotels": []}
+
+    parsed = _safe_json_parse(grounding["text"])
+    if not parsed or "hotels" not in parsed:
+        print(f"[GROUNDING] JSON parse fail: {grounding['text'][:200]}")
+        return {"success": False, "error": "Otel listesi alınamadı", "hotels": []}
+
+    raw_hotels = parsed.get("hotels", [])
+
+    # Normalize + ID üret
+    hotels = []
+    for i, h in enumerate(raw_hotels[:limit]):
+        if not h.get("name"):
+            continue
+        price_from = float(h.get("price_from", 0)) if h.get("price_from") else 0
+        hotel = {
+            "id":            f"g_{i+1}_{hash(h['name']) % 100000}",
+            "name":          h.get("name", ""),
+            "stars":         int(h.get("stars", 0)) if h.get("stars") else 0,
+            "location_name": h.get("location_name", location),
+            "price_from":    price_from,
+            "price_total":   price_from * nights if price_from else 0,
+            "currency":      (h.get("currency") or currency).upper(),
+            "google_rating": h.get("google_rating", ""),
+            "highlights":    h.get("highlights", []),
+            "summary":       h.get("summary", ""),
+            "booking_url":   h.get("booking_url", ""),
+            "photo_url":     None,  # Gemini foto vermez, fallback emoji
+        }
+        hotels.append(hotel)
+
+    if not hotels:
+        return {"success": False, "error": "Otel bulunamadı", "hotels": []}
+
+    result = {
+        "success":   True,
+        "hotels":    hotels,
+        "total":     len(hotels),
+        "location":  location,
+        "check_in":  check_in,
+        "check_out": check_out,
+        "nights":    nights,
+        "adults":    adults,
+        "sources":   grounding.get("sources", []),
+    }
+
+    # Cache 30 dakika
+    try:
+        await redis_set_json(cache_key, result, ttl=1800)
+    except Exception:
+        pass
+
+    return result
+    """
     Şehir + tarih + kişi → otel listesi (Hotellook cache üzerinden).
     """
     body = await request.json()
@@ -1652,12 +1761,12 @@ async def hotels_search(request: Request):
 @app.post("/sosyal/hotels/match")
 async def hotels_match(request: Request):
     """
-    AI destekli otel eşleştirme — Gemini Grounding ile gerçek yorum.
+    AI destekli otel önerisi — TAMAMEN Gemini Grounding (Google Search).
     Akış:
-      1. Hotellook'tan otel listesi al
-      2. Gemini'ye GROUNDING ile yolla — gerçek Google Search yorumlar/yıldızlar
-      3. Her oteli kullanıcı isteğiyle eşleştirip Türkçe yorum üret
-      4. JSON dön (yorum + kaynak)
+      1. Kullanıcının isteğini al (location + prompt + tags + tarih)
+      2. Gemini'ye GROUNDING ile yolla
+      3. Gemini Google'dan gerçek otel + yorum + puan + URL toplar
+      4. JSON dön (yorum + kaynak + booking link)
     """
     body = await request.json()
     location    = body.get("location", "").strip()
@@ -1667,137 +1776,153 @@ async def hotels_match(request: Request):
     user_prompt = body.get("prompt", "").strip()
     mood_tags   = body.get("tags", [])
 
-    if not location or (not user_prompt and not mood_tags):
-        return {"success": False, "error": "location + prompt/tags zorunlu"}
+    if not location:
+        return {"success": False, "error": "location zorunlu"}
 
-    # 1. Önce Hotellook'tan otelleri al (mevcut akış)
-    search_req_body = {
-        "location": location, "check_in": check_in, "check_out": check_out,
-        "adults": adults, "limit": 30, "currency": "try",
-    }
-    class _Req:
-        async def json(self): return search_req_body
-    search_result = await hotels_search(_Req())
-
-    if not search_result.get("success") or not search_result.get("hotels"):
-        return {"success": False, "error": "Otel bulunamadı"}
-
-    hotels = search_result["hotels"]
+    # Geceler hesapla
+    nights = 1
+    try:
+        if check_in and check_out:
+            nights = max(1, (datetime.strptime(check_out, "%Y-%m-%d") - datetime.strptime(check_in, "%Y-%m-%d")).days)
+    except Exception:
+        pass
 
     tags_text = ", ".join(mood_tags) if mood_tags else ""
     user_desc = f"{user_prompt}" + (f" (tarz: {tags_text})" if tags_text else "")
+    if not user_desc.strip():
+        user_desc = "iyi otel"
 
-    # 2. GEMINI GROUNDING — Gerçek otel önerilerini Google'dan çek
-    # Hotellook listesindeki otel adlarını Gemini'ye verip, gerçek yorum/puan toplat
-    hotel_names_summary = "\n".join([
-        f"{i+1}. {h['name']} ({h['stars']}★, {h.get('location_name','')}, ₺{h['price_from']}/gece)"
-        for i, h in enumerate(hotels[:20])
-    ])
+    # ─── Gemini Grounding sorgu prompt'u ───
+    grounding_query = f"""Sen bir seyahat danışmanısın. Kullanıcıya {location} şehrinde otel öner.
 
-    grounding_query = f"""{location} şehrinde otel önerisi. Kullanıcı isteği: "{user_desc}"
+Kullanıcı isteği: "{user_desc}"
+Tarih: {check_in} - {check_out} ({nights} gece, {adults} kişi)
 
-Aşağıdaki Hotellook otellerinden kullanıcıya en uygun olanlarını seç (max 8):
-{hotel_names_summary}
+Google'da arama yap: "{location} en iyi oteller {tags_text or 'tatil'}" gibi sorgular kullan.
+Booking.com, Trivago, Tripadvisor gibi gerçek kaynaklardan veri çek.
 
-Her seçilen otel için Google'da arama yap ve gerçek yorum/puan bilgisini topla.
-Çıktı KESİNLİKLE bu JSON formatında olsun, başka hiçbir şey yazma:
+Kullanıcıya en uygun 8 oteli seç. Her biri için:
+- Gerçek otel adı (Google'da bulduğun)
+- Yıldız sayısı
+- Bölge / mahalle (örn. "Lara", "Kemer")
+- Google rating (örn. "4.5/5 — 1200+ yorum")
+- 1 cümle Türkçe yorum (max 18 kelime — neden uygun, gerçek yorumlardan)
+- 2-3 öne çıkan özellik etiketi (örn. "Plaja yakın", "Aile dostu")
+- Tahmini gecelik fiyat aralığı (TL cinsinden, varsa)
+- Booking veya direkt otel sitesi URL'si (varsa)
+
+ÇIKTI KESİNLİKLE bu JSON formatında. Markdown bloğu yok, açıklama yok, sadece JSON:
 
 {{
-  "matches": [
+  "hotels": [
     {{
-      "index": 1,
-      "reason": "Kısa Türkçe yorum (max 18 kelime) — neden uygun, gerçek yorumlardan örnek",
-      "google_rating": "4.5/5 (1200+ değerlendirme)",
-      "highlights": ["Plaja yakın", "Aile dostu"]
+      "name": "Otel adı",
+      "stars": 5,
+      "location_name": "Lara, Antalya",
+      "google_rating": "4.5/5 (1200+ yorum)",
+      "ai_reason": "Türkçe kısa yorum",
+      "highlights": ["Etiket 1", "Etiket 2"],
+      "price_from": 2500,
+      "price_currency": "TRY",
+      "booking_url": "https://www.booking.com/..."
     }}
   ]
 }}
 
-JSON DIŞINDA HİÇBİR ŞEY YAZMA. Markdown bloğu kullanma."""
+JSON DIŞINDA HİÇBİR ŞEY YAZMA."""
 
-    grounding = await gemini_grounding_search(grounding_query, max_tokens=2500)
+    grounding = await gemini_grounding_search(grounding_query, max_tokens=3500)
+    text = grounding.get("text", "")
+    sources = grounding.get("sources", [])
 
-    parsed = _safe_json_parse(grounding.get("text", "")) if grounding.get("text") else None
+    if not text:
+        return {
+            "success": False,
+            "error":   "Gemini grounding başarısız",
+            "hotels":  [],
+        }
 
-    # 3. Fallback: Grounding fail → eski smart_llm akışı
-    if not parsed or "matches" not in parsed:
-        print(f"[HOTELS MATCH] Grounding fail, smart_llm fallback")
-        summary = "\n".join([
-            f"{i+1}. {h['name']} - {h['stars']}★ - {h.get('location_name','')} - ₺{h['price_from']}/gece"
-            for i, h in enumerate(hotels[:30])
-        ])
-        system = """Sen otel seçme konusunda deneyimli bir seyahat danışmanısın.
-Kullanıcının isteğine en uygun otelleri seçip, her biri için kısa Türkçe yorum üretirsin.
-SADECE JSON döndür. Markdown/açıklama yazma."""
-        prompt = f"""Kullanıcı isteği: "{user_desc}"
+    parsed = _safe_json_parse(text)
+    if not parsed or "hotels" not in parsed or not parsed["hotels"]:
+        # Markdown bloğu içinde JSON gelmiş olabilir, son bir deneme
+        import re as _re
+        m = _re.search(r"\{.*\}", text, _re.DOTALL)
+        if m:
+            parsed = _safe_json_parse(m.group(0))
 
-Aşağıdaki otel listesinden kullanıcıya en uygun olan {min(8, len(hotels))} tanesini seç.
-Otel listesi:
-{summary}
+    if not parsed or "hotels" not in parsed or not parsed["hotels"]:
+        return {
+            "success":  False,
+            "error":    "Otel önerisi parse edilemedi",
+            "raw_text": text[:500],
+            "hotels":   [],
+        }
 
-JSON formatı:
-{{
-  "matches": [
-    {{"index": 1, "reason": "1 cümle Türkçe yorum — neden uygun (max 15 kelime)"}}
-  ]
-}}
-
-Sadece JSON döndür."""
-        reply = await smart_llm(
-            [{"role": "user", "content": prompt}], system,
-            max_tokens=800, temperature=0.5,
-        )
-        parsed = _safe_json_parse(reply)
-        if not parsed or "matches" not in parsed:
-            # En son fallback — ilk 8
-            return {
-                "success": True, "fallback": True,
-                "hotels": hotels[:8], "query": user_desc,
-            }
-
-    # 4. AI seçtiklerini orijinal Hotellook otellerine yorumlarla birleştir
-    matched = []
-    for m in parsed.get("matches", []):
-        try:
-            idx = int(m.get("index", 0)) - 1
-            if 0 <= idx < len(hotels):
-                hotel_copy = {**hotels[idx]}
-                hotel_copy["ai_reason"]      = m.get("reason", "")
-                hotel_copy["ai_matched"]     = True
-                hotel_copy["google_rating"]  = m.get("google_rating", "")
-                hotel_copy["highlights"]     = m.get("highlights", [])
-                matched.append(hotel_copy)
-        except (ValueError, TypeError):
+    # Otelleri normalize et — frontend'in beklediği alanları doldur
+    hotels = []
+    for i, h in enumerate(parsed.get("hotels", [])[:8]):
+        if not h.get("name"):
             continue
+        hotel = {
+            "id":             f"gem_{i}",   # frontend için unique id
+            "name":           h.get("name", ""),
+            "stars":          int(h.get("stars", 0) or 0),
+            "location_name":  h.get("location_name", ""),
+            "price_from":     h.get("price_from", 0),
+            "price_currency": h.get("price_currency", "TRY"),
+            "photo_url":      "",  # Gemini foto vermiyor — placeholder kullanılacak
+            "ai_matched":     True,
+            "ai_reason":      h.get("ai_reason", ""),
+            "google_rating":  h.get("google_rating", ""),
+            "highlights":     h.get("highlights", []) or [],
+            "booking_url":    h.get("booking_url", ""),
+            "affiliate_url":  h.get("booking_url", ""),  # Direkt link
+        }
+        hotels.append(hotel)
+
+    if not hotels:
+        return {
+            "success": False,
+            "error":   "Geçerli otel bulunamadı",
+            "hotels":  [],
+        }
 
     return {
-        "success":   True,
-        "hotels":    matched,
-        "total":     len(matched),
-        "query":     user_desc,
-        "location":  location,
-        "check_in":  check_in,
-        "check_out": check_out,
-        "sources":   grounding.get("sources", []),
-        "powered_by_grounding": bool(grounding.get("text")),
+        "success":             True,
+        "hotels":              hotels,
+        "total":               len(hotels),
+        "nights":              nights,
+        "query":               user_desc,
+        "location":            location,
+        "check_in":            check_in,
+        "check_out":           check_out,
+        "sources":             sources,
+        "powered_by":          "gemini-grounding",
     }
-
 
 @app.post("/sosyal/hotels/click")
 async def hotels_click(request: Request):
     """
-    Otel tıklama kaydı + affiliate URL dön.
-    Log kaydı tutulur (komisyon takibi için).
+    Otel tıklama kaydı + URL dön.
+    Gemini'den booking_url geldiyse direkt onu kullan,
+    yoksa Hotellook generic search'e fallback.
     """
     body = await request.json()
-    location  = body.get("location", "")
-    check_in  = body.get("check_in", "")
-    check_out = body.get("check_out", "")
-    adults    = int(body.get("adults", 2))
-    hotel_id  = body.get("hotel_id")
-    user_id   = str(body.get("user_id", "guest"))
+    location    = body.get("location", "")
+    check_in    = body.get("check_in", "")
+    check_out   = body.get("check_out", "")
+    adults      = int(body.get("adults", 2))
+    hotel_id    = body.get("hotel_id")
+    booking_url = (body.get("booking_url") or "").strip()
+    user_id     = str(body.get("user_id", "guest"))
 
-    url = build_hotel_affiliate_link(location, check_in, check_out, adults, hotel_id)
+    # Gemini'den geldi → direkt kullan
+    if booking_url and booking_url.startswith("http"):
+        url = booking_url
+    else:
+        # Hotellook generic search fallback
+        url = build_hotel_affiliate_link(location, check_in, check_out, adults,
+                                         hotel_id if isinstance(hotel_id, int) else None)
 
     # Click log
     try:
