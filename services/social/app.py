@@ -1457,6 +1457,75 @@ async def gemini_grounding_search(query: str, max_tokens: int = 1500) -> dict:
         return {"text": "", "sources": []}
 
 
+async def gemini_grounding_stream(query: str, max_tokens: int = 1500):
+    """
+    Streaming versiyon — chunk chunk yields edilir.
+    Her chunk: {"text": "..."} veya {"sources": [...]} veya {"error": "..."}
+    """
+    if not USE_VERTEX:
+        yield {"error": "vertex disabled"}
+        return
+    try:
+        token = await get_vertex_token()
+        if not token:
+            yield {"error": "no token"}
+            return
+
+        url = (
+            f"https://{VERTEX_LOCATION}-aiplatform.googleapis.com/v1/"
+            f"projects/{VERTEX_PROJECT}/locations/{VERTEX_LOCATION}/"
+            f"publishers/google/models/{VERTEX_GROUNDING_MODEL}:streamGenerateContent?alt=sse"
+        )
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            async with client.stream(
+                "POST", url,
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json={
+                    "contents": [{"role": "user", "parts": [{"text": query}]}],
+                    "tools": [{"googleSearch": {}}],
+                    "generationConfig": {
+                        "maxOutputTokens": max_tokens,
+                        "temperature": 1.0,
+                    }
+                }
+            ) as r:
+                if r.status_code != 200:
+                    body = await r.aread()
+                    print(f"[GEMINI STREAM] {r.status_code}: {body[:200]}")
+                    yield {"error": f"http {r.status_code}"}
+                    return
+
+                async for line in r.aiter_lines():
+                    if not line or not line.startswith("data: "):
+                        continue
+                    payload = line[6:].strip()
+                    if not payload or payload == "[DONE]":
+                        continue
+                    try:
+                        chunk = json.loads(payload)
+                    except Exception:
+                        continue
+                    cand = (chunk.get("candidates") or [{}])[0]
+                    parts = (cand.get("content") or {}).get("parts", [])
+                    for p in parts:
+                        if "text" in p and p["text"]:
+                            yield {"text": p["text"]}
+                    sources_chunk = []
+                    for ch in (cand.get("groundingMetadata") or {}).get("groundingChunks", []):
+                        web = ch.get("web", {})
+                        if web.get("uri"):
+                            sources_chunk.append({
+                                "title":  web.get("title", ""),
+                                "uri":    web.get("uri", ""),
+                            })
+                    if sources_chunk:
+                        yield {"sources": sources_chunk}
+    except Exception as e:
+        print(f"[GEMINI STREAM] Hata: {e!r}")
+        yield {"error": str(e)}
+
+
 WMO_CODES = {
     0:"Açık",1:"Hafif bulutlu",2:"Parçalı bulutlu",3:"Kapalı",
     45:"Sisli",48:"Kırağılı sis",51:"Hafif çiseleme",53:"Çiseleme",55:"Yoğun çiseleme",
@@ -1606,140 +1675,122 @@ def hotel_photo_url(hotel_id: int, size: str = "800x520") -> str:
 @app.post("/sosyal/hotels/match")
 async def hotels_match(request: Request):
     """
-    AI otel önerisi — Gemini 2.5 Flash + Google Search Grounding.
-    Otomatik akış: kullanıcı butona tıklar, Gemini Google'dan gerçek otel +
-    yıldız + Google yorum sayısı + örnek yorumlar getirir.
+    AI otel önerisi — Gemini Grounding STREAM.
+    SSE: her otel hazır olur olmaz frontend'e yollanır.
     """
     body = await request.json()
     location  = body.get("location", "").strip()
     check_in  = body.get("check_in", "")
     check_out = body.get("check_out", "")
-    adults    = int(body.get("adults", 2))
     user_pref = body.get("prompt", "").strip()
     tags      = body.get("tags", []) or []
 
     if not location:
         return {"success": False, "error": "location zorunlu"}
 
-    # Geceler
-    nights = 1
-    try:
-        if check_in and check_out:
-            nights = max(1, (datetime.strptime(check_out, "%Y-%m-%d") - datetime.strptime(check_in, "%Y-%m-%d")).days)
-    except Exception:
-        pass
-
-    # Kullanıcı tercihi (varsa) — otomatik akışta boş olabilir
     pref_text = ""
-    if user_pref:  pref_text += user_pref
-    if tags:       pref_text += (" " if pref_text else "") + "(tarz: " + ", ".join(tags) + ")"
+    if user_pref: pref_text += user_pref
+    if tags:      pref_text += (" " if pref_text else "") + "(tarz: " + ", ".join(tags) + ")"
     if not pref_text:
         pref_text = "popüler ve yüksek puanlı"
 
-    # ─── Gemini Grounding: minimum, çok hızlı ───
     grounding_query = f"""{location} 8 popüler otel listesi.
 
 JSON dön:
 {{"hotels":[{{"name":"...","stars":5,"district":"...","google_rating":4.7,"ai_reason":"Ben olsam burada kalırdım, kahvaltısı çok iyi"}}]}}
 
-3 tane 5⭐, 3 tane 4⭐, 2 tane 3⭐. ai_reason samimi tavsiye gibi olsun."""
+3 tane 5⭐, 3 tane 4⭐, 2 tane 3⭐. ai_reason samimi, "ben olsam" gibi tavsiye olsun."""
 
-    grounding = await gemini_grounding_search(grounding_query, max_tokens=1500)
-    text = grounding.get("text", "")
-    sources = grounding.get("sources", [])
+    async def sse_event(event_type: str, data: dict):
+        return f"data: {json.dumps({'type': event_type, **data}, ensure_ascii=False)}\n\n"
 
-    if not text:
-        return {"success": False, "error": "Gemini yanıt vermedi", "hotels": []}
+    async def stream_gen():
+        from urllib.parse import quote_plus
+        # Açılış
+        yield await sse_event("start", {"location": location})
 
-    parsed = _safe_json_parse(text)
-    if not parsed or "hotels" not in parsed:
-        # Markdown bloğu içinde JSON gelmiş olabilir
-        import re as _re
-        m = _re.search(r"\{[\s\S]*\}", text)
-        if m:
-            parsed = _safe_json_parse(m.group(0))
+        buffer = ""
+        sent_count = 0
+        seen_indices = set()
 
-    if not parsed or "hotels" not in parsed or not parsed["hotels"]:
-        # Yine olmazsa: kesik JSON'dan ne kurtarılırsa
-        import re as _re
-        # 'hotels' array içinde tamamlanmış object'leri yakala
-        m = _re.search(r'"hotels"\s*:\s*\[(.+?)\]', text, _re.DOTALL)
-        if m:
-            partial = "{\"hotels\":[" + m.group(1).rstrip(", \n") + "]}"
-            parsed = _safe_json_parse(partial)
-        if not parsed or not parsed.get("hotels"):
-            return {
-                "success": False,
-                "error": "Otel önerisi parse edilemedi",
-                "hotels": [],
-            }
+        try:
+            async for chunk in gemini_grounding_stream(grounding_query, max_tokens=1500):
+                if "error" in chunk:
+                    yield await sse_event("error", {"message": chunk["error"]})
+                    return
+                if "text" in chunk:
+                    buffer += chunk["text"]
+                    # Buffer'da tamamlanmış otel objesi var mı tara
+                    while True:
+                        # Bir otel objesi: { ... } şeklinde — basit brace counter
+                        # "hotels":[ ifadesinin ardından gelen { ... } objelerini yakala
+                        start = buffer.find("{", buffer.find("hotels") if "hotels" in buffer[:100] else 0)
+                        if start == -1:
+                            break
+                        # İlk hotel object'i: hotels array'inin içindeki { başlangıcını bul
+                        # Basit yaklaşım: regex ile bir hotel objesi
+                        import re as _re
+                        # name: "..." ile başlayan tam objeyi yakala
+                        m = _re.search(r'\{\s*"name"\s*:\s*"[^"]+"[^{]*?\}', buffer)
+                        if not m:
+                            break
+                        obj_str = m.group(0)
+                        obj_pos = m.end()
+                        # Bu objeyi kullanıldı olarak işaretle
+                        if obj_pos in seen_indices:
+                            buffer = buffer[obj_pos:]
+                            continue
+                        try:
+                            h = json.loads(obj_str)
+                        except Exception:
+                            buffer = buffer[obj_pos:]
+                            continue
 
-    # ─── Normalize ───
-    from urllib.parse import quote_plus
-    hotels = []
-    for i, h in enumerate(parsed.get("hotels", [])[:8]):
-        name = (h.get("name") or "").strip()
-        if not name:
-            continue
-        booking_url = f"https://www.booking.com/searchresults.html?ss={quote_plus(name + ' ' + location)}"
+                        # Hotel kartı oluştur
+                        name = (h.get("name") or "").strip()
+                        if not name:
+                            buffer = buffer[obj_pos:]
+                            continue
 
-        google_rating_raw = h.get("google_rating")
-        rating_text = ""
-        rating_num = 0.0
-        if google_rating_raw is not None:
-            review_count = h.get("review_count", 0)
-            try:
-                rating_num = float(google_rating_raw)
-                rating_text = f"{rating_num:.1f}/5"
-                if review_count:
-                    rating_text += f" ({int(review_count):,} yorum)".replace(",", ".")
-            except Exception:
-                rating_text = str(google_rating_raw)
+                        booking_url = f"https://www.booking.com/searchresults.html?ss={quote_plus(name + ' ' + location)}"
+                        rating_raw = h.get("google_rating")
+                        rating_text = ""
+                        try:
+                            if rating_raw is not None:
+                                rating_text = f"{float(rating_raw):.1f}/5"
+                        except Exception:
+                            rating_text = str(rating_raw or "")
 
-        sample_one = h.get("sample_review")
-        sample_list = h.get("sample_reviews", [])
-        if sample_one and not sample_list:
-            sample_list = [sample_one]
+                        hotel = {
+                            "id":             f"gem_{sent_count}",
+                            "name":           name,
+                            "stars":          int(h.get("stars", 0) or 0),
+                            "location_name":  h.get("district") or "",
+                            "price_from":     0,
+                            "price_currency": "",
+                            "photo_url":      "",
+                            "ai_matched":     True,
+                            "ai_reason":      h.get("ai_reason", ""),
+                            "google_rating":  rating_text,
+                            "highlights":     [],
+                            "sample_reviews": [],
+                            "booking_url":    booking_url,
+                            "affiliate_url":  booking_url,
+                        }
 
-        hotel = {
-            "id":             f"gem_{i}",
-            "name":           name,
-            "stars":          int(h.get("stars", 0) or 0),
-            "location_name":  h.get("district") or h.get("location_name") or "",
-            "price_from":     0,            # Fiyat gösterilmeyecek
-            "price_currency": "",
-            "photo_url":      "",
-            "ai_matched":     True,
-            "ai_reason":      h.get("ai_reason", ""),
-            "google_rating":  rating_text,
-            "_rating_num":    rating_num,   # sıralama için
-            "highlights":     h.get("highlights", []) or [],
-            "sample_reviews": sample_list,
-            "booking_url":    booking_url,
-            "affiliate_url":  booking_url,
-        }
-        hotels.append(hotel)
+                        yield await sse_event("hotel", {"hotel": hotel})
+                        sent_count += 1
+                        # Bu objeyi buffer'dan çıkar (sonraki için)
+                        buffer = buffer[obj_pos:]
 
-    # Sırala: yıldız desc, sonra rating desc
-    hotels.sort(key=lambda x: (-x["stars"], -x["_rating_num"]))
-    # _rating_num'u temizle (frontend'e gerek yok)
-    for h in hotels: h.pop("_rating_num", None)
+            # Stream bitti
+            yield await sse_event("done", {"total": sent_count})
+        except Exception as e:
+            print(f"[HOTEL STREAM] Hata: {e!r}")
+            yield await sse_event("error", {"message": str(e)})
 
-    if not hotels:
-        return {"success": False, "error": "Geçerli otel bulunamadı", "hotels": []}
-
-    return {
-        "success":   True,
-        "hotels":    hotels,
-        "total":     len(hotels),
-        "nights":    nights,
-        "query":     pref_text,
-        "location":  location,
-        "check_in":  check_in,
-        "check_out": check_out,
-        "sources":   sources[:6],
-        "powered_by": "gemini-grounding",
-    }
+    return StreamingResponse(stream_gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.post("/sosyal/hotels/click")
