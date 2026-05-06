@@ -1627,22 +1627,23 @@ async def hotels_match(request: Request):
     if not pref_text:
         pref_text = "popüler ve yüksek puanlı"
 
-    # ─── Gemini Grounding: 18 otel (6×5⭐ + 6×4⭐ + 6×3⭐), fiyatsız ───
-    grounding_query = f"""{location} otel listesi Google'da bul. Tercih: {pref_text}.
+    # ─── Gemini Grounding: minimum, basit, insancıl ───
+    grounding_query = f"""{location} en iyi 12 oteli ver.
 
-KURALLAR:
-- 6 adet 5 yıldızlı otel (en yüksek Google rating'lilerden)
-- 6 adet 4 yıldızlı otel
-- 6 adet 3 yıldızlı otel
-- Toplam 18 otel, sırasıyla yıldızdan azalan, her grup içinde rating'e göre azalan
-- Fiyat YAZMA — sadece otel bilgisi
-- Her ai_reason MAX 12 kelime
-- Her sample_review MAX 10 kelime
+ai_reason için şöyle yaz: "Ben olsam burada kalırdım, kahvaltısı muhteşem" gibi senin tavsiye ettiğin, samimi, kişisel yorumlar. Robot gibi değil — bir arkadaş anlatır gibi.
 
-SADECE bu JSON, başka metin yok:
-{{"hotels":[{{"name":"...","stars":5,"district":"...","google_rating":4.8,"review_count":2000,"ai_reason":"...","sample_review":"..."}}]}}"""
+Örnekler:
+- "Ben olsam burada kalırdım, plaja yürüyüş mesafesi"
+- "Sessiz tatil isteyene tam uygun, manzarası da harika"
+- "Ailemle gitsem buraya giderdim, çocuklara çok ilgili"
+- "Bütçeyi zorlamak istemeyen için ideal, temizliği iyi"
 
-    grounding = await gemini_grounding_search(grounding_query, max_tokens=4500)
+Format (sadece JSON):
+{{"hotels":[{{"name":"otel adı","stars":5,"district":"bölge","google_rating":4.7,"ai_reason":"samimi tavsiye"}}]}}
+
+12 otel: 4 tane 5⭐, 4 tane 4⭐, 4 tane 3⭐."""
+
+    grounding = await gemini_grounding_search(grounding_query, max_tokens=2800)
     text = grounding.get("text", "")
     sources = grounding.get("sources", [])
 
@@ -1675,7 +1676,7 @@ SADECE bu JSON, başka metin yok:
     # ─── Normalize ───
     from urllib.parse import quote_plus
     hotels = []
-    for i, h in enumerate(parsed.get("hotels", [])[:18]):
+    for i, h in enumerate(parsed.get("hotels", [])[:12]):
         name = (h.get("name") or "").strip()
         if not name:
             continue
