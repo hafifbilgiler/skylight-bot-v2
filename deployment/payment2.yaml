@@ -1,0 +1,163 @@
+# ═══════════════════════════════════════════════════════════
+# Lemon Squeezy Secret
+# Oluşturmak için:
+#   kubectl create secret generic lemon-secret \
+#     --from-literal=api-key=YOUR_LEMON_API_KEY \
+#     --from-literal=webhook-secret=8e6651b2a03c1ac28d30b07fba48e4ae \
+#     --from-literal=store-id=YOUR_STORE_ID \
+#     --from-literal=variant-id=a04c15ca-0f9e-4f2e-9092-a8dc0ac3a92d \
+#     --from-literal=checkout-url=https://one-bune.lemonsqueezy.com/checkout/buy/a04c15ca-0f9e-4f2e-9092-a8dc0ac3a92d \
+#     -n skylight-bot-v2
+# ───────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Secret
+metadata:
+  name: lemon-secret
+  namespace: skylight-bot-v2
+type: Opaque
+stringData:
+  api-key:        "BURAYA_LEMON_API_KEY"      # Settings → API → Create key
+  webhook-secret: "8e6651b2a03c1ac28d30b07fba48e4ae"
+  store-id:       "BURAYA_STORE_ID"           # Settings → Stores → ID
+  variant-id:     "a04c15ca-0f9e-4f2e-9092-a8dc0ac3a92d"
+  checkout-url:   "https://one-bune.lemonsqueezy.com/checkout/buy/a04c15ca-0f9e-4f2e-9092-a8dc0ac3a92d"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: skylight-payment2-service
+  namespace: skylight-bot-v2
+  labels:
+    app: skylight-payment2-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: skylight-payment2-service
+  template:
+    metadata:
+      labels:
+        app: skylight-payment2-service
+    spec:
+      containers:
+        - name: payment2-service
+          image: docker.io/hafifbilgiler/skylight-payment-lemon:1.0
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8006
+
+          env:
+            # Lemon Squeezy
+            - name: LEMON_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: lemon-secret
+                  key: api-key
+            - name: LEMON_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: lemon-secret
+                  key: webhook-secret
+            - name: LEMON_STORE_ID
+              valueFrom:
+                secretKeyRef:
+                  name: lemon-secret
+                  key: store-id
+            - name: LEMON_VARIANT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: lemon-secret
+                  key: variant-id
+            - name: LEMON_CHECKOUT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: lemon-secret
+                  key: checkout-url
+
+            # App URL
+            - name: APP_PUBLIC_URL
+              value: "https://one-bune.com"
+
+            # JWT (gateway ile aynı)
+            - name: JWT_SECRET
+              value: "31aad766798d891f4c587d7f3bc925cd7e1e14989c421ae3c38eb80c1d4ede05"
+
+            # Database
+            - name: DB_HOST
+              value: "postgres"
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: pg-secret
+                  key: dbname
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: pg-secret
+                  key: username
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: pg-secret
+                  key: password
+
+            # SMTP
+            - name: SMTP_SERVER
+              value: "smtp.hostinger.com"
+            - name: SMTP_PORT
+              value: "587"
+            - name: SMTP_USER
+              valueFrom:
+                secretKeyRef:
+                  name: smtp-secret
+                  key: smtp-user
+            - name: SMTP_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: smtp-secret
+                  key: smtp-pass
+            - name: SMTP_FROM
+              valueFrom:
+                secretKeyRef:
+                  name: smtp-secret
+                  key: smtp-user
+
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "250m"
+
+          livenessProbe:
+            httpGet:
+              path: /payment2/health
+              port: 8006
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /payment2/health
+              port: 8006
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: skylight-payment2-service
+  namespace: skylight-bot-v2
+spec:
+  selector:
+    app: skylight-payment2-service
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8006
+      targetPort: 8006
+      nodePort: 31242
+  type: NodePort
