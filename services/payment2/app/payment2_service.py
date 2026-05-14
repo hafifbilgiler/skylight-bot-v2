@@ -186,7 +186,8 @@ async def _activate_premium(
 ):
     """
     Kullanıcıyı premium yap + subscriptions kaydı oluştur/güncelle.
-    Mevcut iyzico ile aynı şema kullanılır (uyumluluk).
+    Mevcut iyzico ile aynı şema — lemon ID'sini iyzico_subscription_ref kolonuna
+    yazıyoruz (kolon adı tarihsel, içerik provider-agnostic).
     """
     if not db_pool:
         logger.error("[PAY2] DB pool yok!")
@@ -194,35 +195,36 @@ async def _activate_premium(
     async with db_pool.acquire() as conn:
         await conn.execute("""
             UPDATE users
-            SET is_premium = TRUE, subscription_active = TRUE, updated_at = NOW()
+            SET is_premium = TRUE, subscription_active = TRUE
             WHERE id = $1
         """, user_id)
 
-        # UPSERT subscriptions
+        # UPSERT subscriptions — Lemon ID'sini iyzico_subscription_ref'e yazıyoruz
+        # (mevcut kolon, provider-agnostic kullanım)
         await conn.execute("""
             INSERT INTO user_subscriptions
                 (user_id, plan_id, status, billing_period,
                  current_period_start, current_period_end,
-                 lemon_subscription_ref, payment_provider,
+                 iyzico_subscription_ref, metadata,
                  created_at, updated_at)
             VALUES ($1, 'premium', 'active', 'monthly',
-                    NOW(), $2, $3, 'lemonsqueezy', NOW(), NOW())
+                    NOW(), $2, $3, '{"provider":"lemonsqueezy"}'::jsonb, NOW(), NOW())
             ON CONFLICT (user_id) WHERE status IN ('active','trialing')
             DO UPDATE SET
-                plan_id                = 'premium',
-                status                 = 'active',
-                billing_period         = 'monthly',
-                current_period_start   = NOW(),
-                current_period_end     = $2,
-                lemon_subscription_ref = $3,
-                payment_provider       = 'lemonsqueezy',
-                updated_at             = NOW()
+                plan_id                 = 'premium',
+                status                  = 'active',
+                billing_period          = 'monthly',
+                current_period_start    = NOW(),
+                current_period_end      = $2,
+                iyzico_subscription_ref = $3,
+                metadata                = '{"provider":"lemonsqueezy"}'::jsonb,
+                updated_at              = NOW()
         """, user_id, period_end, lemon_subscription_id)
 
         # Email — kullanıcıyı bul
-        row = await conn.fetchrow("SELECT email, first_name FROM users WHERE id=$1", user_id)
+        row = await conn.fetchrow("SELECT email, name FROM users WHERE id=$1", user_id)
         if row and row["email"]:
-            html, plain = _welcome_email(row.get("first_name") or "")
+            html, plain = _welcome_email(row.get("name") or "")
             asyncio.create_task(
                 _send_email(row["email"], "✅ ONE-BUNE Premium üyeliğin aktif", html, plain)
             )
@@ -241,10 +243,10 @@ async def _cancel_subscription_db(user_id: int, end_date: datetime):
             WHERE user_id = $1 AND status IN ('active','trialing')
         """, user_id, end_date)
 
-        row = await conn.fetchrow("SELECT email, first_name FROM users WHERE id=$1", user_id)
+        row = await conn.fetchrow("SELECT email, name FROM users WHERE id=$1", user_id)
         if row and row["email"]:
             end_str = end_date.strftime("%d.%m.%Y")
-            html, plain = _cancel_email(row.get("first_name") or "", end_str)
+            html, plain = _cancel_email(row.get("name") or "", end_str)
             asyncio.create_task(
                 _send_email(row["email"], "ONE-BUNE Premium abonelik iptali", html, plain)
             )
@@ -258,7 +260,7 @@ async def _expire_subscription(user_id: int):
         return
     async with db_pool.acquire() as conn:
         await conn.execute("""
-            UPDATE users SET is_premium = FALSE, subscription_active = FALSE, updated_at = NOW()
+            UPDATE users SET is_premium = FALSE, subscription_active = FALSE
             WHERE id = $1
         """, user_id)
         await conn.execute("""
@@ -417,18 +419,27 @@ async def subscription_status(authorization: str = Header(None)):
         row = await conn.fetchrow("""
             SELECT s.plan_id, s.status, s.billing_period,
                    s.current_period_start, s.current_period_end,
-                   s.payment_provider, s.lemon_subscription_ref,
+                   s.iyzico_subscription_ref, s.metadata,
                    u.is_premium, u.subscription_active
             FROM users u
             LEFT JOIN user_subscriptions s ON s.user_id = u.id
                 AND s.status IN ('active','cancelled','trialing')
             WHERE u.id = $1
-            ORDER BY s.created_at DESC
+            ORDER BY s.created_at DESC NULLS LAST
             LIMIT 1
         """, int(user_id))
 
     if not row:
         return {"success": True, "is_premium": False, "subscription": None}
+
+    # Provider'ı metadata'dan al
+    meta = row["metadata"] or {}
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except Exception:
+            meta = {}
+    provider = meta.get("provider", "iyzico")
 
     return {
         "success":    True,
@@ -440,7 +451,7 @@ async def subscription_status(authorization: str = Header(None)):
             "billing_period":       row["billing_period"],
             "current_period_start": row["current_period_start"].isoformat() if row["current_period_start"] else None,
             "current_period_end":   row["current_period_end"].isoformat() if row["current_period_end"] else None,
-            "payment_provider":     row["payment_provider"],
+            "payment_provider":     provider,
         } if row["plan_id"] else None,
     }
 
@@ -457,20 +468,29 @@ async def subscription_cancel(authorization: str = Header(None)):
     if not db_pool:
         raise HTTPException(status_code=503, detail="DB yok")
 
-    # Kullanıcının lemon subscription_id'sini bul
+    # Lemon subscription_id — iyzico_subscription_ref kolonunda saklı
     async with db_pool.acquire() as conn:
         row = await conn.fetchrow("""
-            SELECT lemon_subscription_ref FROM user_subscriptions
+            SELECT iyzico_subscription_ref, metadata FROM user_subscriptions
             WHERE user_id = $1 AND status IN ('active','trialing')
             ORDER BY created_at DESC LIMIT 1
         """, int(user_id))
 
-    if not row or not row["lemon_subscription_ref"]:
-        raise HTTPException(status_code=404, detail="Aktif Lemon aboneliği bulunamadı")
+    if not row or not row["iyzico_subscription_ref"]:
+        raise HTTPException(status_code=404, detail="Aktif abonelik bulunamadı")
 
-    sub_id = row["lemon_subscription_ref"]
+    # Provider check — sadece lemonsqueezy ise iptal et
+    meta = row["metadata"] or {}
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except Exception:
+            meta = {}
+    if meta.get("provider") != "lemonsqueezy":
+        raise HTTPException(status_code=400, detail="Bu abonelik Lemon Squeezy değil — payment/iyzico endpoint'i kullan")
 
-    # Lemon API DELETE → aboneliği iptal et
+    sub_id = row["iyzico_subscription_ref"]
+
     if not LEMON_API_KEY:
         raise HTTPException(status_code=500, detail="LEMON_API_KEY yok")
 
