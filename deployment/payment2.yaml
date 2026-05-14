@@ -103,9 +103,9 @@ spec:
                   name: pg-secret
                   key: password
 
-            # SMTP
+            # SMTP — Mailjet
             - name: SMTP_SERVER
-              value: "smtp.hostinger.com"
+              value: "in-v3.mailjet.com"
             - name: SMTP_PORT
               value: "587"
             - name: SMTP_USER
@@ -119,10 +119,7 @@ spec:
                   name: smtp-secret
                   key: smtp-pass
             - name: SMTP_FROM
-              valueFrom:
-                secretKeyRef:
-                  name: smtp-secret
-                  key: smtp-user
+              value: "info@one-bune.com"
 
           resources:
             requests:
