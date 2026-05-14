@@ -18,7 +18,7 @@ import hmac
 import hashlib
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import Optional, Dict, Any
@@ -361,13 +361,13 @@ async def lemon_webhook(request: Request, x_signature: str = Header(default="", 
         if event == "subscription_created":
             sub_id = data.get("id", "")
             renews_at = attr.get("renews_at")  # ISO 8601
-            period_end = _parse_iso(renews_at) or datetime.now(timezone.utc).replace(day=1)
+            period_end = _parse_iso(renews_at) or (datetime.now(timezone.utc) + timedelta(days=30))
             await _activate_premium(user_id, sub_id, period_end, customer_email)
 
         elif event == "subscription_payment_success":
             sub_id = (data.get("attributes") or {}).get("subscription_id", "") or data.get("id", "")
             renews_at = attr.get("renews_at")
-            period_end = _parse_iso(renews_at) or datetime.now(timezone.utc)
+            period_end = _parse_iso(renews_at) or (datetime.now(timezone.utc) + timedelta(days=30))
             await _activate_premium(user_id, str(sub_id), period_end, customer_email)
 
         elif event == "subscription_payment_failed":
