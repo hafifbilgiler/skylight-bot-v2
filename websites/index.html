@@ -16,14 +16,19 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Outfit:wght@700;800&display=swap" rel="stylesheet">
 
- <style>
+<style>
         :root {
             --bg-color: #0a0a0c;
             --sidebar-color: #111114;
             --accent-color: #00f2fe;
             --accent-cyan: #00f2fe;
+            --accent-blue: #4facfe;       /* yeni — mavi vurgu */
+            --accent-blue-deep: #2563eb;  /* yeni — derin mavi */
             --accent-purple: #bc4efd;
             --secondary-accent: #bc4efd;
+            --gradient-brand: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            --gradient-user: linear-gradient(135deg, rgba(79,172,254,0.18) 0%, rgba(0,242,254,0.10) 100%);
+            --gradient-active: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
             --user-bubble: #1e1e2a;
             --bot-bubble: #141419;
             --danger-color: #ff4b4b;
@@ -64,7 +69,7 @@
         ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.12); }
 
         #sidebar {
-            width: 280px;
+            width: 260px;
             background-color: var(--sidebar-color);
             height: 100%;
             position: fixed;
@@ -200,59 +205,68 @@
 
         .new-chat-btn {
             width: 100%;
-            padding: 12px;
+            padding: 11px 14px;
             border-radius: 10px;
-            background: rgba(255,255,255,0.04);
+            background: rgba(255,255,255,0.05);
             color: var(--text-primary);
-            border: 1px solid var(--border-color);
+            border: 1px solid rgba(255,255,255,0.08);
             cursor: pointer;
             font-size: 13px;
-            font-weight: 500;
+            font-weight: 600;
             font-family: inherit;
             display: flex;
             align-items: center;
-            justify-content: center;
-            gap: 8px;
-            transition: all 0.2s;
+            justify-content: flex-start;
+            gap: 10px;
+            transition: all 0.18s;
+            letter-spacing: 0.1px;
         }
         .new-chat-btn:hover {
-            background: rgba(255,255,255,0.07);
-            border-color: rgba(255,255,255,0.12);
+            background: rgba(255,255,255,0.08);
+            border-color: rgba(255,255,255,0.14);
+            transform: translateY(-1px);
         }
-        .new-chat-btn i { font-size: 11px; opacity: 0.7; }
+        .new-chat-btn:active { transform: translateY(0); }
+        .new-chat-btn i {
+            font-size: 12px;
+            opacity: 0.9;
+            color: #4facfe;
+        }
 
-        /* ── Sidebar Nav ───────────────────────── */
+        /* ── Sidebar Nav (Open WebUI tarzı, ikon-yatay) ───── */
         .sidebar-nav {
             display: flex;
-            gap: 4px;
-            padding: 4px;
-            background: rgba(255,255,255,0.03);
-            border-radius: 12px;
-            border: 1px solid rgba(255,255,255,0.06);
+            gap: 3px;
+            padding: 3px;
+            background: rgba(255,255,255,0.025);
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.05);
         }
         .sidebar-nav-btn {
             flex: 1;
             display: flex;
-            flex-direction: column;
+            flex-direction: row;
             align-items: center;
-            gap: 4px;
-            padding: 8px 4px;
+            justify-content: center;
+            gap: 7px;
+            padding: 8px 6px;
             background: none;
             border: none;
-            border-radius: 8px;
+            border-radius: 7px;
             cursor: pointer;
-            color: rgba(255,255,255,0.45);
-            font-size: 10px;
+            color: rgba(255,255,255,0.50);
+            font-size: 11.5px;
             font-family: inherit;
             font-weight: 500;
-            transition: all 0.2s;
-            letter-spacing: 0.3px;
+            transition: all 0.18s;
+            letter-spacing: 0.1px;
         }
-        .sidebar-nav-btn i { font-size: 15px; }
-        .sidebar-nav-btn:hover { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.8); }
+        .sidebar-nav-btn i { font-size: 13px; }
+        .sidebar-nav-btn:hover { background: rgba(255,255,255,0.05); color: rgba(255,255,255,0.85); }
         .sidebar-nav-btn.active {
-            background: rgba(0,242,254,0.1);
-            color: #00f2fe;
+            background: linear-gradient(135deg, rgba(79,172,254,0.16), rgba(0,242,254,0.10));
+            color: #4facfe;
+            box-shadow: inset 0 0 0 1px rgba(79,172,254,0.25);
         }
         /* ── Uygulamalar sayfası ──────────────────── */
         #apps-page {
@@ -371,20 +385,21 @@
         }
 
         .conversation-item {
-            padding: 10px 12px;
+            padding: 9px 11px;
             background: transparent;
-            border-radius: 10px;
+            border-radius: 8px;
             border-left: none;
             cursor: pointer;
-            transition: all 0.18s;
-            margin-bottom: 1px;
+            transition: background 0.15s, transform 0.15s;
+            margin-bottom: 2px;
+            position: relative;
         }
         .conversation-item:hover {
-            background: rgba(255,255,255,0.05);
+            background: rgba(255,255,255,0.04);
         }
         .conversation-item.active {
-            background: linear-gradient(135deg, rgba(0,242,254,0.08), rgba(0,242,254,0.04));
-            box-shadow: inset 0 0 0 1px rgba(0,242,254,0.12);
+            background: linear-gradient(90deg, rgba(79, 172, 254, 0.12), rgba(0, 242, 254, 0.04));
+            box-shadow: inset 3px 0 0 #4facfe;
         }
         .conversation-item.active .conv-title { color: #fff; font-weight: 600; }
 
@@ -782,16 +797,17 @@
         }
 
         .user-bubble {
-            background: linear-gradient(135deg, rgba(0, 242, 254, 0.12), rgba(130, 80, 255, 0.10));
+            background: linear-gradient(135deg, rgba(79, 172, 254, 0.20), rgba(0, 242, 254, 0.10));
             color: #fff;
-            padding: 10px 16px;
+            padding: 11px 18px;
             border-radius: 18px 18px 4px 18px;
             max-width: 80%;
             font-size: 14px;
             word-wrap: break-word;
-            border: 1px solid rgba(0, 242, 254, 0.12);
+            border: 1px solid rgba(79, 172, 254, 0.22);
             line-height: 1.5;
             white-space: pre-wrap;
+            box-shadow: 0 2px 8px rgba(79, 172, 254, 0.05);
         }
 
         .bot-bubble {
@@ -917,10 +933,36 @@
         .like-btn:hover { color: #22c55e; }
         .dislike-btn:hover { color: #ef4444; }
 
-        .typing-indicator { display: inline-flex; gap: 4px; align-items: center; padding: 4px 0; }
-        .typing-indicator span { width: 7px; height: 7px; background: var(--accent-color); border-radius: 50%; animation: typing-bounce 1.4s infinite; opacity: 0.5; }
-        .typing-indicator span:nth-child(2) { animation-delay: 0.15s; }
-        .typing-indicator span:nth-child(3) { animation-delay: 0.3s; }
+        /* ── Dönen ONE-BUNE Orb (typing indicator) ──────────── */
+        .typing-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            padding: 4px 0;
+        }
+        .typing-orb {
+            width: 28px;
+            height: 28px;
+            position: relative;
+            animation: orbSpin 3s linear infinite;
+            filter: drop-shadow(0 0 6px rgba(79,172,254,0.5));
+        }
+        .typing-orb svg { display: block; width: 100%; height: 100%; }
+        .typing-text {
+            font-size: 13px;
+            color: var(--text-secondary);
+            font-style: italic;
+            opacity: 0.85;
+            animation: textPulse 2s ease-in-out infinite;
+        }
+        @keyframes orbSpin {
+            from { transform: rotate(0deg); }
+            to   { transform: rotate(360deg); }
+        }
+        @keyframes textPulse {
+            0%,100% { opacity: 0.55; }
+            50%     { opacity: 0.95; }
+        }
         @keyframes typing-bounce {
             0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
             30% { transform: translateY(-6px); opacity: 1; }
@@ -936,22 +978,21 @@
         }
 
         .input-wrapper {
-            max-width: 700px;
+            max-width: 768px;
             margin: 0 auto;
-            background: rgba(255,255,255,0.035);
+            background: rgba(255,255,255,0.04);
             border: 1px solid rgba(255,255,255,0.08);
-            border-radius: 22px;
+            border-radius: 16px;
             display: flex;
-            padding: 4px 6px 4px 8px;
+            padding: 6px 8px 6px 10px;
             align-items: flex-end;
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-            backdrop-filter: blur(16px);
-            box-shadow: 0 2px 12px rgba(0,0,0,0.1);
+            transition: border-color 0.2s, box-shadow 0.2s;
+            backdrop-filter: blur(12px);
         }
         .input-wrapper:focus-within {
-            border-color: rgba(0,242,254,0.35);
-            box-shadow: 0 0 0 3px rgba(0,242,254,0.06), 0 4px 24px rgba(0,242,254,0.08);
-            background: rgba(255,255,255,0.045);
+            border-color: rgba(79, 172, 254, 0.40);
+            box-shadow: 0 0 0 3px rgba(79, 172, 254, 0.08);
+            background: rgba(255,255,255,0.05);
         }
 
         #user-input {
@@ -973,21 +1014,23 @@
         #user-input::placeholder { color: var(--text-muted); }
 
         .send-btn {
-            background: linear-gradient(135deg, var(--accent-color), #00d4e6);
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
             border: none;
             width: 40px; height: 40px;
             border-radius: 50%;
             cursor: pointer;
-            color: #000;
+            color: #001428;
             font-size: 15px;
+            font-weight: 700;
             display: flex;
             align-items: center;
             justify-content: center;
             transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
             flex-shrink: 0;
             margin-bottom: 2px;
+            box-shadow: 0 2px 12px rgba(79, 172, 254, 0.30);
         }
-        .send-btn:hover { transform: scale(1.08); box-shadow: 0 0 20px rgba(0,242,254,0.3); }
+        .send-btn:hover { transform: scale(1.08); box-shadow: 0 0 24px rgba(79, 172, 254, 0.55); }
         .send-btn:active { transform: scale(0.95); }
         .send-btn.stop-mode {
             background: rgba(255,75,75,0.15);
@@ -1005,7 +1048,7 @@
         }
 
         .input-disclaimer {
-            max-width: 700px;
+            max-width: 768px;
             margin: 4px auto 0;
             text-align: center;
             font-size: 10px;
@@ -1032,7 +1075,7 @@
         .attach-btn:hover { color: var(--accent-color); background: rgba(0,242,254,0.06); }
 
         .file-chip-area {
-            max-width: 700px;
+            max-width: 768px;
             margin: 0 auto 6px;
             padding: 0 4px;
         }
@@ -1126,22 +1169,6 @@
             font-weight: 700;
             padding: 6px 14px 2px;
         }
-
-        
-        
-        
-        
-        
-        
-        
-        
-
-        
-        
-        
-        
-        
-        
 
         
         
@@ -1780,7 +1807,7 @@
         }
 
         .usage-indicator {
-            max-width: 700px;
+            max-width: 768px;
             margin: 0 auto 6px;
             padding: 6px 14px;
             border-radius: 8px;
@@ -2028,6 +2055,157 @@
             font-size: 11px;
             padding: 4px 10px;
         }
+
+        /* ═══════════════════════════════════════════════════════
+           ADAPTIVE THINKING — Tek Toggle
+           ═══════════════════════════════════════════════════════ */
+        .adaptive-toggle {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            padding: 7px 12px;
+            border-radius: 18px;
+            border: 1px solid rgba(255,255,255,0.12);
+            background: rgba(255,255,255,0.04);
+            color: rgba(255,255,255,0.62);
+            cursor: pointer;
+            font-size: 11.5px;
+            font-weight: 600;
+            font-family: inherit;
+            transition: all 0.2s;
+            margin-right: 8px;
+            white-space: nowrap;
+            user-select: none;
+            flex-shrink: 0;
+            position: relative;
+        }
+        .adaptive-toggle:hover {
+            background: rgba(124,109,250,0.10);
+            border-color: rgba(124,109,250,0.32);
+            color: #c4b5fd;
+        }
+        .adaptive-toggle.active {
+            background: linear-gradient(135deg, rgba(124,109,250,0.22), rgba(167,139,250,0.12));
+            border-color: rgba(167,139,250,0.50);
+            color: #fff;
+            box-shadow: 0 0 0 3px rgba(124,109,250,0.06);
+        }
+        .adaptive-toggle .at-icon { font-size: 13px; line-height: 1; }
+        .adaptive-toggle .at-label { font-size: 11px; letter-spacing: 0.2px; }
+        .adaptive-toggle .at-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.20);
+            transition: background 0.2s, box-shadow 0.2s;
+        }
+        .adaptive-toggle.active .at-dot {
+            background: #a78bfa;
+            box-shadow: 0 0 6px rgba(167,139,250,0.7);
+        }
+
+        /* Reasoning baloncuğu — Claude tarzı */
+        .reasoning-box {
+            margin-bottom: 10px;
+            border: 1px solid rgba(124,109,250,0.22);
+            background: linear-gradient(135deg, rgba(124,109,250,0.06), rgba(167,139,250,0.02));
+            border-radius: 12px;
+            overflow: hidden;
+            transition: all 0.25s;
+        }
+        .reasoning-head {
+            padding: 9px 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            user-select: none;
+            font-size: 12px;
+            color: rgba(196,181,253,0.95);
+        }
+        .reasoning-head:hover { background: rgba(124,109,250,0.05); }
+        .reasoning-icon {
+            font-size: 13px;
+            display: inline-block;
+            animation: thinkPulse 1.5s infinite ease-in-out;
+        }
+        /* Dönen ONE-BUNE orb (reasoning baloncuğu içinde) */
+        .reasoning-orb {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 18px;
+            height: 18px;
+            animation: orbSpin 3s linear infinite;
+            filter: drop-shadow(0 0 4px rgba(79,172,254,0.45));
+        }
+        .reasoning-orb svg { width: 100%; height: 100%; display: block; }
+        /* Düşünme tamamlandığında (collapsed) dönüş yavaşlar */
+        .reasoning-box.collapsed .reasoning-orb {
+            animation: none;
+            opacity: 0.6;
+            filter: none;
+        }
+        @keyframes thinkPulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.55; transform: scale(0.92); }
+        }
+        .reasoning-title {
+            font-weight: 600;
+            font-style: italic;
+            font-family: 'Fraunces', serif;
+        }
+        .reasoning-time {
+            font-size: 10.5px;
+            color: rgba(255,255,255,0.4);
+            font-family: 'JetBrains Mono', monospace;
+            margin-left: auto;
+        }
+        .reasoning-toggle {
+            font-size: 10px;
+            color: rgba(255,255,255,0.35);
+            transition: transform 0.2s;
+            margin-left: 4px;
+        }
+        .reasoning-box.collapsed .reasoning-toggle {
+            transform: rotate(-90deg);
+        }
+        .reasoning-box.collapsed .reasoning-icon {
+            animation: none;
+            opacity: 0.55;
+        }
+        .reasoning-content {
+            padding: 4px 14px 12px;
+            font-size: 12.5px;
+            line-height: 1.6;
+            color: rgba(255,255,255,0.62);
+            font-family: 'Fraunces', 'Georgia', serif;
+            font-style: italic;
+            max-height: 280px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            border-top: 1px solid rgba(124,109,250,0.1);
+            transition: max-height 0.3s, padding 0.3s;
+        }
+        .reasoning-box.collapsed .reasoning-content {
+            max-height: 0;
+            padding: 0 14px;
+            border-top: none;
+            overflow: hidden;
+        }
+        .reasoning-content::-webkit-scrollbar { width: 3px; }
+        .reasoning-content::-webkit-scrollbar-thumb {
+            background: rgba(124,109,250,0.3);
+            border-radius: 2px;
+        }
+
+        @media (max-width: 768px) {
+            .adaptive-toggle .at-label { display: none; }
+            .adaptive-toggle { padding: 7px 9px; }
+            .reasoning-head { padding: 8px 12px; font-size: 11.5px; }
+            .reasoning-content { padding: 4px 12px 10px; font-size: 12px; max-height: 200px; }
+        }
     </style>
 </head>
 <body>
@@ -2258,7 +2436,7 @@
                 <i class="fas fa-bars"></i>
             </button>
             <span class="beta-badge">
-                v1.0
+                v1.1
             </span>
         </div>
 
@@ -2290,6 +2468,10 @@
                 </div>
                 <div class="hint-chip" onclick="fillPrompt('Bugünün tarihi nedir ve hava nasıl?')">
                     <i class="fas fa-calendar-days"></i>Bugün ne var
+                </div>
+                <div class="hint-chip" >
+                    <i class="fas fa-calendar-days"></i>GECICI BIR SURE PREMIUM ABONELIK ALMAYACAĞIZ GELISTIRME SURECINDEYIZ
+                    GELISTIRMELERIMIZ YINE DEVAM EDIYOR OLACAK, YENILIKCI KADROMUZLA DONUSUMUZU BEKLEYIN
                 </div>
             </div>
         </div>
@@ -2509,47 +2691,47 @@
         <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px;">
 
             <!-- Sosyal -->
-            <div class="app-fullcard" onclick="" style="
-                background:linear-gradient(135deg,rgba(251,191,36,0.08) 0%,rgba(249,115,22,0.05) 100%);
-                border:1px solid rgba(251,191,36,0.18);
+            <div class="app-fullcard" onclick="openSosyal()" style="
+                background:linear-gradient(135deg,rgba(167,139,250,0.08) 0%,rgba(251,191,36,0.05) 100%);
+                border:1px solid rgba(167,139,250,0.18);
                 border-radius:20px;
                 padding:24px 20px;
-                cursor:default;
+                cursor:pointer;
                 transition:all 0.25s;
                 position:relative;
                 overflow:hidden;
             "
-            onmouseover="this.style.transform='translateY(-3px)';this.style.borderColor='rgba(251,191,36,0.35)'"
-            onmouseout="this.style.transform='';this.style.borderColor='rgba(251,191,36,0.18)'">
-                <div style="position:absolute;top:-20px;right:-20px;width:80px;height:80px;background:radial-gradient(circle,rgba(251,191,36,0.12),transparent);border-radius:50%;"></div>
-                <div style="width:52px;height:52px;border-radius:16px;background:linear-gradient(135deg,rgba(251,191,36,0.2),rgba(249,115,22,0.2));display:flex;align-items:center;justify-content:center;margin-bottom:16px;">
-                    <i class="fas fa-comments" style="font-size:22px;color:#fbbf24;"></i>
+            onmouseover="this.style.transform='translateY(-3px)';this.style.borderColor='rgba(167,139,250,0.55)';this.style.boxShadow='0 8px 32px rgba(167,139,250,0.12)'"
+            onmouseout="this.style.transform='';this.style.borderColor='rgba(167,139,250,0.18)';this.style.boxShadow=''">
+                <div style="position:absolute;top:-20px;right:-20px;width:80px;height:80px;background:radial-gradient(circle,rgba(167,139,250,0.12),transparent);border-radius:50%;"></div>
+                <div style="width:52px;height:52px;border-radius:16px;background:linear-gradient(135deg,rgba(167,139,250,0.2),rgba(251,191,36,0.15));display:flex;align-items:center;justify-content:center;margin-bottom:16px;">
+                    <i class="fas fa-comments" style="font-size:22px;color:#a78bfa;"></i>
                 </div>
                 <div style="font-size:16px;font-weight:700;color:#fff;margin-bottom:6px;">Sosyal Asistan</div>
                 <div style="font-size:12px;color:rgba(255,255,255,0.45);line-height:1.5;margin-bottom:16px;">Yemek tarifleri, seyahat planları, günlük yaşam tavsiyeleri</div>
-                <span style="display:inline-block;background:rgba(251,191,36,0.12);color:#fbbf24;border:1px solid rgba(251,191,36,0.25);font-size:10px;font-weight:700;padding:4px 10px;border-radius:20px;letter-spacing:0.5px;text-transform:uppercase;">Yakında</span>
+                <span style="display:inline-block;background:rgba(167,139,250,0.15);color:#a78bfa;border:1px solid rgba(167,139,250,0.4);font-size:10px;font-weight:700;padding:4px 10px;border-radius:20px;letter-spacing:1px;text-transform:uppercase;">Beta</span>
             </div>
 
             <!-- Finans -->
-            <div class="app-fullcard" style="
+            <div class="app-fullcard" onclick="window.location.href='/finans/'" style="
                 background:linear-gradient(135deg,rgba(34,197,94,0.08) 0%,rgba(16,185,129,0.05) 100%);
                 border:1px solid rgba(34,197,94,0.18);
                 border-radius:20px;
                 padding:24px 20px;
-                cursor:default;
+                cursor:pointer;
                 transition:all 0.25s;
                 position:relative;
                 overflow:hidden;
             "
-            onmouseover="this.style.transform='translateY(-3px)';this.style.borderColor='rgba(34,197,94,0.35)'"
-            onmouseout="this.style.transform='';this.style.borderColor='rgba(34,197,94,0.18)'">
+            onmouseover="this.style.transform='translateY(-3px)';this.style.borderColor='rgba(34,197,94,0.55)';this.style.boxShadow='0 8px 32px rgba(34,197,94,0.12)'"
+            onmouseout="this.style.transform='';this.style.borderColor='rgba(34,197,94,0.18)';this.style.boxShadow=''">
                 <div style="position:absolute;top:-20px;right:-20px;width:80px;height:80px;background:radial-gradient(circle,rgba(34,197,94,0.12),transparent);border-radius:50%;"></div>
                 <div style="width:52px;height:52px;border-radius:16px;background:linear-gradient(135deg,rgba(34,197,94,0.2),rgba(16,185,129,0.2));display:flex;align-items:center;justify-content:center;margin-bottom:16px;">
                     <i class="fas fa-chart-line" style="font-size:22px;color:#22c55e;"></i>
                 </div>
                 <div style="font-size:16px;font-weight:700;color:#fff;margin-bottom:6px;">Finans Asistanı</div>
                 <div style="font-size:12px;color:rgba(255,255,255,0.45);line-height:1.5;margin-bottom:16px;">Borsa analizi, yatırım tavsiyeleri, bütçe ve harcama takibi</div>
-                <span style="display:inline-block;background:rgba(34,197,94,0.12);color:#22c55e;border:1px solid rgba(34,197,94,0.25);font-size:10px;font-weight:700;padding:4px 10px;border-radius:20px;letter-spacing:0.5px;text-transform:uppercase;">Yakında</span>
+                <span style="display:inline-block;background:rgba(34,197,94,0.15);color:#22c55e;border:1px solid rgba(34,197,94,0.4);font-size:10px;font-weight:700;padding:4px 10px;border-radius:20px;letter-spacing:1px;text-transform:uppercase;">Beta</span>
             </div>
 
             <!-- IT & DevOps -->
