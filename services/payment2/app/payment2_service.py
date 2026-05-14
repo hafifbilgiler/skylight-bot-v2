@@ -107,13 +107,17 @@ def _verify_jwt(authorization: str) -> Dict[str, Any]:
 def _verify_lemon_signature(raw_body: bytes, signature: str) -> bool:
     """Lemon webhook X-Signature doğrula."""
     if not LEMON_WEBHOOK_SECRET or not signature:
+        logger.warning(f"[PAY2 SIG] secret_empty={not LEMON_WEBHOOK_SECRET} sig_empty={not signature}")
         return False
     computed = hmac.new(
         LEMON_WEBHOOK_SECRET.encode("utf-8"),
         raw_body,
         hashlib.sha256
     ).hexdigest()
-    return hmac.compare_digest(computed, signature)
+    ok = hmac.compare_digest(computed, signature)
+    logger.info(f"[PAY2 SIG] secret_first6={LEMON_WEBHOOK_SECRET[:6]} body_len={len(raw_body)} "
+                f"received={signature[:16]} computed={computed[:16]} match={ok}")
+    return ok
 
 
 async def _send_email(to: str, subject: str, html: str, plain: str):
