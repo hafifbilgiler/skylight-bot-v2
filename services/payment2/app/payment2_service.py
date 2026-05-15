@@ -293,10 +293,7 @@ async def health():
 
 
 @app.post("/payment2/checkout")
-async def checkout_create(
-    authorization: str = Header(None),
-    body: dict = Body(default={}),
-):
+async def checkout_create(authorization: str = Header(None)):
     """
     Kullanıcıya özel checkout URL döner.
     custom_data: {"user_id": "...", "email": "..."}  — webhook'ta okunacak
