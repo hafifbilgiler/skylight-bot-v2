@@ -104,6 +104,23 @@ def _verify_jwt(authorization: str) -> Dict[str, Any]:
         raise HTTPException(status_code=401, detail=f"Token geçersiz: {e}")
 
 
+async def _user_id_from_jwt(payload: dict) -> tuple[int, str]:
+    """
+    Gateway JWT'sinde sadece 'sub' (email) var. Email ile users tablosundan id sorgula.
+    Döner: (user_id, email)
+    """
+    email = payload.get("email") or payload.get("sub") or ""
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="JWT'de email yok")
+    if not db_pool:
+        raise HTTPException(status_code=503, detail="DB yok")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT id FROM users WHERE LOWER(email)=LOWER($1)", email)
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Kullanıcı bulunamadı: {email}")
+    return row["id"], email
+
+
 def _verify_lemon_signature(raw_body: bytes, signature: str) -> bool:
     """Lemon webhook X-Signature doğrula."""
     if not LEMON_WEBHOOK_SECRET or not signature:
@@ -294,28 +311,18 @@ async def health():
 
 @app.post("/payment2/checkout")
 async def checkout_create(authorization: str = Header(None)):
-    """
-    Kullanıcıya özel checkout URL döner.
-    custom_data: {"user_id": "...", "email": "..."}  — webhook'ta okunacak
-    """
+    """Kullanıcıya özel checkout URL döner."""
     payload = _verify_jwt(authorization)
-    user_id = payload.get("user_id") or payload.get("sub")
-    email   = payload.get("email", "")
-
-    if not user_id:
-        raise HTTPException(status_code=400, detail="user_id bulunamadı")
+    user_id, email = await _user_id_from_jwt(payload)
 
     if not LEMON_CHECKOUT_URL:
         raise HTTPException(status_code=500, detail="LEMON_CHECKOUT_URL yapılandırılmamış")
 
-    # Basit yol: hazır checkout URL'i + email (custom_data optional)
+    # Email'i önceden doldur, kullanıcı değiştirebilir
     from urllib.parse import quote
-    if email:
-        url = f"{LEMON_CHECKOUT_URL}?embed=1&checkout[email]={quote(email)}"
-    else:
-        url = f"{LEMON_CHECKOUT_URL}?embed=1"
+    url = f"{LEMON_CHECKOUT_URL}?embed=1&checkout[email]={quote(email)}"
 
-    return {"success": True, "url": url, "user_id": user_id}
+    return {"success": True, "url": url, "user_id": user_id, "email": email}
 
 
 @app.post("/payment2/webhook")
@@ -403,10 +410,7 @@ def _parse_iso(s: Optional[str]) -> Optional[datetime]:
 async def subscription_status(authorization: str = Header(None)):
     """Kullanıcının abonelik durumunu döner."""
     payload = _verify_jwt(authorization)
-    user_id = payload.get("user_id") or payload.get("sub")
-
-    if not db_pool:
-        raise HTTPException(status_code=503, detail="DB yok")
+    user_id, _ = await _user_id_from_jwt(payload)
 
     async with db_pool.acquire() as conn:
         row = await conn.fetchrow("""
@@ -420,7 +424,7 @@ async def subscription_status(authorization: str = Header(None)):
             WHERE u.id = $1
             ORDER BY s.created_at DESC NULLS LAST
             LIMIT 1
-        """, int(user_id))
+        """, user_id)
 
     if not row:
         return {"success": True, "is_premium": False, "subscription": None}
@@ -451,15 +455,9 @@ async def subscription_status(authorization: str = Header(None)):
 
 @app.post("/payment2/subscription/cancel")
 async def subscription_cancel(authorization: str = Header(None)):
-    """
-    Lemon Squeezy API ile aboneliği iptal et.
-    Lemon webhook'u ile DB güncellenecek (subscription_cancelled event).
-    """
+    """Lemon Squeezy API ile aboneliği iptal et."""
     payload = _verify_jwt(authorization)
-    user_id = payload.get("user_id") or payload.get("sub")
-
-    if not db_pool:
-        raise HTTPException(status_code=503, detail="DB yok")
+    user_id, _ = await _user_id_from_jwt(payload)
 
     # Lemon subscription_id — iyzico_subscription_ref kolonunda saklı
     async with db_pool.acquire() as conn:
@@ -467,7 +465,7 @@ async def subscription_cancel(authorization: str = Header(None)):
             SELECT iyzico_subscription_ref, metadata FROM user_subscriptions
             WHERE user_id = $1 AND status IN ('active','trialing')
             ORDER BY created_at DESC LIMIT 1
-        """, int(user_id))
+        """, user_id)
 
     if not row or not row["iyzico_subscription_ref"]:
         raise HTTPException(status_code=404, detail="Aktif abonelik bulunamadı")
@@ -506,4 +504,4 @@ async def subscription_cancel(authorization: str = Header(None)):
         logger.error(f"[PAY2 CANCEL] {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-    return {"success": True, "message": "İptal talebi alındı. Webhook ile süreç tamamlanacak."}
+    return {"success": True, "message": "İptal talebi alındı. "}
