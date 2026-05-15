@@ -41,7 +41,7 @@ spec:
     spec:
       containers:
         - name: payment2-service
-          image: docker.io/hafifbilgiler/skylight-payment-lemon:1.4
+          image: docker.io/hafifbilgiler/skylight-payment-lemon:1.5
           imagePullPolicy: Always
           ports:
             - containerPort: 8006

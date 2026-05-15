@@ -308,16 +308,12 @@ async def checkout_create(authorization: str = Header(None)):
     if not LEMON_CHECKOUT_URL:
         raise HTTPException(status_code=500, detail="LEMON_CHECKOUT_URL yapılandırılmamış")
 
-    # Basit yol: hazır checkout URL'i + query param ile custom_data
-    # Lemon embedded checkout için: ?checkout[custom][user_id]=X&checkout[email]=X
+    # Basit yol: hazır checkout URL'i + email (custom_data optional)
     from urllib.parse import quote
-    url = (
-        f"{LEMON_CHECKOUT_URL}"
-        f"?embed=1"
-        f"&checkout[email]={quote(email)}"
-        f"&checkout[custom][user_id]={user_id}"
-        f"&checkout[custom][email]={quote(email)}"
-    )
+    if email:
+        url = f"{LEMON_CHECKOUT_URL}?embed=1&checkout[email]={quote(email)}"
+    else:
+        url = f"{LEMON_CHECKOUT_URL}?embed=1"
 
     return {"success": True, "url": url, "user_id": user_id}
 
