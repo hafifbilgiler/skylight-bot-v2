@@ -1683,8 +1683,7 @@ Kurallar:
 - {check_in} - {check_out} tarihleri için müsait olanları öner"""
 
     try:
-        # gemini_grounding zaten var — non-stream çağrı
-        result = await gemini_grounding_search(prompt, max_tokens=2000)
+        result = await gemini_grounding_search(prompt, max_tokens=4000)
         if not result or "error" in (result or {}):
             err = (result or {}).get("error", "Gemini cevap vermedi")
             return {"success": False, "error": err, "hotels": []}
@@ -1706,13 +1705,28 @@ Kurallar:
         if start >= 0 and end > start:
             text_clean = text_clean[start:end+1]
 
+        hotels_raw = []
         try:
             parsed = json.loads(text_clean)
+            hotels_raw = parsed.get("hotels", []) or []
         except Exception as e:
-            print(f"[HOTEL] JSON parse hata: {e} | text={text[:300]}")
-            return {"success": False, "error": "Cevap işlenemedi", "hotels": []}
+            # Cut/yarım JSON — tek tek otel objelerini regex ile çıkar
+            print(f"[HOTEL] Full JSON parse fail, tek tek deneniyor: {e}")
+            import re as _re
+            # { ... "reason": "..." } pattern'ini bul (her otel)
+            pattern = r'\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"stars"\s*:\s*\d+\s*,\s*"district"\s*:\s*"[^"]*"\s*,\s*"rating"\s*:\s*[\d.]+\s*,\s*"reason"\s*:\s*"[^"]*"\s*\}'
+            matches = _re.findall(pattern, text, _re.DOTALL)
+            for m_str in matches:
+                try:
+                    hotels_raw.append(json.loads(m_str))
+                except Exception:
+                    pass
+            print(f"[HOTEL] Regex ile {len(hotels_raw)} otel kurtarıldı")
 
-        hotels_raw = parsed.get("hotels", []) or []
+        if not hotels_raw:
+            print(f"[HOTEL] Hiç otel parse edilemedi. text={text[:500]}")
+            return {"success": False, "error": "Otel listesi alınamadı, tekrar dene", "hotels": []}
+
         from urllib.parse import quote_plus
 
         hotels = []
