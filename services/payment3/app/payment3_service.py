@@ -171,6 +171,36 @@ async def _send_email(to: str, subject: str, html: str, plain: str):
         logger.error(f"[PAY3 EMAIL ERROR] {e}")
 
 
+def _duplicate_email(name: str, period_end_str: str) -> tuple[str, str]:
+    """Aynı ay içinde 2. ödeme yapan kullanıcıya bilgilendirme."""
+    n = (name or "").strip() or "ONE-BUNE kullanıcısı"
+    html = f"""
+<!doctype html>
+<html><body style="font-family:Arial,sans-serif;background:#0a0a0f;color:#fff;padding:30px;">
+  <div style="max-width:600px;margin:auto;background:#15151f;border-radius:14px;padding:30px;">
+    <h2 style="color:#00f2fe;">✅ Premium aboneliğin uzatıldı</h2>
+    <p>Merhaba <strong>{n}</strong>,</p>
+    <p>Shopier üzerinden <strong>ikinci bir ödeme</strong> aldığını tespit ettik.</p>
+    <p>👉 <strong>Mevcut Premium aboneliğin kalan günleri korunarak üzerine 30 gün eklendi.</strong></p>
+    <p>📅 Yeni bitiş tarihi: <strong>{period_end_str}</strong></p>
+    <div style="background:rgba(0,242,254,0.08);border:1px solid rgba(0,242,254,0.2);border-radius:10px;padding:14px;margin:20px 0;">
+      ℹ️ Eğer bu ödemeyi yanlışlıkla yaptıysan veya iade istiyorsan, <a href="mailto:info@one-bune.com" style="color:#00f2fe;">info@one-bune.com</a> adresinden bize yaz, hemen yardımcı olalım.
+    </div>
+    <p style="margin-top:20px;">
+      <a href="{APP_PUBLIC_URL}" style="background:linear-gradient(135deg,#bc4efd,#00d4e6);color:#fff;padding:12px 24px;border-radius:10px;text-decoration:none;font-weight:bold;">ONE-BUNE'a Git</a>
+    </p>
+    <p style="font-size:11px;color:#888;margin-top:30px;">Sorularınız için: info@one-bune.com</p>
+  </div>
+</body></html>
+"""
+    plain = (
+        f"Merhaba {n}, ikinci ödemen alındı. "
+        f"Mevcut Premium aboneliğine 30 gün eklendi. Yeni bitiş: {period_end_str}. "
+        f"Yanlışlık varsa info@one-bune.com adresinden bize yaz."
+    )
+    return html, plain
+
+
 def _welcome_email_existing(name: str) -> tuple[str, str]:
     n = (name or "").strip() or "ONE-BUNE kullanıcısı"
     html = f"""
@@ -234,20 +264,60 @@ async def _activate_premium(
     customer_name: Optional[str] = None,
     is_new_user: bool = False,
 ):
-    """Mevcut user_subscriptions şemasına Shopier order ID'si yaz."""
+    """
+    Mevcut user_subscriptions şemasına Shopier order ID'si yaz.
+    
+    Idempotency: Aynı order_id daha önce işlendiyse skip.
+    Duplicate: Kullanıcı zaten aktif premium ise kalan günleri koruyup üstüne ekle.
+    """
     if not db_pool:
         logger.error("[PAY3] DB pool yok!")
         return
 
     async with db_pool.acquire() as conn:
+        # ─── 1) Idempotency: aynı order_id daha önce işlendi mi? ──
+        existing_order = await conn.fetchrow("""
+            SELECT user_id, current_period_end FROM user_subscriptions
+            WHERE iyzico_subscription_ref = $1
+            ORDER BY created_at DESC LIMIT 1
+        """, shopier_order_id)
+        if existing_order:
+            logger.info(f"[PAY3 IDEMPOTENCY] order_id={shopier_order_id} zaten işlenmiş, skip")
+            return {"skipped": True, "reason": "already_processed"}
+
+        # ─── 2) Aktif premium var mı? Varsa kalan günleri ekle ──
+        active = await conn.fetchrow("""
+            SELECT id, current_period_end FROM user_subscriptions
+            WHERE user_id = $1 AND status IN ('active','trialing')
+            ORDER BY created_at DESC LIMIT 1
+        """, user_id)
+
+        now = datetime.now(timezone.utc)
+        is_duplicate = False
+        if active and active["current_period_end"] and active["current_period_end"] > now:
+            # Mevcut aktif premium → kalan günler korunur, üstüne 30 gün ekle
+            new_period_end = active["current_period_end"] + timedelta(days=30)
+            is_duplicate = True
+            logger.info(
+                f"[PAY3 DUPLICATE] user_id={user_id} eski_period_end={active['current_period_end']} "
+                f"yeni_period_end={new_period_end} (kalan günler + 30 gün eklendi)"
+            )
+        else:
+            # Yeni premium veya süresi dolmuş → bugünden +30 gün
+            new_period_end = period_end
+
         await conn.execute("""
             UPDATE users SET is_premium = TRUE, subscription_active = TRUE
             WHERE id = $1
         """, user_id)
 
-        metadata = json.dumps({"provider": "shopier", "order_id": shopier_order_id})
+        metadata = json.dumps({
+            "provider": "shopier",
+            "order_id": shopier_order_id,
+            "duplicate_extension": is_duplicate,
+        })
 
-        # UPSERT — aktif/trialing varsa update et, yoksa insert
+        # UPSERT
         await conn.execute("""
             INSERT INTO user_subscriptions
                 (user_id, plan_id, status, billing_period,
@@ -261,18 +331,22 @@ async def _activate_premium(
                 plan_id                 = 'premium',
                 status                  = 'active',
                 billing_period          = 'monthly',
-                current_period_start    = NOW(),
                 current_period_end      = $2,
                 iyzico_subscription_ref = $3,
                 metadata                = $4::jsonb,
                 updated_at              = NOW()
-        """, user_id, period_end, shopier_order_id, metadata)
+        """, user_id, new_period_end, shopier_order_id, metadata)
 
         # Email
         row = await conn.fetchrow("SELECT email, name FROM users WHERE id=$1", user_id)
         if row and row["email"]:
             name = row.get("name") or customer_name or ""
-            if is_new_user:
+            end_str = new_period_end.strftime("%d.%m.%Y")
+            if is_duplicate:
+                # Duplicate ödeme — kullanıcıyı bilgilendir
+                html, plain = _duplicate_email(name, end_str)
+                subject = "✅ ONE-BUNE Premium aboneliğin 30 gün uzatıldı"
+            elif is_new_user:
                 html, plain = _welcome_email_new(name, row["email"])
                 subject = "🎉 ONE-BUNE Premium hesabın oluşturuldu"
             else:
@@ -280,7 +354,12 @@ async def _activate_premium(
                 subject = "✅ ONE-BUNE Premium üyeliğin aktif"
             asyncio.create_task(_send_email(row["email"], subject, html, plain))
 
-    logger.info(f"[PAY3] Premium aktif: user_id={user_id} order={shopier_order_id} new_user={is_new_user}")
+    logger.info(
+        f"[PAY3] Premium aktif: user_id={user_id} order={shopier_order_id} "
+        f"new_user={is_new_user} duplicate_extension={is_duplicate} "
+        f"period_end={new_period_end.strftime('%Y-%m-%d')}"
+    )
+    return {"success": True, "is_duplicate": is_duplicate, "period_end": new_period_end.isoformat()}
 
 
 async def _ensure_user(email: str, first_name: str = "", last_name: str = "", phone: str = "") -> tuple[int, bool]:
