@@ -8,18 +8,6 @@
 #     --from-literal=product-id=47826049 \
 #     -n skylight-bot-v2
 # ───────────────────────────────────────────────────────────
-apiVersion: v1
-kind: Secret
-metadata:
-  name: shopier-secret
-  namespace: skylight-bot-v2
-type: Opaque
-stringData:
-  pat-token:       "YENI_PAT_BURAYA_DEPLOY_ETMEDEN_DEGISTIR"
-  webhook-token:   "73ddf3e918047b4329f2dfdb590b9c201f170c3cc3880b426fae9249f9339520"
-  product-url:     "https://www.shopier.com/onebune/47826049"
-  product-id:      "47826049"
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
