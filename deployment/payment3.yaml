@@ -1,0 +1,153 @@
+# ═══════════════════════════════════════════════════════════
+# Shopier Secret
+# Oluşturmak için:
+#   kubectl create secret generic shopier-secret \
+#     --from-literal=pat-token=YENI_PAT_BURAYA \
+#     --from-literal=webhook-token=73ddf3e918047b4329f2dfdb590b9c201f170c3cc3880b426fae9249f9339520 \
+#     --from-literal=product-url=https://www.shopier.com/onebune/47826049 \
+#     --from-literal=product-id=47826049 \
+#     -n skylight-bot-v2
+# ───────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Secret
+metadata:
+  name: shopier-secret
+  namespace: skylight-bot-v2
+type: Opaque
+stringData:
+  pat-token:       "YENI_PAT_BURAYA_DEPLOY_ETMEDEN_DEGISTIR"
+  webhook-token:   "73ddf3e918047b4329f2dfdb590b9c201f170c3cc3880b426fae9249f9339520"
+  product-url:     "https://www.shopier.com/onebune/47826049"
+  product-id:      "47826049"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: skylight-payment3-service
+  namespace: skylight-bot-v2
+  labels:
+    app: skylight-payment3-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: skylight-payment3-service
+  template:
+    metadata:
+      labels:
+        app: skylight-payment3-service
+    spec:
+      containers:
+        - name: payment3-service
+          image: docker.io/hafifbilgiler/skylight-payment-shopier:1.0
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8007
+
+          env:
+            # Shopier
+            - name: SHOPIER_PAT
+              valueFrom:
+                secretKeyRef:
+                  name: shopier-secret
+                  key: pat-token
+            - name: SHOPIER_WEBHOOK_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: shopier-secret
+                  key: webhook-token
+            - name: SHOPIER_PRODUCT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: shopier-secret
+                  key: product-url
+            - name: SHOPIER_PRODUCT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: shopier-secret
+                  key: product-id
+
+            # App URL
+            - name: APP_PUBLIC_URL
+              value: "https://one-bune.com"
+
+            # JWT (gateway ile aynı)
+            - name: JWT_SECRET
+              value: "31aad766798d891f4c587d7f3bc925cd7e1e14989c421ae3c38eb80c1d4ede05"
+
+            # Database
+            - name: DB_HOST
+              value: "postgres"
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: pg-secret
+                  key: dbname
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: pg-secret
+                  key: username
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: pg-secret
+                  key: password
+
+            # SMTP — Mailjet
+            - name: SMTP_SERVER
+              value: "in-v3.mailjet.com"
+            - name: SMTP_PORT
+              value: "587"
+            - name: SMTP_USER
+              valueFrom:
+                secretKeyRef:
+                  name: smtp-secret
+                  key: smtp-user
+            - name: SMTP_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: smtp-secret
+                  key: smtp-pass
+            - name: SMTP_FROM
+              value: "info@one-bune.com"
+
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "250m"
+
+          livenessProbe:
+            httpGet:
+              path: /payment3/health
+              port: 8007
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /payment3/health
+              port: 8007
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: skylight-payment3-service
+  namespace: skylight-bot-v2
+spec:
+  selector:
+    app: skylight-payment3-service
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8007
+      targetPort: 8007
+      nodePort: 31243
+  type: NodePort
