@@ -1638,45 +1638,16 @@ async def get_weather_for_date(city: str, country: str = "", lat: float = 0, lon
 
 
 # ══════════════════════════════════════════════════════
-# OTEL ARAMA — Hotellook / Travelpayouts
+# OTEL ARAMA — Gemini Grounding only (Hotellook KALDIRILDI)
 # ══════════════════════════════════════════════════════
-# Hotellook endpoint'leri ayrı token istemez, marker ID ile çalışır.
-# Base URL: https://engine.hotellook.com
-# Affiliate tıklama: https://search.hotellook.com/hotels?...&marker=716107
-# Fotoğraf: https://photo.hotellook.com/image_v2/limit/h{hotel_id}_1/800/520.auto
+# Hızlı + basit: Tek istek → JSON dön → 10 sonuç
+# Booking.com search URL ile click out (affiliate yok)
 # ══════════════════════════════════════════════════════
-
-HL_CACHE_TTL = 60 * 30  # 30 dakika (fiyatlar sık değişir)
-
-def build_hotel_affiliate_link(location: str, check_in: str, check_out: str, adults: int = 2, hotel_id: int = None) -> str:
-    """Hotellook deep link — marker ile komisyon."""
-    import urllib.parse
-    base = "https://search.hotellook.com/hotels"
-    params = {
-        "destination": location,
-        "checkIn": check_in,
-        "checkOut": check_out,
-        "adults": adults,
-        "marker": TP_MARKER_ID,
-    }
-    if hotel_id:
-        params["hotelId"] = hotel_id
-    return f"{base}?{urllib.parse.urlencode(params)}"
-
-
-def hotel_photo_url(hotel_id: int, size: str = "800x520") -> str:
-    """Hotellook foto CDN — varsayılan orta boy."""
-    if not hotel_id:
-        return ""
-    w, h = size.split("x") if "x" in size else ("800", "520")
-    return f"https://photo.hotellook.com/image_v2/limit/h{hotel_id}_1/{w}/{h}.auto"
-
 
 @app.post("/sosyal/hotels/match")
 async def hotels_match(request: Request):
     """
-    AI otel önerisi — Gemini Grounding STREAM.
-    SSE: her otel hazır olur olmaz frontend'e yollanır.
+    Gemini ile otel arama. Tek seferde 10 sonuç döner (stream değil).
     """
     body = await request.json()
     location  = body.get("location", "").strip()
@@ -1686,136 +1657,119 @@ async def hotels_match(request: Request):
     tags      = body.get("tags", []) or []
 
     if not location:
-        return {"success": False, "error": "location zorunlu"}
+        return {"success": False, "error": "Lokasyon belirt (ör: İstanbul, Bodrum)"}
 
-    pref_text = ""
-    if user_pref: pref_text += user_pref
-    if tags:      pref_text += (" " if pref_text else "") + "(tarz: " + ", ".join(tags) + ")"
+    pref_text = user_pref
+    if tags:
+        pref_text += (" " if pref_text else "") + "(" + ", ".join(tags) + ")"
     if not pref_text:
         pref_text = "popüler ve yüksek puanlı"
 
-    grounding_query = f"""{location} 8 popüler otel listesi.
+    # Gemini prompt — TEK JSON, 10 otel
+    prompt = f"""{location} şehrinde {pref_text} tarzında 10 popüler otel öner.
 
-JSON dön:
-{{"hotels":[{{"name":"...","stars":5,"district":"...","google_rating":4.7,"ai_reason":"Ben olsam burada kalırdım, kahvaltısı çok iyi"}}]}}
+SADECE JSON dön, başka hiçbir şey yazma:
+{{"hotels":[
+  {{"name":"Otel İsmi","stars":5,"district":"Semt","rating":4.7,"reason":"Kısa açıklama (max 15 kelime)"}}
+]}}
 
-3 tane 5⭐, 3 tane 4⭐, 2 tane 3⭐. ai_reason samimi, "ben olsam" gibi tavsiye olsun."""
+Kurallar:
+- 10 otel olsun
+- 3 tane 5⭐, 4 tane 4⭐, 3 tane 3⭐ karışım
+- name: tam otel adı (Hilton Istanbul Bosphorus gibi)
+- district: semt adı (Beşiktaş, Sultanahmet vs)
+- rating: 3.5-5.0 arası gerçekçi puan
+- reason: neden tercih edilir, samimi tarz, "manzaralı, kahvaltısı süper" gibi
+- {check_in} - {check_out} tarihleri için müsait olanları öner"""
 
-    async def sse_event(event_type: str, data: dict):
-        return f"data: {json.dumps({'type': event_type, **data}, ensure_ascii=False)}\n\n"
+    try:
+        # gemini_grounding zaten var — non-stream çağrı
+        result = await gemini_grounding_search(prompt, max_tokens=2000)
+        if not result or "error" in (result or {}):
+            err = (result or {}).get("error", "Gemini cevap vermedi")
+            return {"success": False, "error": err, "hotels": []}
 
-    async def stream_gen():
-        from urllib.parse import quote_plus
-        # Açılış
-        yield await sse_event("start", {"location": location})
+        text = (result.get("text") or "").strip()
+        if not text:
+            return {"success": False, "error": "Boş cevap", "hotels": []}
 
-        buffer = ""
-        sent_count = 0
-        seen_indices = set()
+        # JSON parse — markdown fence varsa temizle
+        text_clean = text
+        if "```" in text_clean:
+            import re as _re
+            m = _re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text_clean, _re.DOTALL)
+            if m:
+                text_clean = m.group(1)
+        # En dıştaki { ... } yapısını çek
+        start = text_clean.find("{")
+        end = text_clean.rfind("}")
+        if start >= 0 and end > start:
+            text_clean = text_clean[start:end+1]
 
         try:
-            async for chunk in gemini_grounding_stream(grounding_query, max_tokens=1500):
-                if "error" in chunk:
-                    yield await sse_event("error", {"message": chunk["error"]})
-                    return
-                if "text" in chunk:
-                    buffer += chunk["text"]
-                    # Buffer'da tamamlanmış otel objesi var mı tara
-                    while True:
-                        # Bir otel objesi: { ... } şeklinde — basit brace counter
-                        # "hotels":[ ifadesinin ardından gelen { ... } objelerini yakala
-                        start = buffer.find("{", buffer.find("hotels") if "hotels" in buffer[:100] else 0)
-                        if start == -1:
-                            break
-                        # İlk hotel object'i: hotels array'inin içindeki { başlangıcını bul
-                        # Basit yaklaşım: regex ile bir hotel objesi
-                        import re as _re
-                        # name: "..." ile başlayan tam objeyi yakala
-                        m = _re.search(r'\{\s*"name"\s*:\s*"[^"]+"[^{]*?\}', buffer)
-                        if not m:
-                            break
-                        obj_str = m.group(0)
-                        obj_pos = m.end()
-                        # Bu objeyi kullanıldı olarak işaretle
-                        if obj_pos in seen_indices:
-                            buffer = buffer[obj_pos:]
-                            continue
-                        try:
-                            h = json.loads(obj_str)
-                        except Exception:
-                            buffer = buffer[obj_pos:]
-                            continue
-
-                        # Hotel kartı oluştur
-                        name = (h.get("name") or "").strip()
-                        if not name:
-                            buffer = buffer[obj_pos:]
-                            continue
-
-                        booking_url = f"https://www.booking.com/searchresults.html?ss={quote_plus(name + ' ' + location)}"
-                        rating_raw = h.get("google_rating")
-                        rating_text = ""
-                        try:
-                            if rating_raw is not None:
-                                rating_text = f"{float(rating_raw):.1f}/5"
-                        except Exception:
-                            rating_text = str(rating_raw or "")
-
-                        hotel = {
-                            "id":             f"gem_{sent_count}",
-                            "name":           name,
-                            "stars":          int(h.get("stars", 0) or 0),
-                            "location_name":  h.get("district") or "",
-                            "price_from":     0,
-                            "price_currency": "",
-                            "photo_url":      "",
-                            "ai_matched":     True,
-                            "ai_reason":      h.get("ai_reason", ""),
-                            "google_rating":  rating_text,
-                            "highlights":     [],
-                            "sample_reviews": [],
-                            "booking_url":    booking_url,
-                            "affiliate_url":  booking_url,
-                        }
-
-                        yield await sse_event("hotel", {"hotel": hotel})
-                        sent_count += 1
-                        # Bu objeyi buffer'dan çıkar (sonraki için)
-                        buffer = buffer[obj_pos:]
-
-            # Stream bitti
-            yield await sse_event("done", {"total": sent_count})
+            parsed = json.loads(text_clean)
         except Exception as e:
-            print(f"[HOTEL STREAM] Hata: {e!r}")
-            yield await sse_event("error", {"message": str(e)})
+            print(f"[HOTEL] JSON parse hata: {e} | text={text[:300]}")
+            return {"success": False, "error": "Cevap işlenemedi", "hotels": []}
 
-    return StreamingResponse(stream_gen(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+        hotels_raw = parsed.get("hotels", []) or []
+        from urllib.parse import quote_plus
+
+        hotels = []
+        for i, h in enumerate(hotels_raw[:10]):
+            name = (h.get("name") or "").strip()
+            if not name:
+                continue
+            district = (h.get("district") or "").strip()
+            try:
+                stars = int(h.get("stars", 0) or 0)
+            except Exception:
+                stars = 0
+            try:
+                rating = float(h.get("rating") or 0)
+            except Exception:
+                rating = 0
+            reason = (h.get("reason") or "").strip()
+
+            # Booking.com search URL
+            booking_url = (
+                "https://www.booking.com/searchresults.html?"
+                f"ss={quote_plus(name + ' ' + location)}"
+                + (f"&checkin={check_in}" if check_in else "")
+                + (f"&checkout={check_out}" if check_out else "")
+                + "&group_adults=2"
+            )
+
+            hotels.append({
+                "id":            f"gem_{i}",
+                "name":          name,
+                "stars":         stars,
+                "district":      district,
+                "rating":        round(rating, 1) if rating else None,
+                "reason":        reason,
+                "booking_url":   booking_url,
+            })
+
+        return {
+            "success": True,
+            "location": location,
+            "count":    len(hotels),
+            "hotels":   hotels,
+        }
+
+    except Exception as e:
+        print(f"[HOTEL] Hata: {e!r}")
+        return {"success": False, "error": str(e), "hotels": []}
 
 
 @app.post("/sosyal/hotels/click")
 async def hotels_click(request: Request):
-    """
-    Otel tıklama kaydı + URL dön.
-    Gemini'den booking_url geldiyse direkt onu kullan,
-    yoksa Hotellook generic search'e fallback.
-    """
+    """Otel tıklama kaydı + Booking URL dön."""
     body = await request.json()
-    location    = body.get("location", "")
-    check_in    = body.get("check_in", "")
-    check_out   = body.get("check_out", "")
-    adults      = int(body.get("adults", 2))
-    hotel_id    = body.get("hotel_id")
     booking_url = (body.get("booking_url") or "").strip()
-    user_id     = str(body.get("user_id", "guest"))
 
-    # Gemini'den geldi → direkt kullan
-    if booking_url and booking_url.startswith("http"):
-        url = booking_url
-    else:
-        # Hotellook generic search fallback
-        url = build_hotel_affiliate_link(location, check_in, check_out, adults,
-                                         hotel_id if isinstance(hotel_id, int) else None)
+    if not booking_url or not booking_url.startswith("http"):
+        return {"success": False, "error": "Geçersiz URL"}
 
     # Click log
     try:
@@ -1826,4 +1780,4 @@ async def hotels_click(request: Request):
     except Exception:
         pass
 
-    return {"success": True, "url": url, "hotel_id": hotel_id}
+    return {"success": True, "url": booking_url}
