@@ -555,10 +555,26 @@ def format_flight(raw: dict, origin: str, destination: str) -> dict:
     mins  = duration_min % 60
     duration_text = f"{hours}s {mins}dk" if duration_min and hours else (f"{mins}dk" if duration_min else "")
 
-    # ── Varış saati — SADECE API verirse ─────────────────
-    # Hesaplama YOK. API arrival_at / arrival döndürürse al, yoksa boş.
+    # ── Varış saati ──────────────────────────────────────
+    # 1) API arrival_at/arrival verirse onu kullan (en doğru).
+    # 2) Vermezse: kalkış zamanı + uçuş süresinden HESAPLA.
+    #    Bu uydurma değil — API'nin kendi departure_at + duration verisi.
     arr = raw.get("arrival_at", "") or raw.get("arrival", "")
     arrival_time = arr[11:16] if (arr and len(arr) >= 16) else ""
+    if not arrival_time and dep and duration_min:
+        try:
+            from datetime import datetime as _dt, timedelta as _td
+            dep_clean = dep.replace("Z", "+00:00")
+            dep_dt = _dt.fromisoformat(dep_clean)
+            arr_dt = dep_dt + _td(minutes=int(duration_min))
+            arrival_time = arr_dt.strftime("%H:%M")
+        except Exception:
+            try:
+                dh, dm = int(dep_time[:2]), int(dep_time[3:5])
+                total = dh * 60 + dm + int(duration_min)
+                arrival_time = f"{(total // 60) % 24:02d}:{total % 60:02d}"
+            except Exception:
+                arrival_time = ""
 
     # ── Aktarma — HAM veri, yorum yok ────────────────────
     changes = None
