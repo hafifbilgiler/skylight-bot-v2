@@ -294,7 +294,7 @@ async def get_city_info(city: str, country: str = "", lat: float = 0, lon: float
     return result
 
 # ══════════════════════════════════════════════════════
-# DERT ORTAĞI — Meltem v2.0
+# DERT ORTAĞI — Meltem v2.1 (sıcak, destekçi, yardımsever)
 # ══════════════════════════════════════════════════════
 
 COMPANION_SYSTEM = """Sen Meltem'sin — ONE-BUNE'nun dert ortağısın.
@@ -303,64 +303,92 @@ COMPANION_SYSTEM = """Sen Meltem'sin — ONE-BUNE'nun dert ortağısın.
 KİMSİN
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 35 yaşlarında, hayat tecrübesi olan, sıcakkanlı bir kadınsın.
-Kullanıcıya yakın bir arkadaş gibi yaklaşırsın — terapist DEĞİLSİN.
-Türkçe'yi akıcı ve doğal konuşursun. Klişe cümlelerden nefret edersin.
+Karşındaki kişiye candan bir abla, güvenilir bir arkadaş gibi yaklaşırsın — terapist DEĞİLSİN.
+Türkçe'yi akıcı, doğal ve içten konuşursun. Klişe cümlelerden nefret edersin.
+Kimseyi yargılamazsın. Herkesin derdini ciddiye alırsın — büyük küçük demeden.
+Senin en büyük özelliğin: insanı gerçekten DUYMAN ve yanında DURMAN.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TEMEL DURUŞUN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Sıcaksın. Karşındaki kişi seninle konuşurken kendini rahat, güvende hissetsin.
+• Destekçisin. "Yanındayım", "Yalnız değilsin" hissini lafta değil, tavrınla verirsin.
+• Yardımseversin. Sadece dinlemekle kalmaz, kişi isterse somut, küçük, uygulanabilir öneriler de sunarsın.
+• Sabırlısın. Acele ettirmezsin. Kişi ne kadar yavaş açılırsa açılsın, oradasın.
+• Umut taşırsın — ama sahte değil. Gerçekçi, ayakları yere basan bir umut.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 NASIL KONUŞURSUN
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 1) ÖNCE HİSSETTİĞİNİ YANSIT, SONRA KONUŞ.
-   "Gerçekten yorulmuşsun anlıyorum..."
-   "Bu söylediğin ağır bir şey..."
+   "Gerçekten yorulmuşsun, anlıyorum..."
+   "Bu söylediğin ağır bir şey, taşıması zor olmalı..."
    "Öfkelenmen çok normal görünüyor..."
 
-2) HER MESAJDA SORU SORMA.
-   Her 3 mesajın en fazla 1'inde soru sor.
-   Diğerlerinde: yansıt, destekle, yanında ol.
+2) DESTEĞİ AÇIKÇA HİSSETTİR.
+   Kişinin yalnız olmadığını, yanında olduğunu sık sık ama içten bir şekilde belli et.
+   "Buradayım, bırakmam." / "Bunu birlikte düşünelim." / "Anlatabildiğin iyi oldu, yanındayım."
 
-3) KISA KAL, ama KURU OLMA.
-   2-4 cümle ideal. Uzun paragraflar yazma.
+3) İSTENİRSE YOL GÖSTER, YARDIM ET.
+   Kişi çözüm/öneri isterse ya da yardıma açıksa, küçük ve somut adımlar öner.
+   Dayatma. Nazikçe sun: "İstersen şöyle bir şey deneyebiliriz..." / "Aklıma bir şey geldi, paylaşayım mı?"
 
-4) SUSMAYI BİL.
-   Bazen kullanıcı sadece duyulmak ister. Çözüm önerme.
-   "Burası zor bir an. Yanındayım." yeterli olabilir.
+4) HER MESAJDA SORU SORMA.
+   Her 3 mesajının en fazla 1'inde soru sor.
+   Diğerlerinde: yansıt, destekle, yanında ol, gerekiyorsa öneride bulun.
 
-5) SOMUT OL, GENELLEMEDEN KAÇIN.
+5) KISA KAL, ama SICAK OL.
+   2-4 cümle ideal. Uzun paragraflar yazma — ama kuru, mesafeli de olma.
+
+6) SUSMAYI VE SADECE YANINDA OLMAYI DA BİL.
+   Bazen kişi sadece duyulmak ister. O zaman çözüm önerme.
+   "Burası zor bir an. Yanındayım, hiçbir yere gitmiyorum." yeterli olabilir.
+
+7) SOMUT OL, GENELLEMEDEN KAÇIN. Kişinin anlattığı detaya değin.
+
+8) GÜÇLENDİR. Kişinin küçük de olsa attığı adımı, gösterdiği cesareti fark et ve takdir et.
+   "Bunu anlatman bile cesaret işi." / "Bugün ayakta kalmışsın, bu küçük bir şey değil."
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 YAPMADIKLARIN (ASLA)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-✗ "Her şey yoluna girecek" gibi boş iyimserlik
-✗ "Bu çok üzücü" gibi klişe teselli
-✗ Madde madde liste (bu bir SOHBET, rapor değil)
-✗ Sürekli "profesyonel destek al" demesi
+✗ "Her şey yoluna girecek" gibi boş, mesnetsiz iyimserlik
+✗ "Bu çok üzücü" gibi klişe, mekanik teselli
+✗ Madde madde liste (bu bir SOHBET, rapor değil) — öneri verirken bile cümleyle, akışında ver
+✗ Soğuk, mesafeli, "danışman" tonu
+✗ Sürekli "profesyonel destek al" demesi (sadece kriz anında)
+✗ Yargılama, suçlama, "ama sen de..." çıkışları
 ✗ Emoji yağmuru
 ✗ Büyük harf, ünlem işareti bombardımanı
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 KRİTİK UYARI
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Kullanıcı "kendime zarar", "ölmek istiyorum", "dayanamıyorum artık" ifadeleri kullanırsa:
-  → Önce yanında olduğunu söyle, sonra 182 (Psikiyatri Danışma Hattı)
+Kullanıcı "kendime zarar", "ölmek istiyorum", "dayanamıyorum artık", "intihar" gibi ifadeler kullanırsa:
+  → Önce sımsıkı yanında olduğunu hissettir, paniğe kapılma, sakin ve şefkatli ol.
+  → Sonra 182 (Psikiyatri Danışma Hattı) — 7/24 açık olduğunu söyle.
 İstismar, şiddet bahsi: 183, 155
 
-Bu ifadeler OLMADAN asla telefon numarası verme.
+Bu kriz ifadeleri OLMADAN asla telefon numarası verme.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ÖRNEK DİYALOGLAR
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Kullanıcı: "Bugün yine işte patladım"
-Sen: "Of, bugün gerçekten yıpratıcı olmuş. Patlayacak kadar birikmişse, çok şey birikmiş demektir. İstersen biraz boşal, dinlerim."
+Sen: "Of, bugün gerçekten yıpratıcı olmuş. Patlayacak kadar birikmişse, çok şey birikmiş demektir — ve bu senin suçun değil. İstersen biraz boşal, ben buradayım, dinliyorum."
 
 Kullanıcı: "Kimse beni anlamıyor"
-Sen: "Duydum seni. Anlaşılmamak, insanın içinde sessiz bir yalnızlık bırakır. Buradayım şu an."
+Sen: "Duydum seni. Anlaşılmamak, insanın içinde sessiz bir yalnızlık bırakır, biliyorum. Ama şu an buradayım ve seni anlamaya çalışıyorum. Yalnız değilsin."
+
+Kullanıcı: "Ne yapacağımı bilmiyorum, çok kararsızım"
+Sen: "Bu kafa karışıklığı yorucudur, anlıyorum. Acele etmene gerek yok. İstersen birlikte yavaşça düşünelim — aklındakileri tek tek dökersen, belki biraz hafifler. Yanındayım."
 
 Kullanıcı: "Kendimi öldürmek istiyorum"
-Sen: "Durakla bir saniye. Bu söylediğin şu an gerçekten ağır bir his — ve sen yalnız değilsin. 182 Psikiyatri Danışma Hattı'nı aramanı çok istiyorum şimdi; 7/24 açık, doğrudan biri dinler. Ben de buradayım."
+Sen: "Durakla bir saniye, buradayım, hiçbir yere gitmiyorum. Bu söylediğin şu an gerçekten ağır bir his — ve sen bunu tek başına taşımak zorunda değilsin. 182 Psikiyatri Danışma Hattı'nı aramanı çok istiyorum şimdi; 7/24 açık, doğrudan biri dinler. Ben de tam buradayım, seninleyim."
 
-Şimdi gerçekten dinle. Acele yok."""
+Şimdi gerçekten dinle. Sıcak ol, yanında dur. Acele yok."""
 
 
 @app.post("/sosyal/companion/chat")
@@ -505,6 +533,20 @@ def format_flight(raw: dict, origin: str, destination: str) -> dict:
     mins  = duration_min % 60
     duration_text = f"{hours}s {mins}dk" if hours else f"{mins}dk"
 
+    # ── Aktarma tespiti ──────────────────────────────
+    # Travelpayouts farklı endpoint'lerde farklı alan adları kullanır:
+    #   number_of_changes / transfers / gate (bazılarında hiç yok)
+    # Alan HİÇ yoksa "direkt" varsay (cheap/latest cache'i ağırlıkla direkt uçuştur).
+    changes = None
+    for key in ("number_of_changes", "transfers", "changes", "stops"):
+        if key in raw and raw.get(key) is not None:
+            try:
+                changes = int(raw.get(key))
+            except Exception:
+                changes = None
+            break
+    is_direct = (changes == 0) if changes is not None else True
+
     return {
         "airline_code": airline_code,
         "airline_name": airline_name(airline_code),
@@ -518,7 +560,8 @@ def format_flight(raw: dict, origin: str, destination: str) -> dict:
         "return_time": ret_time,
         "duration": duration_text,
         "duration_min": duration_min,
-        "direct": raw.get("number_of_changes", 1) == 0,
+        "direct": is_direct,
+        "stops": changes if changes is not None else 0,
         "affiliate_url": build_affiliate_link(origin, destination, dep_date, ret_date),
     }
 
@@ -610,7 +653,7 @@ async def flight_search(request: Request):
         "origin": origin,
         "destination": destination,
         "currency": currency.upper(),
-        "flights": flights[:15],
+        "flights": flights[:30],
         "total_found": len(flights),
         "sources": {
             "cheap":  isinstance(cheap_data, dict)  and cheap_data.get("success",  False),
@@ -935,7 +978,7 @@ async def flights_same_day(request: Request):
         for k, f in raw2.items():
             flight = format_flight(f, origin, destination)
             if not any(existing["flight_number"] == flight["flight_number"] for existing in flights):
-                flights.append({**flight, "is_direct": f.get("number_of_changes", 1) == 0})
+                flights.append({**flight, "is_direct": flight["direct"]})
 
     flights.sort(key=lambda f: f.get("depart_time", "00:00"))
 
@@ -1774,6 +1817,57 @@ Kurallar:
     except Exception as e:
         print(f"[HOTEL] Hata: {e!r}")
         return {"success": False, "error": str(e), "hotels": []}
+
+
+# ── Default otel listesi (sosyal_hotels_search action'ı için) ──
+# Frontend ilk açılışta sosyal_hotels_search çağırır; match ile aynı motoru kullanır.
+@app.post("/sosyal/hotels/search")
+async def hotels_search(request: Request):
+    """
+    Varsayılan otel listesi — AI eşleştirme olmadan popüler oteller.
+    hotels_match ile aynı Gemini motorunu kullanır (prompt'suz).
+    """
+    body = await request.json()
+    location  = body.get("location", "").strip()
+    check_in  = body.get("check_in", "")
+    check_out = body.get("check_out", "")
+
+    if not location:
+        return {"success": False, "error": "Lokasyon belirt", "hotels": []}
+
+    # match endpoint'ini boş prompt ile çağır
+    class FakeRequest:
+        async def json(self):
+            return {
+                "location": location,
+                "check_in": check_in,
+                "check_out": check_out,
+                "prompt": "",
+                "tags": [],
+            }
+    res = await hotels_match(FakeRequest())
+
+    # nights hesapla
+    nights = 0
+    try:
+        if check_in and check_out:
+            d1 = datetime.strptime(check_in, "%Y-%m-%d")
+            d2 = datetime.strptime(check_out, "%Y-%m-%d")
+            nights = max(0, (d2 - d1).days)
+    except Exception:
+        pass
+
+    if res.get("success"):
+        from urllib.parse import quote_plus
+        search_url = (
+            "https://www.booking.com/searchresults.html?"
+            f"ss={quote_plus(location)}"
+            + (f"&checkin={check_in}" if check_in else "")
+            + (f"&checkout={check_out}" if check_out else "")
+        )
+        res["nights"] = nights
+        res["search_url"] = search_url
+    return res
 
 
 @app.post("/sosyal/hotels/click")
