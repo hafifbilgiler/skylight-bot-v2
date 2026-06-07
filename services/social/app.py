@@ -525,7 +525,10 @@ def build_affiliate_link(origin: str, destination: str, depart_date: str = "", r
         "children": max(0, int(children or 0)),
         "infants": max(0, int(infants or 0)),
         "trip_class": trip_class or "0",
+        # Travelpayouts dökümanı tutarsız: tabloda "oneway", örnekte "one_way".
+        # İkisini de koyuyoruz ki hangisini okursa doğru çalışsın.
         "oneway": "0" if return_date else "1",
+        "one_way": "false" if return_date else "true",
         "locale": "tr",
         "marker": TP_MARKER_ID,
     }
@@ -1007,7 +1010,7 @@ async def flights_same_day(request: Request):
         "origin": origin, "destination": destination,
         "departure_at": date, "currency": currency,
         "limit": 1000, "sorting": "price", "direct": "false",
-        "one_way": "true",
+        "one_way": "true", "market": "tr",
     }
     # latest → cache, AYI çek (o güne yakın günler de gelsin)
     params_latest = {
@@ -1031,11 +1034,20 @@ async def flights_same_day(request: Request):
 
     def make(f_raw, force_direct=None, force_changes=None):
         flight = format_flight(f_raw, origin, destination)
-        if force_changes is not None:
-            flight["stops"] = force_changes
-            flight["direct"] = (force_changes == 0)
-        if force_direct is not None:
-            flight["direct"] = force_direct
+        # API GERÇEK aktarma alanı (transfers/number_of_changes/stops) verdi mi?
+        # format_flight bunu zaten "stops" olarak çıkarıyor (yoksa None).
+        api_knows_stops = flight.get("stops") is not None
+
+        # cheap/direct endpoint key'i ("0","1") GÜVENİLİR DEĞİL — sadece
+        # API'nin kendisi gerçek aktarma alanı verdiyse direkt/aktarmalı de.
+        # Aksi halde "bilinmiyor" (None) bırak → frontend rozet göstermez,
+        # böylece "DİREKT ama 2s45dk" gibi yanlış iddia olmaz.
+        if api_knows_stops:
+            flight["direct"] = (flight["stops"] == 0)
+        else:
+            flight["direct"] = None
+            flight["stops"] = None
+
         flight["is_direct"] = flight.get("direct")
         return flight
 
