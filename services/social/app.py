@@ -550,11 +550,13 @@ def format_flight(raw: dict, origin: str, destination: str) -> dict:
     ret_date = ret[:10] if ret else ""
     ret_time = ret[11:16] if ret else ""
 
-    # ── Uçuş süresi (dakika) — olası tüm alan adları ──────
-    # prices_for_dates: "duration" | "duration_to"
-    # GraphQL: "trip_duration" | bazı cache: "duration_back" (dönüş)
+    # ── Uçuş süresi (dakika) ──────────────────────────────
+    # KRİTİK: Travelpayouts'ta "duration" = gidiş+dönüş TOPLAM süre!
+    # "duration_to" = sadece gidiş (bizim istediğimiz bu).
+    # Bu yüzden duration_to ÖNCE denenir, yoksa duration'a düşülür.
+    # (tek yön aramalarda duration zaten = duration_to olur)
     duration_min = 0
-    for dkey in ("duration", "duration_to", "trip_duration"):
+    for dkey in ("duration_to", "duration", "trip_duration"):
         v = raw.get(dkey)
         if v:
             try:
@@ -645,35 +647,55 @@ async def flight_search(request: Request):
     if depart_date:
         params_pfd["departure_at"] = depart_date
 
-    # 3. /v2/prices/latest — cache'deki son uçuşlar
+    # 2b. İKİNCİ pfd çağrısı — one_way=false SABİT.
+    # curl testi gösterdi: one_way=true rota başına ~1 uçuş veriyor,
+    # one_way=false çok daha fazla. İkisini birleştirince maksimum uçuş gelir.
+    params_pfd2 = {
+        "origin": origin, "destination": destination, "currency": currency,
+        "limit": 1000, "sorting": "price", "direct": "false",
+        "one_way": "false", "market": "tr",
+    }
+    if depart_date:
+        params_pfd2["departure_at"] = depart_date
+
+    # 3. /v2/prices/latest — cache'deki son uçuşlar (yedek kaynak)
     params_latest = {
         "origin": origin,
         "destination": destination,
         "currency": currency,
         "limit": 1000,
-        "period_type": "year",
+        "period_type": "month",
+        "show_to_affiliates": "true",
     }
+    if depart_date and len(depart_date) >= 7:
+        params_latest["beginning_of_period"] = depart_date[:7] + "-01"
 
     cheap_task  = tp_request("/v1/prices/cheap", params_cheap)
     pfd_task    = tp_request("/aviasales/v3/prices_for_dates", params_pfd)
+    pfd2_task   = tp_request("/aviasales/v3/prices_for_dates", params_pfd2)
     latest_task = tp_request("/v2/prices/latest", params_latest)
 
     results = await asyncio.gather(
-        cheap_task, pfd_task, latest_task,
+        cheap_task, pfd_task, pfd2_task, latest_task,
         return_exceptions=True,
     )
-    cheap_data, pfd_data, latest_data = results
+    cheap_data, pfd_data, pfd2_data, latest_data = results
 
     flights = []
-    seen_keys = set()
+    seen_map = {}  # key -> flights listesindeki index
 
     def add_flight(f_raw):
         flight = format_flight(f_raw, origin, destination)
-        # Aynı uçuş aynı gün + saat? Skip.
+        # Aynı uçuş (sefer no + gün + kalkış saati) birden çok acenteden gelebilir.
+        # curl testinde VF3048 4 farklı fiyatla geldi — teke indir, EN UCUZU tut.
         k = f"{flight['flight_number']}:{flight['depart_date']}:{flight.get('depart_time','')}"
-        if k in seen_keys:
+        if k in seen_map:
+            idx = seen_map[k]
+            # Daha ucuzsa eskisinin yerine geç
+            if flight.get("price", 0) and (not flights[idx].get("price") or flight["price"] < flights[idx]["price"]):
+                flights[idx] = flight
             return
-        seen_keys.add(k)
+        seen_map[k] = len(flights)
         flights.append(flight)
 
     # Cheap (spesifik tarih) sonuçları — key = aktarma sayısı
@@ -685,6 +707,13 @@ async def flight_search(request: Request):
     # prices_for_dates (en zengin) sonuçları — LİSTE
     if isinstance(pfd_data, dict) and pfd_data.get("success"):
         items = pfd_data.get("data", [])
+        if isinstance(items, list):
+            for f in items:
+                add_flight(f)
+
+    # prices_for_dates 2 (one_way=false, daha çok uçuş) — LİSTE
+    if isinstance(pfd2_data, dict) and pfd2_data.get("success"):
+        items = pfd2_data.get("data", [])
         if isinstance(items, list):
             for f in items:
                 add_flight(f)
