@@ -572,25 +572,11 @@ def format_flight(raw: dict, origin: str, destination: str) -> dict:
     dest_airport   = raw.get("destination_airport") or destination
 
     # ── Varış saati ──────────────────────────────────────
-    # 1) API arrival_at/arrival verirse onu kullan.
-    # 2) Vermezse: kalkış + süreden hesapla (API'nin kendi verisi).
-    # 3) Süre de yoksa boş bırak (uydurma yapma).
+    # ── Varış saati — SADECE API'den ─────────────────────
+    # Kullanıcı kararı: her şey API'den gelsin, hesaplama yok.
+    # API arrival_at/arrival verirse al, vermezse boş bırak.
     arr = raw.get("arrival_at", "") or raw.get("arrival", "")
     arrival_time = arr[11:16] if (arr and len(arr) >= 16) else ""
-    if not arrival_time and dep and duration_min:
-        try:
-            from datetime import datetime as _dt, timedelta as _td
-            dep_clean = dep.replace("Z", "+00:00")
-            dep_dt = _dt.fromisoformat(dep_clean)
-            arr_dt = dep_dt + _td(minutes=int(duration_min))
-            arrival_time = arr_dt.strftime("%H:%M")
-        except Exception:
-            try:
-                dh, dm = int(dep_time[:2]), int(dep_time[3:5])
-                total = dh * 60 + dm + int(duration_min)
-                arrival_time = f"{(total // 60) % 24:02d}:{total % 60:02d}"
-            except Exception:
-                arrival_time = ""
 
     # ── Aktarma — HAM veri, yorum yok ────────────────────
     changes = None
@@ -1019,6 +1005,7 @@ async def flights_same_day(request: Request):
     destination = str(body.get("destination", "")).upper()
     date        = body.get("date", "")
     currency    = body.get("currency", "try")
+    airline_filter = str(body.get("airline", "")).upper().strip()  # "TK" → sadece o havayolu
 
     if not origin or not destination or not date:
         return {"success": False, "error": "origin, destination ve date zorunlu"}
@@ -1081,6 +1068,9 @@ async def flights_same_day(request: Request):
         return f"{fl['flight_number']}:{fl.get('depart_time','')}:{fl.get('depart_date','')}"
 
     def push(fl):
+        # Havayolu filtresi varsa, sadece o havayolunu al
+        if airline_filter and fl.get("airline_code", "").upper() != airline_filter:
+            return
         k = uniq_key(fl)
         if k in seen:
             return
@@ -1147,6 +1137,7 @@ async def flights_same_day(request: Request):
         "origin": origin,
         "destination": destination,
         "date": date,
+        "airline": airline_filter,
         "currency": currency.upper(),
         "groups": groups,
         "flights": all_flights,
