@@ -540,18 +540,6 @@ def build_affiliate_link(origin: str, destination: str, depart_date: str = "", r
     return "https://search.aviasales.com/flights/?" + urlencode(params)
 
 
-def build_affiliate_link_short(origin: str, destination: str, depart_date: str = "", return_date: str = "") -> str:
-    """Eski kısa format (yedek)."""
-    def fmt(d: str) -> str:
-        if not d or len(d) < 10:
-            return ""
-        return d[8:10] + d[5:7]
-    search_code = f"{origin.upper()}{fmt(depart_date)}{destination.upper()}"
-    if return_date:
-        search_code += fmt(return_date)
-    return f"https://www.aviasales.com/search/{search_code}?marker={TP_MARKER_ID}"
-
-
 def format_flight(raw: dict, origin: str, destination: str) -> dict:
     airline_code = raw.get("airline", "")
     dep = raw.get("departure_at", "")
@@ -620,65 +608,68 @@ async def flight_search(request: Request):
     if not origin or not destination:
         return {"success": False, "error": "origin ve destination zorunlu"}
 
-    # ── 3 endpoint'i paralel çağır ──────────────────────
-    # 1. /v1/prices/cheap — spesifik tarih için
+    # ── 4 endpoint'i paralel çağır — EN ÇOK uçuş için ───
+    # 1. /v1/prices/cheap — spesifik tarih (key = aktarma sayısı)
     params_cheap = {"origin": origin, "destination": destination, "currency": currency}
     if depart_date:
         params_cheap["depart_date"] = depart_date
     if return_date and not one_way:
         params_cheap["return_date"] = return_date
 
-    # 2. /v1/prices/cheap — sadece ay için (gevşek)
-    params_month = {"origin": origin, "destination": destination, "currency": currency}
-    if depart_date and len(depart_date) >= 7:
-        params_month["depart_date"] = depart_date[:7]  # YYYY-MM
+    # 2. /aviasales/v3/prices_for_dates — EN ZENGİN kaynak (çok daha fazla uçuş)
+    params_pfd = {
+        "origin": origin, "destination": destination, "currency": currency,
+        "limit": 1000, "sorting": "price", "direct": "false",
+        "one_way": "true" if one_way else "false", "market": "tr",
+    }
+    if depart_date:
+        params_pfd["departure_at"] = depart_date
 
     # 3. /v2/prices/latest — cache'deki son uçuşlar
     params_latest = {
         "origin": origin,
         "destination": destination,
         "currency": currency,
-        "limit": 30,
+        "limit": 1000,
         "period_type": "year",
     }
 
     cheap_task  = tp_request("/v1/prices/cheap", params_cheap)
-    month_task  = tp_request("/v1/prices/cheap", params_month) if params_month.get("depart_date") else None
+    pfd_task    = tp_request("/aviasales/v3/prices_for_dates", params_pfd)
     latest_task = tp_request("/v2/prices/latest", params_latest)
 
     results = await asyncio.gather(
-        cheap_task,
-        month_task if month_task else asyncio.sleep(0, result={"success": False}),
-        latest_task,
+        cheap_task, pfd_task, latest_task,
         return_exceptions=True,
     )
-    cheap_data, month_data, latest_data = results
+    cheap_data, pfd_data, latest_data = results
 
     flights = []
     seen_keys = set()
 
     def add_flight(f_raw):
         flight = format_flight(f_raw, origin, destination)
-        # Aynı uçuş aynı gün? Skip.
-        k = f"{flight['flight_number']}:{flight['depart_date']}"
+        # Aynı uçuş aynı gün + saat? Skip.
+        k = f"{flight['flight_number']}:{flight['depart_date']}:{flight.get('depart_time','')}"
         if k in seen_keys:
             return
         seen_keys.add(k)
         flights.append(flight)
 
-    # Cheap (spesifik tarih) sonuçları
+    # Cheap (spesifik tarih) sonuçları — key = aktarma sayısı
     if isinstance(cheap_data, dict) and cheap_data.get("success"):
         raw = cheap_data.get("data", {}).get(destination, {})
         for _, f in (raw.items() if isinstance(raw, dict) else []):
             add_flight(f)
 
-    # Month (ay için) sonuçları
-    if isinstance(month_data, dict) and month_data.get("success"):
-        raw = month_data.get("data", {}).get(destination, {})
-        for _, f in (raw.items() if isinstance(raw, dict) else []):
-            add_flight(f)
+    # prices_for_dates (en zengin) sonuçları — LİSTE
+    if isinstance(pfd_data, dict) and pfd_data.get("success"):
+        items = pfd_data.get("data", [])
+        if isinstance(items, list):
+            for f in items:
+                add_flight(f)
 
-    # Latest (son fiyatlar) sonuçları — format farklı
+    # Latest (son fiyatlar) sonuçları — LİSTE
     if isinstance(latest_data, dict) and latest_data.get("success"):
         data_items = latest_data.get("data", [])
         if isinstance(data_items, list):
@@ -694,12 +685,12 @@ async def flight_search(request: Request):
         "origin": origin,
         "destination": destination,
         "currency": currency.upper(),
-        "flights": flights[:30],
+        "flights": flights[:40],
         "total_found": len(flights),
         "sources": {
-            "cheap":  isinstance(cheap_data, dict)  and cheap_data.get("success",  False),
-            "month":  isinstance(month_data, dict)  and month_data.get("success",  False),
-            "latest": isinstance(latest_data, dict) and latest_data.get("success", False),
+            "cheap":            isinstance(cheap_data, dict)  and cheap_data.get("success",  False),
+            "prices_for_dates": isinstance(pfd_data, dict)    and pfd_data.get("success",    False),
+            "latest":           isinstance(latest_data, dict) and latest_data.get("success", False),
         },
     }
 
@@ -728,11 +719,12 @@ async def flight_calendar(request: Request):
     raw = data.get("data", {})
     days = []
     for day_key, flight in raw.items():
+        nc = flight.get("number_of_changes")
         days.append({
             "date": day_key,
             "price": flight.get("value") or flight.get("price", 0),
             "airline": airline_name(flight.get("airline", "")),
-            "direct": flight.get("number_of_changes", 1) == 0,
+            "direct": (int(nc) == 0) if nc is not None else None,
         })
     days.sort(key=lambda d: d["date"])
 
