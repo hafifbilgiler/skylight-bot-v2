@@ -962,30 +962,46 @@ async def flights_same_day(request: Request):
     if not origin or not destination or not date:
         return {"success": False, "error": "origin, destination ve date zorunlu"}
 
-    # ── 3 kaynağı paralel çek — hepsini ham getir ───────
-    # Hesaplama/filtreleme YOK. Aviasales ne döndürürse o.
+    month = date[:7] if len(date) >= 7 else ""  # YYYY-MM
+
+    # ── 4 kaynağı paralel çek — EN ÇOK uçuş için ─────────
+    # NOT: cheap/direct yapısı gereği rota başına 1-2 kayıt verir
+    # (her aktarma kategorisi için en ucuz tek uçuş). Bu API limiti.
+    # En zengin sonuç prices_for_dates + latest'ten gelir.
     params_direct = {"origin": origin, "destination": destination, "depart_date": date, "currency": currency}
     params_cheap  = {"origin": origin, "destination": destination, "depart_date": date, "currency": currency}
+    # prices_for_dates → çok daha fazla uçuş, tek tarih
+    params_pfd = {
+        "origin": origin, "destination": destination,
+        "departure_at": date, "currency": currency,
+        "limit": 1000, "sorting": "price", "direct": "false",
+        "one_way": "true",
+    }
+    # latest → cache, AYI çek (o güne yakın günler de gelsin)
     params_latest = {
         "origin": origin, "destination": destination, "currency": currency,
-        "limit": 1000, "period_type": "year", "show_to_affiliates": "true",
+        "limit": 1000, "period_type": "month", "show_to_affiliates": "true",
     }
+    if month:
+        params_latest["beginning_of_period"] = month + "-01"
 
-    direct_data, cheap_data, latest_data = await asyncio.gather(
+    direct_data, cheap_data, pfd_data, latest_data = await asyncio.gather(
         tp_request("/v1/prices/direct", params_direct),
         tp_request("/v1/prices/cheap",  params_cheap),
+        tp_request("/aviasales/v3/prices_for_dates", params_pfd),
         tp_request("/v2/prices/latest", params_latest),
         return_exceptions=True,
     )
 
-    # Her kaynağı ayrı grup olarak topla (gruplar halinde döneceğiz)
-    direct_flights = []
-    cheap_flights  = []
-    latest_flights = []
-    seen = set()  # gruplar arası tekilleştirme (aynı uçuş iki grupta görünmesin)
+    same_day = []   # tam o güne ait uçuşlar
+    other    = []   # aynı ay, başka günler
+    seen = set()
 
-    def make(f_raw, force_direct=None):
+    def make(f_raw, force_direct=None, force_changes=None):
         flight = format_flight(f_raw, origin, destination)
+        if force_changes is not None:
+            flight["stops"] = force_changes
+            flight["direct"] = (force_changes == 0)
         if force_direct is not None:
             flight["direct"] = force_direct
         flight["is_direct"] = flight.get("direct")
@@ -994,60 +1010,67 @@ async def flights_same_day(request: Request):
     def uniq_key(fl):
         return f"{fl['flight_number']}:{fl.get('depart_time','')}:{fl.get('depart_date','')}"
 
-    # 1. Direkt uçuşlar (Aviasales /direct → kesinlikle direkt)
+    def push(fl):
+        k = uniq_key(fl)
+        if k in seen:
+            return
+        seen.add(k)
+        # Tam o güne mi ait?
+        if fl.get("depart_date") == date or not fl.get("depart_date"):
+            same_day.append(fl)
+        else:
+            other.append(fl)
+
+    # 1. /v1/prices/direct — key = aktarma sayısı (genelde "0")
     if isinstance(direct_data, dict) and direct_data.get("success"):
         raw = direct_data.get("data", {}).get(destination, {})
-        for _, f in (raw.items() if isinstance(raw, dict) else []):
-            fl = make(f, force_direct=True)
-            k = uniq_key(fl)
-            if k in seen:
-                continue
-            seen.add(k)
-            fl["source"] = "direct"
-            direct_flights.append(fl)
+        if isinstance(raw, dict):
+            for changes_key, f in raw.items():
+                fc = None
+                try: fc = int(changes_key)
+                except: fc = 0
+                push(make(f, force_changes=fc))
 
-    # 2. Cheap (en ucuz)
+    # 2. /v1/prices/cheap — key = aktarma sayısı! ("0","1",..)
     if isinstance(cheap_data, dict) and cheap_data.get("success"):
         raw = cheap_data.get("data", {}).get(destination, {})
-        for _, f in (raw.items() if isinstance(raw, dict) else []):
-            fl = make(f)
-            k = uniq_key(fl)
-            if k in seen:
-                continue
-            seen.add(k)
-            fl["source"] = "cheap"
-            cheap_flights.append(fl)
+        if isinstance(raw, dict):
+            for changes_key, f in raw.items():
+                fc = None
+                try: fc = int(changes_key)
+                except: fc = None
+                push(make(f, force_changes=fc))
 
-    # 3. Latest (cache'deki son fiyatlar)
+    # 3. /aviasales/v3/prices_for_dates — LİSTE, en zengin kaynak
+    if isinstance(pfd_data, dict) and pfd_data.get("success"):
+        items = pfd_data.get("data", [])
+        if isinstance(items, list):
+            for f in items:
+                push(make(f))
+
+    # 4. /v2/prices/latest — ay cache'i (LİSTE)
     if isinstance(latest_data, dict) and latest_data.get("success"):
         items = latest_data.get("data", [])
         if isinstance(items, list):
             for f in items:
                 if f.get("origin") != origin or f.get("destination") != destination:
                     continue
-                fl = make(f)
-                k = uniq_key(fl)
-                if k in seen:
-                    continue
-                seen.add(k)
-                fl["source"] = "latest"
-                latest_flights.append(fl)
+                push(make(f))
 
-    # Her grubu kalkış saatine göre sırala (yoksa fiyata)
     def srt(lst):
         lst.sort(key=lambda f: (f.get("depart_time") or "99:99", f.get("price") or 9e9))
         return lst
+    def srt_date(lst):
+        lst.sort(key=lambda f: (f.get("depart_date") or "", f.get("price") or 9e9))
+        return lst
 
     groups = []
-    if direct_flights:
-        groups.append({"key": "direct", "title": "Direkt Uçuşlar", "flights": srt(direct_flights)})
-    if cheap_flights:
-        groups.append({"key": "cheap", "title": "En Ucuz Uçuşlar", "flights": srt(cheap_flights)})
-    if latest_flights:
-        groups.append({"key": "latest", "title": "Diğer Uçuşlar", "flights": srt(latest_flights)})
+    if same_day:
+        groups.append({"key": "same_day", "title": f"{fmtTrLong(date)} Uçuşları", "flights": srt(same_day)})
+    if other:
+        groups.append({"key": "other", "title": "Yakın Günlerdeki Uçuşlar", "flights": srt_date(other)})
 
-    # Düz liste de döndür (geriye uyumluluk)
-    all_flights = direct_flights + cheap_flights + latest_flights
+    all_flights = same_day + other
 
     return {
         "success": True,
@@ -1059,11 +1082,23 @@ async def flights_same_day(request: Request):
         "flights": all_flights,
         "total": len(all_flights),
         "sources": {
-            "direct": isinstance(direct_data, dict) and direct_data.get("success", False),
-            "cheap":  isinstance(cheap_data, dict)  and cheap_data.get("success", False),
-            "latest": isinstance(latest_data, dict) and latest_data.get("success", False),
+            "direct":           isinstance(direct_data, dict) and direct_data.get("success", False),
+            "cheap":            isinstance(cheap_data, dict)  and cheap_data.get("success", False),
+            "prices_for_dates": isinstance(pfd_data, dict)    and pfd_data.get("success", False),
+            "latest":           isinstance(latest_data, dict) and latest_data.get("success", False),
         },
     }
+
+
+def fmtTrLong(date_str: str) -> str:
+    """YYYY-MM-DD → '13 Haziran Cumartesi' (TR)."""
+    try:
+        dt = datetime.strptime(date_str, "%Y-%m-%d")
+        aylar = ["","Ocak","Şubat","Mart","Nisan","Mayıs","Haziran","Temmuz","Ağustos","Eylül","Ekim","Kasım","Aralık"]
+        gunler = ["Pazartesi","Salı","Çarşamba","Perşembe","Cuma","Cumartesi","Pazar"]
+        return f"{dt.day} {aylar[dt.month]} {gunler[dt.weekday()]}"
+    except Exception:
+        return date_str
 
 
 # ══════════════════════════════════════════════════════
