@@ -504,17 +504,48 @@ async def tp_request(endpoint: str, params: dict) -> dict:
         return {"success": False, "error": str(e)}
 
 
-def build_affiliate_link(origin: str, destination: str, depart_date: str = "", return_date: str = "") -> str:
-    """Aviasales deep-link üretir — marker ID otomatik eklenir."""
+def build_affiliate_link(origin: str, destination: str, depart_date: str = "", return_date: str = "",
+                         adults: int = 1, children: int = 0, infants: int = 0, trip_class: str = "0") -> str:
+    """
+    Aviasales deep-link üretir — RESMİ search.aviasales.com/flights formatı.
+    Kullanıcıyı önceden doldurulmuş arama formuna götürür → tüm uçuşlar.
+    marker ID otomatik eklenir → komisyon takibi.
+
+    Resmi parametreler (Travelpayouts dökümanı):
+      origin_iata, destination_iata, depart_date, return_date (Y-m-d),
+      oneway (1/0 — alt çizgisiz!), adults, children, infants,
+      trip_class (0=Ekonomi, 1=Business, 2=First), marker
+    """
+    from urllib.parse import urlencode
+
+    params = {
+        "origin_iata": origin.upper(),
+        "destination_iata": destination.upper(),
+        "adults": max(1, int(adults or 1)),
+        "children": max(0, int(children or 0)),
+        "infants": max(0, int(infants or 0)),
+        "trip_class": trip_class or "0",
+        "oneway": "0" if return_date else "1",
+        "locale": "tr",
+        "marker": TP_MARKER_ID,
+    }
+    if depart_date:
+        params["depart_date"] = depart_date
+    if return_date:
+        params["return_date"] = return_date
+
+    return "https://search.aviasales.com/flights/?" + urlencode(params)
+
+
+def build_affiliate_link_short(origin: str, destination: str, depart_date: str = "", return_date: str = "") -> str:
+    """Eski kısa format (yedek)."""
     def fmt(d: str) -> str:
         if not d or len(d) < 10:
             return ""
         return d[8:10] + d[5:7]
-
     search_code = f"{origin.upper()}{fmt(depart_date)}{destination.upper()}"
     if return_date:
         search_code += fmt(return_date)
-
     return f"https://www.aviasales.com/search/{search_code}?marker={TP_MARKER_ID}"
 
 
@@ -722,9 +753,10 @@ async def flight_click(request: Request):
     destination = str(body.get("destination", "")).upper()
     depart_date = body.get("depart_date", "")
     return_date = body.get("return_date", "")
+    adults      = int(body.get("adults", body.get("passengers", 1)) or 1)
     user_id     = str(body.get("user_id", "guest"))
 
-    url = build_affiliate_link(origin, destination, depart_date, return_date)
+    url = build_affiliate_link(origin, destination, depart_date, return_date, adults=adults)
 
     try:
         r = await get_redis()
