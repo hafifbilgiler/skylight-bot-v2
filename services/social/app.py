@@ -531,13 +531,14 @@ def format_flight(raw: dict, origin: str, destination: str) -> dict:
     duration_min = raw.get("duration", 0) or raw.get("duration_to", 0)
     hours = duration_min // 60
     mins  = duration_min % 60
-    duration_text = f"{hours}s {mins}dk" if hours else f"{mins}dk"
+    duration_text = f"{hours}s {mins}dk" if duration_min and hours else (f"{mins}dk" if duration_min else "")
 
-    # ── Aktarma tespiti ──────────────────────────────
-    # Travelpayouts endpoint'lerinde aktarma alanı farklı adlarla gelir
-    # (number_of_changes / transfers / changes / stops) ya da HİÇ gelmez.
-    # Alan yoksa "direkt" diye İDDİA ETME — bilinmiyor (None) bırak.
-    # Frontend None ise rozet göstermez (yanlış bilgi vermekten iyidir).
+    # ── Varış saati — SADECE API verirse ─────────────────
+    # Hesaplama YOK. API arrival_at / arrival döndürürse al, yoksa boş.
+    arr = raw.get("arrival_at", "") or raw.get("arrival", "")
+    arrival_time = arr[11:16] if (arr and len(arr) >= 16) else ""
+
+    # ── Aktarma — HAM veri, yorum yok ────────────────────
     changes = None
     for key in ("number_of_changes", "transfers", "changes", "stops", "gate"):
         if key in raw and raw.get(key) is not None:
@@ -550,7 +551,7 @@ def format_flight(raw: dict, origin: str, destination: str) -> dict:
     if changes is not None:
         is_direct = (changes == 0)
     else:
-        is_direct = None  # bilinmiyor
+        is_direct = None  # API söylemedi → rozet yok
 
     return {
         "airline_code": airline_code,
@@ -561,12 +562,13 @@ def format_flight(raw: dict, origin: str, destination: str) -> dict:
         "destination": destination,
         "depart_date": dep_date,
         "depart_time": dep_time,
+        "arrival_time": arrival_time,   # SADECE API verdiyse
         "return_date": ret_date,
         "return_time": ret_time,
         "duration": duration_text,
         "duration_min": duration_min,
         "direct": is_direct,
-        "stops": changes,  # None = bilinmiyor
+        "stops": changes,
         "affiliate_url": build_affiliate_link(origin, destination, dep_date, ret_date),
     }
 
@@ -960,15 +962,13 @@ async def flights_same_day(request: Request):
     if not origin or not destination or not date:
         return {"success": False, "error": "origin, destination ve date zorunlu"}
 
-    # ── 3 kaynağı paralel çek ───────────────────────────
-    # 1. /v1/prices/direct  → o güne ait GERÇEK direkt uçuşlar
-    # 2. /v1/prices/cheap   → o güne ait en ucuz (direkt+aktarmalı)
-    # 3. /v2/prices/latest  → cache'deki son fiyatlar (o güne filtrelenecek)
+    # ── 3 kaynağı paralel çek — hepsini ham getir ───────
+    # Hesaplama/filtreleme YOK. Aviasales ne döndürürse o.
     params_direct = {"origin": origin, "destination": destination, "depart_date": date, "currency": currency}
     params_cheap  = {"origin": origin, "destination": destination, "depart_date": date, "currency": currency}
     params_latest = {
         "origin": origin, "destination": destination, "currency": currency,
-        "limit": 100, "period_type": "year", "show_to_affiliates": "true",
+        "limit": 1000, "period_type": "year", "show_to_affiliates": "true",
     }
 
     direct_data, cheap_data, latest_data = await asyncio.gather(
@@ -978,45 +978,76 @@ async def flights_same_day(request: Request):
         return_exceptions=True,
     )
 
-    flights = []
-    seen = set()
+    # Her kaynağı ayrı grup olarak topla (gruplar halinde döneceğiz)
+    direct_flights = []
+    cheap_flights  = []
+    latest_flights = []
+    seen = set()  # gruplar arası tekilleştirme (aynı uçuş iki grupta görünmesin)
 
-    def add(f_raw, force_direct=None):
+    def make(f_raw, force_direct=None):
         flight = format_flight(f_raw, origin, destination)
-        # Sadece İSTENEN güne ait olanları al
-        if flight.get("depart_date") and flight["depart_date"] != date:
-            return
-        key = f"{flight['flight_number']}:{flight.get('depart_time','')}"
-        if key in seen:
-            return
-        seen.add(key)
         if force_direct is not None:
             flight["direct"] = force_direct
         flight["is_direct"] = flight.get("direct")
-        flights.append(flight)
+        return flight
 
-    # 1. Direkt uçuşlar (kesinlikle direkt)
+    def uniq_key(fl):
+        return f"{fl['flight_number']}:{fl.get('depart_time','')}:{fl.get('depart_date','')}"
+
+    # 1. Direkt uçuşlar (Aviasales /direct → kesinlikle direkt)
     if isinstance(direct_data, dict) and direct_data.get("success"):
         raw = direct_data.get("data", {}).get(destination, {})
         for _, f in (raw.items() if isinstance(raw, dict) else []):
-            add(f, force_direct=True)
+            fl = make(f, force_direct=True)
+            k = uniq_key(fl)
+            if k in seen:
+                continue
+            seen.add(k)
+            fl["source"] = "direct"
+            direct_flights.append(fl)
 
-    # 2. Cheap (o gün)
+    # 2. Cheap (en ucuz)
     if isinstance(cheap_data, dict) and cheap_data.get("success"):
         raw = cheap_data.get("data", {}).get(destination, {})
         for _, f in (raw.items() if isinstance(raw, dict) else []):
-            add(f)
+            fl = make(f)
+            k = uniq_key(fl)
+            if k in seen:
+                continue
+            seen.add(k)
+            fl["source"] = "cheap"
+            cheap_flights.append(fl)
 
-    # 3. Latest (cache) — o güne filtrelenir (add içinde tarih kontrolü var)
+    # 3. Latest (cache'deki son fiyatlar)
     if isinstance(latest_data, dict) and latest_data.get("success"):
         items = latest_data.get("data", [])
         if isinstance(items, list):
             for f in items:
                 if f.get("origin") != origin or f.get("destination") != destination:
                     continue
-                add(f)
+                fl = make(f)
+                k = uniq_key(fl)
+                if k in seen:
+                    continue
+                seen.add(k)
+                fl["source"] = "latest"
+                latest_flights.append(fl)
 
-    flights.sort(key=lambda f: f.get("depart_time", "99:99"))
+    # Her grubu kalkış saatine göre sırala (yoksa fiyata)
+    def srt(lst):
+        lst.sort(key=lambda f: (f.get("depart_time") or "99:99", f.get("price") or 9e9))
+        return lst
+
+    groups = []
+    if direct_flights:
+        groups.append({"key": "direct", "title": "Direkt Uçuşlar", "flights": srt(direct_flights)})
+    if cheap_flights:
+        groups.append({"key": "cheap", "title": "En Ucuz Uçuşlar", "flights": srt(cheap_flights)})
+    if latest_flights:
+        groups.append({"key": "latest", "title": "Diğer Uçuşlar", "flights": srt(latest_flights)})
+
+    # Düz liste de döndür (geriye uyumluluk)
+    all_flights = direct_flights + cheap_flights + latest_flights
 
     return {
         "success": True,
@@ -1024,8 +1055,9 @@ async def flights_same_day(request: Request):
         "destination": destination,
         "date": date,
         "currency": currency.upper(),
-        "flights": flights,
-        "total": len(flights),
+        "groups": groups,
+        "flights": all_flights,
+        "total": len(all_flights),
         "sources": {
             "direct": isinstance(direct_data, dict) and direct_data.get("success", False),
             "cheap":  isinstance(cheap_data, dict)  and cheap_data.get("success", False),
