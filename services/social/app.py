@@ -550,15 +550,31 @@ def format_flight(raw: dict, origin: str, destination: str) -> dict:
     ret_date = ret[:10] if ret else ""
     ret_time = ret[11:16] if ret else ""
 
-    duration_min = raw.get("duration", 0) or raw.get("duration_to", 0)
+    # ── Uçuş süresi (dakika) — olası tüm alan adları ──────
+    # prices_for_dates: "duration" | "duration_to"
+    # GraphQL: "trip_duration" | bazı cache: "duration_back" (dönüş)
+    duration_min = 0
+    for dkey in ("duration", "duration_to", "trip_duration"):
+        v = raw.get(dkey)
+        if v:
+            try:
+                duration_min = int(v)
+                if duration_min > 0:
+                    break
+            except Exception:
+                duration_min = 0
     hours = duration_min // 60
     mins  = duration_min % 60
-    duration_text = f"{hours}s {mins}dk" if duration_min and hours else (f"{mins}dk" if duration_min else "")
+    duration_text = (f"{hours}s {mins}dk" if hours else f"{mins}dk") if duration_min else ""
+
+    # ── Gerçek havalimanı kodları (varsa) ────────────────
+    origin_airport = raw.get("origin_airport") or origin
+    dest_airport   = raw.get("destination_airport") or destination
 
     # ── Varış saati ──────────────────────────────────────
-    # 1) API arrival_at/arrival verirse onu kullan (en doğru).
-    # 2) Vermezse: kalkış zamanı + uçuş süresinden HESAPLA.
-    #    Bu uydurma değil — API'nin kendi departure_at + duration verisi.
+    # 1) API arrival_at/arrival verirse onu kullan.
+    # 2) Vermezse: kalkış + süreden hesapla (API'nin kendi verisi).
+    # 3) Süre de yoksa boş bırak (uydurma yapma).
     arr = raw.get("arrival_at", "") or raw.get("arrival", "")
     arrival_time = arr[11:16] if (arr and len(arr) >= 16) else ""
     if not arrival_time and dep and duration_min:
@@ -578,7 +594,7 @@ def format_flight(raw: dict, origin: str, destination: str) -> dict:
 
     # ── Aktarma — HAM veri, yorum yok ────────────────────
     changes = None
-    for key in ("number_of_changes", "transfers", "changes", "stops", "gate"):
+    for key in ("number_of_changes", "transfers", "changes", "stops"):
         if key in raw and raw.get(key) is not None:
             try:
                 changes = int(raw.get(key))
@@ -595,12 +611,14 @@ def format_flight(raw: dict, origin: str, destination: str) -> dict:
         "airline_code": airline_code,
         "airline_name": airline_name(airline_code),
         "flight_number": f"{airline_code}{raw.get('flight_number', '')}",
-        "price": raw.get("price", 0),
+        "price": raw.get("price", 0) or raw.get("value", 0),
         "origin": origin,
         "destination": destination,
+        "origin_airport": origin_airport,
+        "destination_airport": dest_airport,
         "depart_date": dep_date,
         "depart_time": dep_time,
-        "arrival_time": arrival_time,   # SADECE API verdiyse
+        "arrival_time": arrival_time,
         "return_date": ret_date,
         "return_time": ret_time,
         "duration": duration_text,
