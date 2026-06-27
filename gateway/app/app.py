@@ -4090,6 +4090,10 @@ async def root():
         }
     }
 
+#Namaz
+from namaz_routes import router as namaz_router
+app.include_router(namaz_router)
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8443)
