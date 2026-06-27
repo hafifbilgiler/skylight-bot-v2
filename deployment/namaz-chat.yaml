@@ -1,0 +1,94 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: namaz-chat
+  namespace: skylight-bot-v2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: namaz-chat
+  template:
+    metadata:
+      labels:
+        app: namaz-chat
+    spec:
+      containers:
+      - name: namaz-chat
+        image: docker.io/hafifbilgiler/namaz-chat:1.0
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8090
+        env:
+        # ── Database (gateway/skylight-chat ile AYNI postgres) ──
+        - name: DB_HOST
+          value: "postgres"
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_NAME
+          valueFrom: { secretKeyRef: { name: pg-secret, key: dbname } }
+        - name: DB_USER
+          valueFrom: { secretKeyRef: { name: pg-secret, key: username } }
+        - name: DB_PASSWORD
+          valueFrom: { secretKeyRef: { name: pg-secret, key: password } }
+
+        # ── JWT (gateway ile AYNI secret olmali — namaz_app token'lari
+        #      gateway'de uretiliyor, burada dogrulaniyor) ──
+        - name: JWT_SECRET
+          value: "31aad766798d891f4c587d7f3bc925cd7e1e14989c421ae3c38eb80c1d4ede05"
+        - name: JWT_ALGORITHM
+          value: "HS256"
+
+        # ── Vertex AI Gemini ─────────────────────────────
+        - name: GEMINI_PROJECT
+          value: "gen-lang-client-0907571701"
+        - name: GEMINI_LOCATION
+          value: "us-central1"
+        - name: NAMAZ_GEMINI_MODEL
+          value: "gemini-2.5-flash"
+
+        # ── Vertex SA key mount (skylight-chat ile AYNI secret) ──
+        volumeMounts:
+        - name: vertex-sa-key
+          mountPath: /etc/vertex-sa
+          readOnly: true
+
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "150m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+
+        livenessProbe:
+          httpGet: { path: /health, port: 8090 }
+          initialDelaySeconds: 20
+          periodSeconds: 30
+          timeoutSeconds: 5
+        readinessProbe:
+          httpGet: { path: /health, port: 8090 }
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 3
+
+      volumes:
+      - name: vertex-sa-key
+        secret:
+          secretName: vertex-sa-key
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: namaz-chat
+  namespace: skylight-bot-v2
+spec:
+  selector:
+    app: namaz-chat
+  ports:
+  - protocol: TCP
+    port: 8090
+    targetPort: 8090
+    nodePort: 30298
+  type: NodePort
