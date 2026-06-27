@@ -16,6 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Application code
 COPY app/app.py .
 COPY app/smart_router.py .
+COPY app/namaz_routes.py .
 
 # Run
 EXPOSE 8000
