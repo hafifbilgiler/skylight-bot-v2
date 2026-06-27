@@ -11,7 +11,6 @@ Changes v2.6.0:
   - flight_saves  table: Kullanıcının kaydettiği uçuşlar (Kiwi)
   - travel_plans  table: AI ile oluşturulan gezi planları
   - İlgili index'ler eklendi
-  - ensure_column çağrıları eklendi
 Changes v2.5.0:
   - Admin columns added to users table:
       is_admin, is_banned, ban_reason, banned_at, last_active
@@ -42,13 +41,13 @@ def log_info(message: str):
     print(f"[{get_log_time()}] [INFO] {message}", flush=True)
 
 def log_success(message: str):
-    print(f"[{get_log_time()}] [SUCCESS] ✅ {message}", flush=True)
+    print(f"[{get_log_time()}] [SUCCESS] [OK] {message}", flush=True)
 
 def log_warning(message: str):
-    print(f"[{get_log_time()}] [WARNING] ⚠️ {message}", flush=True)
+    print(f"[{get_log_time()}] [WARNING] {message}", flush=True)
 
 def log_error(message: str):
-    print(f"[{get_log_time()}] [ERROR] ❌ {message}", flush=True)
+    print(f"[{get_log_time()}] [ERROR] {message}", flush=True)
 
 
 # =====================================================
@@ -135,7 +134,7 @@ def ensure_constraint(cur, table_name: str, constraint_name: str, constraint_sql
 def init_database_schema() -> bool:
     log_info("=" * 70)
     log_info("DATABASE SCHEMA INITIALIZATION STARTED")
-    log_info("Version: 2.6.0 - Admin Panel + Payment System + Memory + Code Context + Travel/Kiwi")
+    log_info("Version: 2.7.0 - Admin Panel + Payment System + Memory + Code Context + Travel/Kiwi + Namaz App")
     log_info("=" * 70)
 
     try:
@@ -143,18 +142,12 @@ def init_database_schema() -> bool:
         cur  = conn.cursor()
         log_success("PostgreSQL connection established")
 
-        # ─────────────────────────────────────────────
-        # EXTENSIONS
-        # ─────────────────────────────────────────────
         try:
             ensure_extension(cur, "pgcrypto")
             log_success("Extensions OK")
         except Exception as e:
             log_warning(f"Extension setup warning: {e}")
 
-        # ─────────────────────────────────────────────
-        # 1. USERS
-        # ─────────────────────────────────────────────
         log_info("Creating/checking USERS table...")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -191,9 +184,6 @@ def init_database_schema() -> bool:
 
         log_success("USERS table OK")
 
-        # ─────────────────────────────────────────────
-        # 2. OTP_CODES
-        # ─────────────────────────────────────────────
         log_info("Creating/checking OTP_CODES table...")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS otp_codes (
@@ -210,9 +200,6 @@ def init_database_schema() -> bool:
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_otp_codes_email_unique ON otp_codes(email);")
         log_success("OTP_CODES table OK")
 
-        # ─────────────────────────────────────────────
-        # 3. CONVERSATIONS
-        # ─────────────────────────────────────────────
         log_info("Creating/checking CONVERSATIONS table...")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS conversations (
@@ -244,9 +231,6 @@ def init_database_schema() -> bool:
         ensure_column(cur, "conversations", "context_window_size", "INTEGER DEFAULT 8000")
         log_success("CONVERSATIONS table OK")
 
-        # ─────────────────────────────────────────────
-        # 4. MESSAGES
-        # ─────────────────────────────────────────────
         log_info("Creating/checking MESSAGES table...")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS messages (
@@ -275,9 +259,6 @@ def init_database_schema() -> bool:
         ensure_column(cur, "messages", "intent",      "VARCHAR(100)")
         log_success("MESSAGES table OK")
 
-        # ─────────────────────────────────────────────
-        # 5. CONVERSATION_SUMMARIES
-        # ─────────────────────────────────────────────
         log_info("Creating/checking CONVERSATION_SUMMARIES table...")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS conversation_summaries (
@@ -316,9 +297,6 @@ def init_database_schema() -> bool:
         ensure_column(cur, "conversation_summaries", "learned_facts",     "JSONB DEFAULT '{}'")
         log_success("CONVERSATION_SUMMARIES table OK")
 
-        # ─────────────────────────────────────────────
-        # 6. USER_MEMORY
-        # ─────────────────────────────────────────────
         log_info("Creating/checking USER_MEMORY table...")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS user_memory (
@@ -352,9 +330,6 @@ def init_database_schema() -> bool:
         ensure_column(cur, "user_memory", "tone_preference",       "VARCHAR(20) DEFAULT 'professional'")
         log_success("USER_MEMORY table OK")
 
-        # ─────────────────────────────────────────────
-        # 7. CONTEXT_SNAPSHOTS
-        # ─────────────────────────────────────────────
         log_info("Creating/checking CONTEXT_SNAPSHOTS table...")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS context_snapshots (
@@ -373,9 +348,6 @@ def init_database_schema() -> bool:
         """)
         log_success("CONTEXT_SNAPSHOTS table OK")
 
-        # ─────────────────────────────────────────────
-        # 8. USER_INTENTS
-        # ─────────────────────────────────────────────
         log_info("Creating/checking USER_INTENTS table...")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS user_intents (
@@ -392,9 +364,6 @@ def init_database_schema() -> bool:
         """)
         log_success("USER_INTENTS table OK")
 
-        # ─────────────────────────────────────────────
-        # 9. USER_PREFERENCES
-        # ─────────────────────────────────────────────
         log_info("Creating/checking USER_PREFERENCES table...")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS user_preferences (
@@ -411,9 +380,6 @@ def init_database_schema() -> bool:
         """)
         log_success("USER_PREFERENCES table OK")
 
-        # ─────────────────────────────────────────────
-        # 10. USER_PROFILES
-        # ─────────────────────────────────────────────
         log_info("Creating/checking USER_PROFILES table...")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS user_profiles (
@@ -455,9 +421,6 @@ def init_database_schema() -> bool:
         ensure_column(cur, "user_profiles", "total_dislikes", "INTEGER NOT NULL DEFAULT 0")
         log_success("USER_PROFILES table OK")
 
-        # ─────────────────────────────────────────────
-        # 11. FEEDBACK
-        # ─────────────────────────────────────────────
         log_info("Creating/checking FEEDBACK table...")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS feedback (
@@ -475,9 +438,6 @@ def init_database_schema() -> bool:
         """)
         log_success("FEEDBACK table OK")
 
-        # ─────────────────────────────────────────────
-        # 12. USER_LEARNING
-        # ─────────────────────────────────────────────
         log_info("Creating/checking USER_LEARNING table...")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS user_learning (
@@ -493,9 +453,6 @@ def init_database_schema() -> bool:
         """)
         log_success("USER_LEARNING table OK")
 
-        # ─────────────────────────────────────────────
-        # 13. QUERY_LOGS
-        # ─────────────────────────────────────────────
         log_info("Creating/checking QUERY_LOGS table...")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS query_logs (
@@ -520,9 +477,6 @@ def init_database_schema() -> bool:
         """)
         log_success("QUERY_LOGS table OK")
 
-        # ─────────────────────────────────────────────
-        # 14. SUBSCRIPTION_PLANS
-        # ─────────────────────────────────────────────
         log_info("Creating/checking SUBSCRIPTION_PLANS table...")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS subscription_plans (
@@ -542,9 +496,6 @@ def init_database_schema() -> bool:
         """)
         log_success("SUBSCRIPTION_PLANS table OK")
 
-        # ─────────────────────────────────────────────
-        # 15. USER_SUBSCRIPTIONS
-        # ─────────────────────────────────────────────
         log_info("Creating/checking USER_SUBSCRIPTIONS table...")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS user_subscriptions (
@@ -575,9 +526,6 @@ def init_database_schema() -> bool:
         """)
         log_success("USER_SUBSCRIPTIONS table OK")
 
-        # ─────────────────────────────────────────────
-        # 15.5 SUBSCRIPTION_CHECKOUTS
-        # ─────────────────────────────────────────────
         log_info("Creating/checking SUBSCRIPTION_CHECKOUTS table...")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS subscription_checkouts (
@@ -605,9 +553,6 @@ def init_database_schema() -> bool:
         ensure_column(cur, "subscription_checkouts", "completed_at",      "TIMESTAMPTZ")
         log_success("SUBSCRIPTION_CHECKOUTS table OK")
 
-        # ─────────────────────────────────────────────
-        # 15.6 PAYMENT_AUDIT_LOG
-        # ─────────────────────────────────────────────
         log_info("Creating/checking PAYMENT_AUDIT_LOG table...")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS payment_audit_log (
@@ -624,9 +569,6 @@ def init_database_schema() -> bool:
         ensure_column(cur, "payment_audit_log", "ip_address", "VARCHAR(50)")
         log_success("PAYMENT_AUDIT_LOG table OK")
 
-        # ─────────────────────────────────────────────
-        # 16. PAYMENT_HISTORY
-        # ─────────────────────────────────────────────
         log_info("Creating/checking PAYMENT_HISTORY table...")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS payment_history (
@@ -656,9 +598,6 @@ def init_database_schema() -> bool:
         """)
         log_success("PAYMENT_HISTORY table OK")
 
-        # ─────────────────────────────────────────────
-        # 17. USAGE_TRACKING
-        # ─────────────────────────────────────────────
         log_info("Creating/checking USAGE_TRACKING table...")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS usage_tracking (
@@ -681,9 +620,6 @@ def init_database_schema() -> bool:
         """)
         log_success("USAGE_TRACKING table OK")
 
-        # ─────────────────────────────────────────────
-        # 18. GENERATED_IMAGES
-        # ─────────────────────────────────────────────
         log_info("Creating/checking GENERATED_IMAGES table...")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS generated_images (
@@ -732,9 +668,6 @@ def init_database_schema() -> bool:
             ensure_index(cur, idx_name, idx_sql)
         log_success("GENERATED_IMAGES table OK")
 
-        # ─────────────────────────────────────────────
-        # 19. CHAT_LOGS (legacy)
-        # ─────────────────────────────────────────────
         log_info("Creating/checking CHAT_LOGS table (legacy)...")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS chat_logs (
@@ -747,9 +680,6 @@ def init_database_schema() -> bool:
         """)
         log_success("CHAT_LOGS table OK (legacy)")
 
-        # ─────────────────────────────────────────────
-        # 20. CODE_CONTEXT (v2.4.0)
-        # ─────────────────────────────────────────────
         log_info("Creating/checking CODE_CONTEXT table...")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS code_context (
@@ -780,16 +710,11 @@ def init_database_schema() -> bool:
         ensure_column(cur, "code_context", "last_compression_at",        "TIMESTAMPTZ")
         log_success("CODE_CONTEXT table OK")
 
-        # ═══════════════════════════════════════════════
-        # 21. FLIGHT_SAVES  ← v2.6.0 YENİ
-        # ═══════════════════════════════════════════════
         log_info("Creating/checking FLIGHT_SAVES table (v2.6.0)...")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS flight_saves (
                 id            SERIAL PRIMARY KEY,
                 user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-
-                -- Rota bilgisi
                 from_iata     VARCHAR(10)  NOT NULL,
                 to_iata       VARCHAR(10)  NOT NULL,
                 from_name     VARCHAR(100),
@@ -799,8 +724,6 @@ def init_database_schema() -> bool:
                 trip_type     VARCHAR(10)  NOT NULL DEFAULT 'roundtrip'
                               CHECK (trip_type IN ('roundtrip','oneway')),
                 passengers    SMALLINT     NOT NULL DEFAULT 1,
-
-                -- Uçuş detayı (Kiwi'den gelen)
                 airline       VARCHAR(100),
                 flight_code   VARCHAR(20),
                 departure_time TIME,
@@ -809,25 +732,16 @@ def init_database_schema() -> bool:
                 stops         SMALLINT     DEFAULT 0,
                 cabin         VARCHAR(30),
                 baggage       VARCHAR(50),
-
-                -- Fiyat
                 price         NUMERIC(10,2),
                 currency      VARCHAR(5)   DEFAULT 'USD',
-                total_price   NUMERIC(10,2),  -- price * passengers
-
-                -- Kiwi bağlantısı
+                total_price   NUMERIC(10,2),
                 kiwi_url      TEXT,
                 affiliate_id  VARCHAR(100),
-
-                -- Ham veri (Kiwi API yanıtı — ileride işe yarar)
                 raw_data      JSONB        DEFAULT '{}',
-
-                -- Durum
                 status        VARCHAR(20)  NOT NULL DEFAULT 'saved'
                               CHECK (status IN ('saved','clicked','purchased','expired')),
                 clicked_at    TIMESTAMPTZ,
                 purchased_at  TIMESTAMPTZ,
-
                 created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
                 updated_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW()
             );
@@ -861,37 +775,23 @@ def init_database_schema() -> bool:
         ensure_column(cur, "flight_saves", "updated_at",     "TIMESTAMPTZ NOT NULL DEFAULT NOW()")
         log_success("FLIGHT_SAVES table OK (v2.6.0)")
 
-        # ═══════════════════════════════════════════════
-        # 22. TRAVEL_PLANS  ← v2.6.0 YENİ
-        # ═══════════════════════════════════════════════
         log_info("Creating/checking TRAVEL_PLANS table (v2.6.0)...")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS travel_plans (
                 id           SERIAL PRIMARY KEY,
                 user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-
-                -- Şehir/ülke
                 city         VARCHAR(100) NOT NULL,
                 country      VARCHAR(100),
                 lat          NUMERIC(9,6),
                 lon          NUMERIC(9,6),
-
-                -- Plan parametreleri
                 days         SMALLINT     NOT NULL DEFAULT 5,
                 budget       VARCHAR(20)  NOT NULL DEFAULT 'orta'
-                             CHECK (budget IN ('düşük','orta','yüksek')),
+                             CHECK (budget IN ('dusuk','orta','yuksek')),
                 preferences  TEXT,
-
-                -- AI çıktısı (Gemini)
                 plan_text    TEXT         NOT NULL,
-
-                -- İlişkili uçuş (opsiyonel — uçuş seçildikten sonra plan yapıldıysa)
                 flight_id    INTEGER REFERENCES flight_saves(id) ON DELETE SET NULL,
-
-                -- Özet meta
-                highlights   TEXT[],  -- ["Eyfel Kulesi","Louvre","Seine gezisi"]
-                daily_budget NUMERIC(8,2),  -- kişi başı günlük tahmini
-
+                highlights   TEXT[],
+                daily_budget NUMERIC(8,2),
                 created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
@@ -911,13 +811,90 @@ def init_database_schema() -> bool:
         ensure_column(cur, "travel_plans", "updated_at",   "TIMESTAMPTZ NOT NULL DEFAULT NOW()")
         log_success("TRAVEL_PLANS table OK (v2.6.0)")
 
-        # =====================================================
-        # INDEXES
-        # =====================================================
+        # ═══════════════════════════════════════════════
+        # NAMAZ_APP_USERS (v2.7.0 - YENI)
+        # Namaz Vakitleri App'ine ozel kullanicilar.
+        # Mevcut "users" tablosundan TAMAMEN AYRI ve izole -
+        # chatbot'un kullanici kayitlariyla hicbir iliskisi yoktur.
+        # ═══════════════════════════════════════════════
+        log_info("Creating/checking NAMAZ_APP_USERS table (v2.7.0)...")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS namaz_app_users (
+                id          SERIAL PRIMARY KEY,
+                email       VARCHAR(255) UNIQUE NOT NULL,
+                name        VARCHAR(255),
+                created_at  TIMESTAMPTZ DEFAULT NOW(),
+                last_login  TIMESTAMPTZ DEFAULT NOW(),
+                is_premium  BOOLEAN DEFAULT FALSE,
+                is_banned   BOOLEAN DEFAULT FALSE
+            );
+        """)
+        ensure_column(cur, "namaz_app_users", "name",       "VARCHAR(255)")
+        ensure_column(cur, "namaz_app_users", "created_at", "TIMESTAMPTZ DEFAULT NOW()")
+        ensure_column(cur, "namaz_app_users", "last_login", "TIMESTAMPTZ DEFAULT NOW()")
+        ensure_column(cur, "namaz_app_users", "is_premium", "BOOLEAN DEFAULT FALSE")
+        ensure_column(cur, "namaz_app_users", "is_banned",  "BOOLEAN DEFAULT FALSE")
+        log_success("NAMAZ_APP_USERS table OK (v2.7.0)")
+
+        # ═══════════════════════════════════════════════
+        # NAMAZ_APP_OTP_CODES (v2.7.0 - YENI)
+        # ═══════════════════════════════════════════════
+        log_info("Creating/checking NAMAZ_APP_OTP_CODES table (v2.7.0)...")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS namaz_app_otp_codes (
+                email      VARCHAR(255) PRIMARY KEY,
+                code       VARCHAR(6)   NOT NULL,
+                expire_at  TIMESTAMPTZ  NOT NULL,
+                created_at TIMESTAMPTZ  DEFAULT NOW()
+            );
+        """)
+        ensure_column(cur, "namaz_app_otp_codes", "code",       "VARCHAR(6) NOT NULL")
+        ensure_column(cur, "namaz_app_otp_codes", "expire_at",  "TIMESTAMPTZ NOT NULL")
+        ensure_column(cur, "namaz_app_otp_codes", "created_at", "TIMESTAMPTZ DEFAULT NOW()")
+        ensure_index(cur, "idx_namaz_app_otp_codes_email_unique",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_namaz_app_otp_codes_email_unique ON namaz_app_otp_codes(email);")
+        log_success("NAMAZ_APP_OTP_CODES table OK (v2.7.0)")
+
+        # ═══════════════════════════════════════════════
+        # NAMAZ_APP_SUBSCRIPTIONS (v2.7.0 - YENI)
+        # Ileride Google Play Billing entegrasyonu icin.
+        # ═══════════════════════════════════════════════
+        log_info("Creating/checking NAMAZ_APP_SUBSCRIPTIONS table (v2.7.0)...")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS namaz_app_subscriptions (
+                id                   SERIAL PRIMARY KEY,
+                user_id              INTEGER NOT NULL REFERENCES namaz_app_users(id) ON DELETE CASCADE,
+                plan_id              VARCHAR(50) NOT NULL DEFAULT 'free',
+                status               VARCHAR(20) NOT NULL DEFAULT 'active'
+                                     CHECK (status IN ('active','cancelled','expired','trialing')),
+                billing_period       VARCHAR(10) NOT NULL DEFAULT 'free'
+                                     CHECK (billing_period IN ('monthly','yearly','lifetime','free')),
+                current_period_start TIMESTAMPTZ DEFAULT NOW(),
+                current_period_end   TIMESTAMPTZ,
+                google_play_token    VARCHAR(255),
+                metadata             JSONB DEFAULT '{}',
+                created_at           TIMESTAMPTZ DEFAULT NOW(),
+                updated_at           TIMESTAMPTZ DEFAULT NOW()
+            );
+        """)
+        ensure_column(cur, "namaz_app_subscriptions", "plan_id",              "VARCHAR(50) NOT NULL DEFAULT 'free'")
+        ensure_column(cur, "namaz_app_subscriptions", "status",               "VARCHAR(20) NOT NULL DEFAULT 'active'")
+        ensure_column(cur, "namaz_app_subscriptions", "billing_period",       "VARCHAR(10) NOT NULL DEFAULT 'free'")
+        ensure_column(cur, "namaz_app_subscriptions", "current_period_start", "TIMESTAMPTZ DEFAULT NOW()")
+        ensure_column(cur, "namaz_app_subscriptions", "current_period_end",   "TIMESTAMPTZ")
+        ensure_column(cur, "namaz_app_subscriptions", "google_play_token",    "VARCHAR(255)")
+        ensure_column(cur, "namaz_app_subscriptions", "metadata",             "JSONB DEFAULT '{}'")
+        ensure_column(cur, "namaz_app_subscriptions", "updated_at",           "TIMESTAMPTZ DEFAULT NOW()")
+        ensure_index(cur, "idx_namaz_app_subscriptions_active", """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_namaz_app_subscriptions_active
+            ON namaz_app_subscriptions(user_id)
+            WHERE status IN ('active', 'trialing');
+        """)
+        log_success("NAMAZ_APP_SUBSCRIPTIONS table OK (v2.7.0)")
+
         log_info("Creating indexes...")
 
         for stmt in [
-            # Users
             "CREATE INDEX IF NOT EXISTS idx_users_google_id    ON users(google_id);",
             "CREATE INDEX IF NOT EXISTS idx_users_email        ON users(email);",
             "CREATE INDEX IF NOT EXISTS idx_users_premium      ON users(is_premium)  WHERE is_premium  = TRUE;",
@@ -925,85 +902,70 @@ def init_database_schema() -> bool:
             "CREATE INDEX IF NOT EXISTS idx_users_is_admin     ON users(is_admin)  WHERE is_admin  = TRUE;",
             "CREATE INDEX IF NOT EXISTS idx_users_is_banned    ON users(is_banned) WHERE is_banned = TRUE;",
             "CREATE INDEX IF NOT EXISTS idx_users_last_active  ON users(last_active DESC);",
-            # OTP
             "CREATE INDEX IF NOT EXISTS idx_otp_email ON otp_codes(email);",
-            # Conversations
             "CREATE INDEX IF NOT EXISTS idx_conversations_user_id    ON conversations(user_id);",
             "CREATE INDEX IF NOT EXISTS idx_conversations_updated_at ON conversations(updated_at DESC);",
             "CREATE INDEX IF NOT EXISTS idx_conversations_pinned     ON conversations(is_pinned) WHERE is_pinned = TRUE;",
             "CREATE INDEX IF NOT EXISTS idx_conversations_compaction ON conversations(compaction_count, last_compaction_at);",
-            # Messages
             "CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);",
             "CREATE INDEX IF NOT EXISTS idx_messages_created_at      ON messages(created_at);",
             "CREATE INDEX IF NOT EXISTS idx_messages_role            ON messages(role);",
             "CREATE INDEX IF NOT EXISTS idx_messages_mode            ON messages(mode);",
-            # Conversation Summaries
             "CREATE INDEX IF NOT EXISTS idx_conv_summaries_conv_id  ON conversation_summaries(conversation_id);",
             "CREATE INDEX IF NOT EXISTS idx_conv_summaries_created  ON conversation_summaries(created_at DESC);",
             "CREATE INDEX IF NOT EXISTS idx_conv_summaries_user_id  ON conversation_summaries(user_id);",
-            # User Memory
             "CREATE INDEX IF NOT EXISTS idx_user_memory_user_id ON user_memory(user_id);",
             "CREATE INDEX IF NOT EXISTS idx_user_memory_updated ON user_memory(updated_at DESC);",
-            # Context Snapshots
             "CREATE INDEX IF NOT EXISTS idx_context_snapshots_conv ON context_snapshots(conversation_id);",
-            # User Intents
             "CREATE INDEX IF NOT EXISTS idx_user_intents_conv_id ON user_intents(conversation_id);",
             "CREATE INDEX IF NOT EXISTS idx_user_intents_user_id ON user_intents(user_id);",
             "CREATE INDEX IF NOT EXISTS idx_user_intents_intent  ON user_intents(detected_intent);",
-            # User Profiles
             "CREATE INDEX IF NOT EXISTS idx_user_profiles_updated ON user_profiles(updated_at DESC);",
-            # Feedback
             "CREATE INDEX IF NOT EXISTS idx_feedback_user_id ON feedback(user_id);",
             "CREATE INDEX IF NOT EXISTS idx_feedback_rating  ON feedback(rating);",
             "CREATE INDEX IF NOT EXISTS idx_feedback_created ON feedback(created_at DESC);",
-            # User Learning
             "CREATE INDEX IF NOT EXISTS idx_user_learning_user_id ON user_learning(user_id);",
             "CREATE INDEX IF NOT EXISTS idx_user_learning_topic   ON user_learning(topic);",
-            # Query Logs
             "CREATE INDEX IF NOT EXISTS idx_query_logs_user_id    ON query_logs(user_id);",
             "CREATE INDEX IF NOT EXISTS idx_query_logs_created_at ON query_logs(created_at DESC);",
             "CREATE INDEX IF NOT EXISTS idx_query_logs_intent     ON query_logs(intent);",
-            # Subscriptions
             "CREATE INDEX IF NOT EXISTS idx_user_subscriptions_user_id    ON user_subscriptions(user_id);",
             "CREATE INDEX IF NOT EXISTS idx_user_subscriptions_status     ON user_subscriptions(status);",
             "CREATE INDEX IF NOT EXISTS idx_user_subscriptions_plan       ON user_subscriptions(plan_id);",
             "CREATE INDEX IF NOT EXISTS idx_user_subscriptions_period_end ON user_subscriptions(current_period_end);",
-            # Subscription Checkouts
             "CREATE INDEX IF NOT EXISTS idx_subscription_checkouts_user         ON subscription_checkouts(user_id);",
             "CREATE INDEX IF NOT EXISTS idx_subscription_checkouts_conversation ON subscription_checkouts(conversation_id);",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_subscription_checkouts_token ON subscription_checkouts(iyzico_token) WHERE iyzico_token IS NOT NULL;",
             "CREATE INDEX IF NOT EXISTS idx_subscription_checkouts_status       ON subscription_checkouts(status);",
             "CREATE INDEX IF NOT EXISTS idx_subscription_checkouts_created      ON subscription_checkouts(created_at DESC);",
-            # Payment Audit Log
             "CREATE INDEX IF NOT EXISTS idx_payment_audit_event   ON payment_audit_log(event_type);",
             "CREATE INDEX IF NOT EXISTS idx_payment_audit_user    ON payment_audit_log(user_id);",
             "CREATE INDEX IF NOT EXISTS idx_payment_audit_created ON payment_audit_log(created_at DESC);",
-            # Payment History
             "CREATE INDEX IF NOT EXISTS idx_payment_history_user    ON payment_history(user_id);",
             "CREATE INDEX IF NOT EXISTS idx_payment_history_status  ON payment_history(status);",
             "CREATE INDEX IF NOT EXISTS idx_payment_history_created ON payment_history(created_at DESC);",
             "CREATE INDEX IF NOT EXISTS idx_payment_history_iyzico  ON payment_history(iyzico_payment_id);",
-            # Usage Tracking
             "CREATE INDEX IF NOT EXISTS idx_usage_tracking_user ON usage_tracking(user_id);",
             "CREATE INDEX IF NOT EXISTS idx_usage_tracking_date ON usage_tracking(usage_date);",
-            # Code Context
             "CREATE INDEX IF NOT EXISTS idx_code_context_conversation_id ON code_context(conversation_id);",
             "CREATE INDEX IF NOT EXISTS idx_code_context_user_id         ON code_context(user_id);",
-            # ── v2.6.0: Flight Saves ───────────────────────────────────
             "CREATE INDEX IF NOT EXISTS idx_flight_saves_user_id   ON flight_saves(user_id);",
             "CREATE INDEX IF NOT EXISTS idx_flight_saves_departure ON flight_saves(departure);",
             "CREATE INDEX IF NOT EXISTS idx_flight_saves_route     ON flight_saves(from_iata, to_iata);",
             "CREATE INDEX IF NOT EXISTS idx_flight_saves_status    ON flight_saves(status);",
             "CREATE INDEX IF NOT EXISTS idx_flight_saves_created   ON flight_saves(created_at DESC);",
-            # ── v2.6.0: Travel Plans ───────────────────────────────────
             "CREATE INDEX IF NOT EXISTS idx_travel_plans_user_id   ON travel_plans(user_id);",
             "CREATE INDEX IF NOT EXISTS idx_travel_plans_city      ON travel_plans(city);",
             "CREATE INDEX IF NOT EXISTS idx_travel_plans_flight_id ON travel_plans(flight_id);",
             "CREATE INDEX IF NOT EXISTS idx_travel_plans_created   ON travel_plans(created_at DESC);",
+            "CREATE INDEX IF NOT EXISTS idx_namaz_app_users_email   ON namaz_app_users(email);",
+            "CREATE INDEX IF NOT EXISTS idx_namaz_app_users_premium ON namaz_app_users(is_premium) WHERE is_premium = TRUE;",
+            "CREATE INDEX IF NOT EXISTS idx_namaz_app_otp_email     ON namaz_app_otp_codes(email);",
+            "CREATE INDEX IF NOT EXISTS idx_namaz_app_subs_user_id  ON namaz_app_subscriptions(user_id);",
+            "CREATE INDEX IF NOT EXISTS idx_namaz_app_subs_status   ON namaz_app_subscriptions(status);",
         ]:
             cur.execute(stmt)
 
-        # GIN indexes
         for gin_sql in [
             "CREATE INDEX IF NOT EXISTS idx_messages_content_search ON messages USING gin(to_tsvector('simple', content));",
             "CREATE INDEX IF NOT EXISTS idx_user_profiles_interests  ON user_profiles USING gin(interests);",
@@ -1012,16 +974,12 @@ def init_database_schema() -> bool:
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_user_learning_unique ON user_learning(user_id, topic, pattern_type);",
             "CREATE INDEX IF NOT EXISTS idx_user_memory_technical     ON user_memory USING gin(technical_preferences);",
             "CREATE INDEX IF NOT EXISTS idx_user_memory_communication ON user_memory USING gin(communication_style);",
-            # v2.6.0
             "CREATE INDEX IF NOT EXISTS idx_flight_saves_raw_data  ON flight_saves  USING gin(raw_data);",
         ]:
             cur.execute(gin_sql)
 
         log_success("Indexes OK")
 
-        # =====================================================
-        # HELPER FUNCTIONS
-        # =====================================================
         log_info("Creating helper functions...")
 
         cur.execute("""
@@ -1101,11 +1059,10 @@ def init_database_schema() -> bool:
             END; $$ LANGUAGE plpgsql;
         """)
 
-        # ── v2.6.0: Uçuş click/purchase logu ─────────────────────────
         cur.execute("""
             CREATE OR REPLACE FUNCTION log_flight_action(
                 p_flight_id INTEGER,
-                p_action    VARCHAR  -- 'clicked' | 'purchased'
+                p_action    VARCHAR
             )
             RETURNS VOID AS $$
             BEGIN
@@ -1123,9 +1080,6 @@ def init_database_schema() -> bool:
 
         log_success("Helper functions created")
 
-        # =====================================================
-        # TRIGGERS
-        # =====================================================
         log_info("Creating triggers...")
 
         cur.execute("""
@@ -1160,13 +1114,13 @@ def init_database_schema() -> bool:
             END; $$ LANGUAGE plpgsql;
         """)
 
-        # updated_at trigger'ları — v2.6.0 tablolar da dahil
         for tbl in [
             "conversations", "user_profiles", "user_learning", "user_subscriptions",
             "usage_tracking", "user_preferences", "subscription_plans",
             "user_memory", "code_context",
-            "flight_saves",   # v2.6.0
-            "travel_plans",   # v2.6.0
+            "flight_saves",
+            "travel_plans",
+            "namaz_app_subscriptions",
         ]:
             cur.execute(f"DROP TRIGGER IF EXISTS update_{tbl}_updated_at ON {tbl};")
             cur.execute(f"""
@@ -1222,12 +1176,37 @@ def init_database_schema() -> bool:
             FOR EACH ROW EXECUTE FUNCTION sync_user_premium();
         """)
 
+        cur.execute("""
+            CREATE OR REPLACE FUNCTION sync_namaz_app_user_premium()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                UPDATE namaz_app_users SET
+                    is_premium = (
+                        EXISTS (
+                            SELECT 1 FROM namaz_app_subscriptions
+                            WHERE user_id = NEW.user_id
+                              AND status IN ('active','trialing')
+                              AND plan_id != 'free'
+                        )
+                    )
+                WHERE id = NEW.user_id;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+        """)
+        cur.execute("DROP TRIGGER IF EXISTS trigger_sync_namaz_app_premium ON namaz_app_subscriptions;")
+        cur.execute("""
+            CREATE TRIGGER trigger_sync_namaz_app_premium
+            AFTER INSERT OR UPDATE ON namaz_app_subscriptions
+            FOR EACH ROW EXECUTE FUNCTION sync_namaz_app_user_premium();
+        """)
+
         log_success("Triggers OK")
 
         conn.commit()
         cur.close()
         conn.close()
-        log_success("Schema initialization completed successfully — v2.6.0")
+        log_success("Schema initialization completed successfully - v2.7.0")
         log_info("=" * 70)
         return True
 
@@ -1240,10 +1219,6 @@ def init_database_schema() -> bool:
         traceback.print_exc()
         return False
 
-
-# =====================================================
-# HEALTH CHECK
-# =====================================================
 
 def health_check() -> Dict[str, Any]:
     status = {
@@ -1268,8 +1243,11 @@ def health_check() -> Dict[str, Any]:
             "subscription_checkouts", "payment_audit_log",
             "payment_history", "usage_tracking", "generated_images",
             "code_context",
-            "flight_saves",   # v2.6.0
-            "travel_plans",   # v2.6.0
+            "flight_saves",
+            "travel_plans",
+            "namaz_app_users",
+            "namaz_app_otp_codes",
+            "namaz_app_subscriptions",
         ]
         cur.execute("""
             SELECT table_name FROM information_schema.tables
@@ -1290,14 +1268,10 @@ def health_check() -> Dict[str, Any]:
     return status
 
 
-# =====================================================
-# ADMIN SEED
-# =====================================================
-
 def seed_admin_user() -> bool:
     ADMIN_EMAIL    = "admin@one-bune.com"
     ADMIN_NAME     = "admin"
-    ADMIN_PASSWORD = "123456"   # ← deploy sonrası değiştir
+    ADMIN_PASSWORD = "123456"
 
     try:
         conn = get_db_connection()
@@ -1325,8 +1299,8 @@ def seed_admin_user() -> bool:
 
             log_success(f"Admin garanti edildi: {result[1]} (id={result[0]})")
             log_info(f"  Email : {ADMIN_EMAIL}")
-            log_info(f"  Şifre : {ADMIN_PASSWORD}")
-            log_info("  ⚠️  Şifreyi değiştirmeyi unutma!")
+            log_info(f"  Sifre : {ADMIN_PASSWORD}")
+            log_info("  Sifreyi degistirmeyi unutma!")
             return True
 
         finally:
@@ -1334,20 +1308,16 @@ def seed_admin_user() -> bool:
             conn.close()
 
     except Exception as e:
-        log_error(f"Admin seed hatası: {e}")
+        log_error(f"Admin seed hatasi: {e}")
         traceback.print_exc()
         return False
 
 
-# =====================================================
-# MAIN
-# =====================================================
-
 def main():
-    log_info("🚀 ONE-BUNE DATABASE CONTROLLER SERVICE STARTING...")
-    log_info("📦 Version: 2.6.0 - Admin + Payment + Memory + Code Context + Travel/Kiwi")
-    log_info(f"🐘 PostgreSQL Host: {os.getenv('DB_HOST', 'postgres')}")
-    log_info(f"🗄️ Database Name:   {os.getenv('DB_NAME', 'N/A')}")
+    log_info("ONE-BUNE DATABASE CONTROLLER SERVICE STARTING...")
+    log_info("Version: 2.7.0 - Admin + Payment + Memory + Code Context + Travel/Kiwi + Namaz App")
+    log_info(f"PostgreSQL Host: {os.getenv('DB_HOST', 'postgres')}")
+    log_info(f"Database Name:   {os.getenv('DB_NAME', 'N/A')}")
     log_info("=" * 70)
 
     for attempt in range(1, 31):
@@ -1367,7 +1337,7 @@ def main():
         log_error("Schema initialization failed!")
         sys.exit(1)
 
-    log_info("Admin kullanıcı kontrol ediliyor...")
+    log_info("Admin kullanici kontrol ediliyor...")
     seed_admin_user()
 
     health = health_check()
@@ -1375,20 +1345,20 @@ def main():
         log_error(f"Health check failed: {health}")
         sys.exit(1)
 
-    log_success("All systems operational ✅")
+    log_success("All systems operational")
 
     check_interval = int(os.getenv("CHECK_INTERVAL", "3600"))
-    log_info(f"⏰ Periodic health checks every {check_interval}s")
+    log_info(f"Periodic health checks every {check_interval}s")
 
     while True:
         try:
             time.sleep(check_interval)
-            log_info("🔄 Periodic health check...")
+            log_info("Periodic health check...")
             health = health_check()
             if health["status"] == "healthy":
-                log_success("✅ All systems operational")
+                log_success("All systems operational")
             else:
-                log_warning(f"⚠️ Issues detected: {health}")
+                log_warning(f"Issues detected: {health}")
                 init_database_schema()
         except KeyboardInterrupt:
             log_info("Shutdown signal received.")
