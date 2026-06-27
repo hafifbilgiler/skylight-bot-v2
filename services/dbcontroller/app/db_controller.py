@@ -812,12 +812,12 @@ def init_database_schema() -> bool:
         log_success("TRAVEL_PLANS table OK (v2.6.0)")
 
         # ═══════════════════════════════════════════════
-        # NAMAZ_APP_USERS (v2.7.0 - YENI)
+        # NAMAZ_APP_USERS (v2.8.0 - YENI)
         # Namaz Vakitleri App'ine ozel kullanicilar.
         # Mevcut "users" tablosundan TAMAMEN AYRI ve izole -
         # chatbot'un kullanici kayitlariyla hicbir iliskisi yoktur.
         # ═══════════════════════════════════════════════
-        log_info("Creating/checking NAMAZ_APP_USERS table (v2.7.0)...")
+        log_info("Creating/checking NAMAZ_APP_USERS table (v2.8.0)...")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS namaz_app_users (
                 id          SERIAL PRIMARY KEY,
@@ -834,12 +834,12 @@ def init_database_schema() -> bool:
         ensure_column(cur, "namaz_app_users", "last_login", "TIMESTAMPTZ DEFAULT NOW()")
         ensure_column(cur, "namaz_app_users", "is_premium", "BOOLEAN DEFAULT FALSE")
         ensure_column(cur, "namaz_app_users", "is_banned",  "BOOLEAN DEFAULT FALSE")
-        log_success("NAMAZ_APP_USERS table OK (v2.7.0)")
+        log_success("NAMAZ_APP_USERS table OK (v2.8.0)")
 
         # ═══════════════════════════════════════════════
-        # NAMAZ_APP_OTP_CODES (v2.7.0 - YENI)
+        # NAMAZ_APP_OTP_CODES (v2.8.0 - YENI)
         # ═══════════════════════════════════════════════
-        log_info("Creating/checking NAMAZ_APP_OTP_CODES table (v2.7.0)...")
+        log_info("Creating/checking NAMAZ_APP_OTP_CODES table (v2.8.0)...")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS namaz_app_otp_codes (
                 email      VARCHAR(255) PRIMARY KEY,
@@ -853,13 +853,13 @@ def init_database_schema() -> bool:
         ensure_column(cur, "namaz_app_otp_codes", "created_at", "TIMESTAMPTZ DEFAULT NOW()")
         ensure_index(cur, "idx_namaz_app_otp_codes_email_unique",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_namaz_app_otp_codes_email_unique ON namaz_app_otp_codes(email);")
-        log_success("NAMAZ_APP_OTP_CODES table OK (v2.7.0)")
+        log_success("NAMAZ_APP_OTP_CODES table OK (v2.8.0)")
 
         # ═══════════════════════════════════════════════
-        # NAMAZ_APP_SUBSCRIPTIONS (v2.7.0 - YENI)
+        # NAMAZ_APP_SUBSCRIPTIONS (v2.8.0 - YENI)
         # Ileride Google Play Billing entegrasyonu icin.
         # ═══════════════════════════════════════════════
-        log_info("Creating/checking NAMAZ_APP_SUBSCRIPTIONS table (v2.7.0)...")
+        log_info("Creating/checking NAMAZ_APP_SUBSCRIPTIONS table (v2.8.0)...")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS namaz_app_subscriptions (
                 id                   SERIAL PRIMARY KEY,
@@ -890,7 +890,58 @@ def init_database_schema() -> bool:
             ON namaz_app_subscriptions(user_id)
             WHERE status IN ('active', 'trialing');
         """)
-        log_success("NAMAZ_APP_SUBSCRIPTIONS table OK (v2.7.0)")
+        log_success("NAMAZ_APP_SUBSCRIPTIONS table OK (v2.8.0)")
+
+        # ═══════════════════════════════════════════════
+        # NAMAZ_APP_CONVERSATIONS (v2.8.0 - YENI)
+        # Namaz app'inin kendi chatbot konusmalari.
+        # Chatbot'un "conversations" tablosundan tamamen ayri.
+        # ═══════════════════════════════════════════════
+        log_info("Creating/checking NAMAZ_APP_CONVERSATIONS table (v2.8.0)...")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS namaz_app_conversations (
+                id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id     INTEGER REFERENCES namaz_app_users(id) ON DELETE CASCADE,
+                title       VARCHAR(255) DEFAULT 'Yeni Sohbet',
+                created_at  TIMESTAMPTZ DEFAULT NOW(),
+                updated_at  TIMESTAMPTZ DEFAULT NOW()
+            );
+        """)
+        log_success("NAMAZ_APP_CONVERSATIONS table OK (v2.8.0)")
+
+        # ═══════════════════════════════════════════════
+        # NAMAZ_APP_MESSAGES (v2.8.0 - YENI)
+        # ═══════════════════════════════════════════════
+        log_info("Creating/checking NAMAZ_APP_MESSAGES table (v2.8.0)...")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS namaz_app_messages (
+                id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                conversation_id UUID REFERENCES namaz_app_conversations(id) ON DELETE CASCADE,
+                role            VARCHAR(20) NOT NULL,
+                content         TEXT NOT NULL,
+                created_at      TIMESTAMPTZ DEFAULT NOW()
+            );
+        """)
+        log_success("NAMAZ_APP_MESSAGES table OK (v2.8.0)")
+
+        # ── Namaz Chat indexes ────────────────────────────────
+        for stmt in [
+            "CREATE INDEX IF NOT EXISTS idx_namaz_app_conv_user_id    ON namaz_app_conversations(user_id);",
+            "CREATE INDEX IF NOT EXISTS idx_namaz_app_conv_updated    ON namaz_app_conversations(updated_at DESC);",
+            "CREATE INDEX IF NOT EXISTS idx_namaz_app_msg_conv_id     ON namaz_app_messages(conversation_id);",
+            "CREATE INDEX IF NOT EXISTS idx_namaz_app_msg_created     ON namaz_app_messages(created_at);",
+        ]:
+            cur.execute(stmt)
+
+        # ── updated_at trigger ─────────────────────────────────
+        cur.execute("DROP TRIGGER IF EXISTS update_namaz_app_conversations_updated_at ON namaz_app_conversations;")
+        cur.execute("""
+            CREATE TRIGGER update_namaz_app_conversations_updated_at
+            BEFORE UPDATE ON namaz_app_conversations
+            FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+        """)
+
+        log_success("NAMAZ CHAT tables OK (v2.8.0)")
 
         log_info("Creating indexes...")
 
@@ -1206,7 +1257,7 @@ def init_database_schema() -> bool:
         conn.commit()
         cur.close()
         conn.close()
-        log_success("Schema initialization completed successfully - v2.7.0")
+        log_success("Schema initialization completed successfully - v2.8.0")
         log_info("=" * 70)
         return True
 
@@ -1248,6 +1299,8 @@ def health_check() -> Dict[str, Any]:
             "namaz_app_users",
             "namaz_app_otp_codes",
             "namaz_app_subscriptions",
+            "namaz_app_conversations",
+            "namaz_app_messages",
         ]
         cur.execute("""
             SELECT table_name FROM information_schema.tables
