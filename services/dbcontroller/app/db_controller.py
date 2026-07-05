@@ -943,6 +943,38 @@ def init_database_schema() -> bool:
 
         log_success("NAMAZ CHAT tables OK (v2.8.0)")
 
+        # ═══════════════════════════════════════════════
+        # NAMAZ_APP_ZIKIR_LOGS (v2.9.0 - YENI)
+        # Her kullanici, her gun, her zikir turu icin tek satir.
+        # count degeri gun boyunca upsert ile arttirilir.
+        # ═══════════════════════════════════════════════
+        log_info("Creating/checking NAMAZ_APP_ZIKIR_LOGS table (v2.9.0)...")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS namaz_app_zikir_logs (
+                id         SERIAL PRIMARY KEY,
+                user_id    INTEGER REFERENCES namaz_app_users(id) ON DELETE CASCADE,
+                zikir_name VARCHAR(100) NOT NULL,
+                count      INTEGER NOT NULL DEFAULT 0,
+                target     INTEGER NOT NULL DEFAULT 33,
+                log_date   DATE NOT NULL DEFAULT CURRENT_DATE,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                UNIQUE(user_id, zikir_name, log_date)
+            );
+        """)
+        for stmt in [
+            "CREATE INDEX IF NOT EXISTS idx_namaz_zikir_user_date ON namaz_app_zikir_logs(user_id, log_date DESC);",
+            "CREATE INDEX IF NOT EXISTS idx_namaz_zikir_date      ON namaz_app_zikir_logs(log_date);",
+        ]:
+            cur.execute(stmt)
+        cur.execute("DROP TRIGGER IF EXISTS update_namaz_app_zikir_logs_updated_at ON namaz_app_zikir_logs;")
+        cur.execute("""
+            CREATE TRIGGER update_namaz_app_zikir_logs_updated_at
+            BEFORE UPDATE ON namaz_app_zikir_logs
+            FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+        """)
+        log_success("NAMAZ_APP_ZIKIR_LOGS table OK (v2.9.0)")
+
         log_info("Creating indexes...")
 
         for stmt in [
@@ -1172,6 +1204,7 @@ def init_database_schema() -> bool:
             "flight_saves",
             "travel_plans",
             "namaz_app_subscriptions",
+            "namaz_app_zikir_logs",
         ]:
             cur.execute(f"DROP TRIGGER IF EXISTS update_{tbl}_updated_at ON {tbl};")
             cur.execute(f"""
@@ -1301,6 +1334,7 @@ def health_check() -> Dict[str, Any]:
             "namaz_app_subscriptions",
             "namaz_app_conversations",
             "namaz_app_messages",
+            "namaz_app_zikir_logs",
         ]
         cur.execute("""
             SELECT table_name FROM information_schema.tables
