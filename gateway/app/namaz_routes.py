@@ -392,3 +392,128 @@ async def namaz_check_user(authorization: str = Header(None)):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Check user error: {str(e)}")
+
+# =====================================================
+# ZİKİR ENDPOINT'LERİ
+# =====================================================
+
+ZIKIRLER = [
+    "Sübhanallah", "Elhamdülillah", "Allahuekber",
+    "La ilahe illallah", "Estağfirullah", "Salavat",
+    "La havle vela kuvvete illa billah",
+]
+
+class ZikirIncrementRequest(BaseModel):
+    zikir_name: str
+    count: int = 1
+    target: int = 33
+
+class ZikirSetTargetRequest(BaseModel):
+    zikir_name: str
+    target: int
+
+@router.get("/namaz/zikir/list")
+async def namaz_zikir_list():
+    return {"zikirler": ZIKIRLER}
+
+@router.post("/namaz/zikir/increment")
+async def namaz_zikir_increment(req: ZikirIncrementRequest, authorization: str = Header(None)):
+    user_id = get_namaz_user_from_token(authorization)
+    if req.zikir_name not in ZIKIRLER:
+        raise HTTPException(status_code=400, detail="Gecersiz zikir adi")
+    if req.count < 1 or req.count > 1000:
+        raise HTTPException(status_code=400, detail="Gecersiz sayi")
+    try:
+        pool = _get_namaz_pool(); conn = pool.getconn(); cur = conn.cursor()
+        try:
+            cur.execute("""
+                INSERT INTO namaz_app_zikir_logs (user_id, zikir_name, count, target, log_date)
+                VALUES (%s, %s, %s, %s, CURRENT_DATE)
+                ON CONFLICT (user_id, zikir_name, log_date)
+                DO UPDATE SET
+                    count = namaz_app_zikir_logs.count + EXCLUDED.count,
+                    target = EXCLUDED.target,
+                    updated_at = NOW()
+                RETURNING count, target
+            """, (user_id, req.zikir_name, req.count, req.target))
+            row = cur.fetchone(); conn.commit()
+            return {"status": "success", "count": row[0], "target": row[1]}
+        finally:
+            pool.putconn(conn)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/namaz/zikir/reset")
+async def namaz_zikir_reset(req: ZikirSetTargetRequest, authorization: str = Header(None)):
+    user_id = get_namaz_user_from_token(authorization)
+    if req.zikir_name not in ZIKIRLER:
+        raise HTTPException(status_code=400, detail="Gecersiz zikir adi")
+    try:
+        pool = _get_namaz_pool(); conn = pool.getconn(); cur = conn.cursor()
+        try:
+            cur.execute("""
+                UPDATE namaz_app_zikir_logs
+                SET count = 0, target = %s, updated_at = NOW()
+                WHERE user_id = %s AND zikir_name = %s AND log_date = CURRENT_DATE
+            """, (req.target, user_id, req.zikir_name))
+            conn.commit()
+            return {"status": "success"}
+        finally:
+            pool.putconn(conn)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/namaz/zikir/today")
+async def namaz_zikir_today(authorization: str = Header(None)):
+    user_id = get_namaz_user_from_token(authorization)
+    try:
+        pool = _get_namaz_pool(); conn = pool.getconn(); cur = conn.cursor()
+        try:
+            cur.execute("""
+                SELECT zikir_name, count, target
+                FROM namaz_app_zikir_logs
+                WHERE user_id = %s AND log_date = CURRENT_DATE
+            """, (user_id,))
+            rows = cur.fetchall()
+            data = {r[0]: {"count": r[1], "target": r[2]} for r in rows}
+            result = []
+            for z in ZIKIRLER:
+                entry = data.get(z, {"count": 0, "target": 33})
+                result.append({
+                    "zikir_name": z,
+                    "count": entry["count"],
+                    "target": entry["target"],
+                    "done": entry["count"] >= entry["target"],
+                })
+            return {"date": "today", "zikirler": result}
+        finally:
+            pool.putconn(conn)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/namaz/zikir/history")
+async def namaz_zikir_history(days: int = 7, authorization: str = Header(None)):
+    user_id = get_namaz_user_from_token(authorization)
+    if days < 1 or days > 30:
+        days = 7
+    try:
+        pool = _get_namaz_pool(); conn = pool.getconn(); cur = conn.cursor()
+        try:
+            cur.execute("""
+                SELECT log_date, SUM(count) as total, COUNT(DISTINCT zikir_name) as types
+                FROM namaz_app_zikir_logs
+                WHERE user_id = %s AND log_date >= CURRENT_DATE - INTERVAL '%s days'
+                GROUP BY log_date ORDER BY log_date DESC
+            """, (user_id, days))
+            rows = cur.fetchall()
+            return {
+                "days": days,
+                "history": [
+                    {"date": str(r[0]), "total": int(r[1]), "types": int(r[2])}
+                    for r in rows
+                ]
+            }
+        finally:
+            pool.putconn(conn)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
