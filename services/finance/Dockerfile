@@ -6,7 +6,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app.py .
-COPY john_alerts_addon.py . 
+COPY john_alerts_addon.py .
+COPY metals_addon.py .
 
 EXPOSE 8090
 

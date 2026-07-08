@@ -665,7 +665,6 @@ _rates_cache = {"data": {}, "ts": 0}
 _metals_cache = {"data": {}, "ts": 0}
 
 # ── Haber AI analizi cache ────────────────────────────────
-# Aynı haberi tekrar tekrar AI'a gönderme — 6 saat cache
 _news_analysis_cache: Dict[str, Dict] = {}
 _news_cache_max_size = 500
 
@@ -804,30 +803,10 @@ Olasılıksal dil kullanırsın. 3-4 cümle ile öz cevap verirsin."""
 
 @app.get("/news")
 async def get_news(symbol: str = "BTC", analyze: bool = True):
-    """
-    Çok kaynaklı haber çekici + AI analizi.
-
-    Kaynaklar (sırayla):
-      1. CryptoCompare (en güvenilir)
-      2. CoinDesk RSS
-      3. CryptoPanic (yedek)
-
-    AI analizi (analyze=true ise):
-      - Türkçe başlık + özet
-      - Etki yönü (yükseliş/düşüş/nötr)
-      - Etki gücü (zayıf/orta/güçlü)
-      - Etkilenen coinler
-      - John'un kişisel yorumu
-    """
     coin_short = symbol.upper().replace("USDT", "")
-
-    # 1. Ham haberleri çek
     raw_news = await _fetch_raw_news(coin_short)
-
-    # 2. AI analizi (varsayılan AÇIK)
     if analyze and DEEPINFRA_API_KEY and raw_news:
         raw_news = await _analyze_news_with_ai(raw_news, coin_short)
-
     return {
         "symbol": symbol,
         "coin": coin_short,
@@ -839,8 +818,6 @@ async def get_news(symbol: str = "BTC", analyze: bool = True):
 
 
 async def _fetch_raw_news(coin_short: str) -> List[Dict]:
-    """Ham haberleri 3 kaynaktan çeker, dedupe + sıralar."""
-
     pos_words = ["bullish", "surge", "rally", "gain", "record", "adoption", "launch",
                  "partnership", "upgrade", "growth", "approval", "win", "soar", "boom"]
     neg_words = ["crash", "bear", "drop", "hack", "ban", "lawsuit", "warning", "fear",
@@ -858,7 +835,6 @@ async def _fetch_raw_news(coin_short: str) -> List[Dict]:
     async with httpx.AsyncClient(timeout=10.0, follow_redirects=True,
                                    headers={"User-Agent": "Mozilla/5.0 (compatible; ONE-BUNE/1.0)"}) as client:
 
-        # ── 1. CryptoCompare ────────────────────────────
         try:
             r = await client.get(
                 "https://min-api.cryptocompare.com/data/v2/news/",
@@ -884,7 +860,6 @@ async def _fetch_raw_news(coin_short: str) -> List[Dict]:
         except Exception as e:
             print(f"[NEWS] CryptoCompare hata: {e}")
 
-        # ── 2. CoinDesk RSS ─────────────────────────────
         if len(news) < 5:
             try:
                 r = await client.get("https://www.coindesk.com/arc/outboundfeeds/rss/")
@@ -933,7 +908,6 @@ async def _fetch_raw_news(coin_short: str) -> List[Dict]:
             except Exception as e:
                 print(f"[NEWS] CoinDesk hata: {e}")
 
-        # ── 3. CryptoPanic (yedek) ──────────────────────
         if len(news) < 3:
             try:
                 r = await client.get(
@@ -974,7 +948,6 @@ async def _fetch_raw_news(coin_short: str) -> List[Dict]:
             except Exception as e:
                 print(f"[NEWS] CryptoPanic hata: {e}")
 
-    # Sırala + dedupe
     news.sort(key=lambda x: x.get("published_at", 0), reverse=True)
     seen = set()
     unique = []
@@ -985,10 +958,6 @@ async def _fetch_raw_news(coin_short: str) -> List[Dict]:
             unique.append(n)
     return unique[:12]
 
-
-# ──────────────────────────────────────────────────────────────
-# AI HABER ANALİZİ — Türkçe özet + etki + John yorumu
-# ──────────────────────────────────────────────────────────────
 
 NEWS_ANALYSIS_PROMPT = """Sen John'sun, ONE-BUNE'nin kripto trader asistanı.
 Sana İngilizce bir kripto haberi verilecek. Görevin:
@@ -1018,17 +987,14 @@ KURALLAR:
 
 
 def _news_cache_key(title: str, body: str = "") -> str:
-    """Haber için cache anahtarı."""
     import hashlib
     raw = (title + body[:100]).encode('utf-8', errors='ignore')
     return hashlib.md5(raw).hexdigest()[:16]
 
 
 def _trim_news_cache():
-    """Cache çok büyürse en eski %20'yi sil."""
     global _news_analysis_cache
     if len(_news_analysis_cache) > _news_cache_max_size:
-        # En eski 100'ünü sil (FIFO için keys sırasını kullan)
         keys_to_remove = list(_news_analysis_cache.keys())[:100]
         for k in keys_to_remove:
             del _news_analysis_cache[k]
@@ -1036,22 +1002,15 @@ def _trim_news_cache():
 
 
 async def _analyze_one_news(item: Dict, client: httpx.AsyncClient) -> Dict:
-    """Bir haberi AI ile analiz et — cache kullanarak."""
     cache_key = _news_cache_key(item.get("title", ""), item.get("body", ""))
-
-    # Cache'te var mı?
     cached = _news_analysis_cache.get(cache_key)
     if cached:
-        # Cache hit — ham haberin üstüne analizi ekle
         return {**item, **cached, "ai_cached": True}
-
-    # AI çağrısı
     try:
         prompt_text = (
             f"Haber başlığı: {item.get('title', '')[:200]}\n\n"
             f"Özet: {item.get('body', '')[:400]}"
         )
-
         r = await client.post(
             f"{DEEPINFRA_BASE_URL}/chat/completions",
             headers={"Authorization": f"Bearer {DEEPINFRA_API_KEY}",
@@ -1068,13 +1027,9 @@ async def _analyze_one_news(item: Dict, client: httpx.AsyncClient) -> Dict:
             },
             timeout=15.0,
         )
-
         if r.status_code != 200:
-            return item  # AI fail → ham haber dön
-
+            return item
         raw = r.json()["choices"][0]["message"]["content"].strip()
-
-        # JSON parse
         import re as _re
         m = _re.search(r'\{.*\}', raw, _re.DOTALL)
         if not m:
@@ -1083,8 +1038,6 @@ async def _analyze_one_news(item: Dict, client: httpx.AsyncClient) -> Dict:
             analysis = json.loads(m.group(0))
         except json.JSONDecodeError:
             return item
-
-        # Validate + normalize
         ai_data = {
             "tr_title":       (analysis.get("tr_title") or item.get("title", ""))[:120],
             "tr_summary":     (analysis.get("tr_summary") or "")[:300],
@@ -1093,40 +1046,29 @@ async def _analyze_one_news(item: Dict, client: httpx.AsyncClient) -> Dict:
             "affected_coins": (analysis.get("affected_coins") or [])[:4],
             "john_comment":   (analysis.get("john_comment") or "")[:200],
         }
-
-        # Cache'e at (6 saat)
         _news_analysis_cache[cache_key] = ai_data
         _trim_news_cache()
-
         return {**item, **ai_data, "ai_cached": False}
-
     except Exception as e:
         print(f"[NEWS AI] {e}")
         return item
 
 
 async def _analyze_news_with_ai(news_items: List[Dict], coin_short: str) -> List[Dict]:
-    """Haberleri paralel olarak AI ile zenginleştir."""
-    # En çok 8 haber analiz et (zaman + maliyet)
     to_analyze = news_items[:8]
     rest = news_items[8:]
-
     async with httpx.AsyncClient(timeout=20.0) as client:
         tasks = [_analyze_one_news(item, client) for item in to_analyze]
         analyzed = await asyncio.gather(*tasks, return_exceptions=True)
-
-    # Exception olanları orijinaliyle değiştir
     final = []
     for i, result in enumerate(analyzed):
         if isinstance(result, Exception):
             final.append(to_analyze[i])
         else:
             final.append(result)
-
     cache_hits = sum(1 for n in final if n.get("ai_cached"))
     new_calls = len(final) - cache_hits
     print(f"[NEWS AI] {len(final)} haber işlendi (cache: {cache_hits}, yeni: {new_calls})")
-
     return final + rest
 
 
@@ -1246,6 +1188,12 @@ import sys as _sys
 from john_alerts_addon import register_john, john_startup_task
 register_john(app, _sys.modules[__name__])
 
+# ═══════════════════════════════════════════════════════════════
+# METALLER — Altın/Gümüş Haber + AI Tahmin
+# ═══════════════════════════════════════════════════════════════
+from metals_addon import register_metals
+register_metals(app, _sys.modules[__name__])
+
 
 # ──────────────────────────────────────────────────────────────
 # STARTUP — En son tanımlanır (decorator FastAPI'ye registry sırasıyla eklenir)
@@ -1261,7 +1209,6 @@ async def startup():
     for s in SUPPORTED_COINS:
         asyncio.create_task(binance_stream(s))
     print(f"[FINANS] ✅ {len(SUPPORTED_COINS)} coin stream aktif")
-    # John background scanner
     john_startup_task()
     print("[FINANS] ✅ John AI scanner aktif")
 
