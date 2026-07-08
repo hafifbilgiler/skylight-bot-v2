@@ -638,7 +638,11 @@ async def flight_search(request: Request):
     if return_date and not one_way:
         params_cheap["return_date"] = return_date
 
-    # 2. /aviasales/v3/prices_for_dates — EN ZENGİN kaynak (çok daha fazla uçuş)
+    # 2. /aviasales/v3/prices_for_dates — EN ZENGİN kaynak
+    # one_way KULLANICI SEÇİMİNE göre:
+    #   Tek yön seçildi → one_way=true  → tek yön fiyatları
+    #   Çift yön seçildi → one_way=false → gidiş-dönüş fiyatları
+    # (Pegasus/AJet sitesindeki gibi — kullanıcı ne seçtiyse o gelir)
     params_pfd = {
         "origin": origin, "destination": destination, "currency": currency,
         "limit": 1000, "sorting": "price", "direct": "false",
@@ -646,17 +650,6 @@ async def flight_search(request: Request):
     }
     if depart_date:
         params_pfd["departure_at"] = depart_date
-
-    # 2b. İKİNCİ pfd çağrısı — one_way=false SABİT.
-    # curl testi gösterdi: one_way=true rota başına ~1 uçuş veriyor,
-    # one_way=false çok daha fazla. İkisini birleştirince maksimum uçuş gelir.
-    params_pfd2 = {
-        "origin": origin, "destination": destination, "currency": currency,
-        "limit": 1000, "sorting": "price", "direct": "false",
-        "one_way": "false", "market": "tr",
-    }
-    if depart_date:
-        params_pfd2["departure_at"] = depart_date
 
     # 3. /v2/prices/latest — cache'deki son uçuşlar (yedek kaynak)
     params_latest = {
@@ -666,20 +659,20 @@ async def flight_search(request: Request):
         "limit": 1000,
         "period_type": "month",
         "show_to_affiliates": "true",
+        "one_way": "true" if one_way else "false",
     }
     if depart_date and len(depart_date) >= 7:
         params_latest["beginning_of_period"] = depart_date[:7] + "-01"
 
     cheap_task  = tp_request("/v1/prices/cheap", params_cheap)
     pfd_task    = tp_request("/aviasales/v3/prices_for_dates", params_pfd)
-    pfd2_task   = tp_request("/aviasales/v3/prices_for_dates", params_pfd2)
     latest_task = tp_request("/v2/prices/latest", params_latest)
 
     results = await asyncio.gather(
-        cheap_task, pfd_task, pfd2_task, latest_task,
+        cheap_task, pfd_task, latest_task,
         return_exceptions=True,
     )
-    cheap_data, pfd_data, pfd2_data, latest_data = results
+    cheap_data, pfd_data, latest_data = results
 
     flights = []
     seen_map = {}  # key -> flights listesindeki index
@@ -707,13 +700,6 @@ async def flight_search(request: Request):
     # prices_for_dates (en zengin) sonuçları — LİSTE
     if isinstance(pfd_data, dict) and pfd_data.get("success"):
         items = pfd_data.get("data", [])
-        if isinstance(items, list):
-            for f in items:
-                add_flight(f)
-
-    # prices_for_dates 2 (one_way=false, daha çok uçuş) — LİSTE
-    if isinstance(pfd2_data, dict) and pfd2_data.get("success"):
-        items = pfd2_data.get("data", [])
         if isinstance(items, list):
             for f in items:
                 add_flight(f)
