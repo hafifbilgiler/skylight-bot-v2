@@ -56,6 +56,13 @@ spec:
               key: gemini-model
         - name: GOOGLE_APPLICATION_CREDENTIALS
           value: /secrets/key.json
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
         volumeMounts:
         - name: vertex-sa
           mountPath: /secrets
@@ -64,13 +71,6 @@ spec:
       - name: vertex-sa
         secret:
           secretName: vertex-sa-key
-        resources:
-          requests:
-            memory: "256Mi"
-            cpu: "100m"
-          limits:
-            memory: "512Mi"
-            cpu: "500m"
 ---
 apiVersion: v1
 kind: Service
