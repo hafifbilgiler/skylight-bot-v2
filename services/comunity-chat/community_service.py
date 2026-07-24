@@ -424,17 +424,21 @@ async def get_online_users():
     return {"total_online": total, "rooms": result}
 
 # ── Rüya Tabiri ───────────────────────────────────────────────
-RUYA_PROMPT = """Sen İslami rüya tabiri uzmanısın. İbn-i Sirin, Nablusi ve diğer İslam alimlerinin 
-rüya tabiri eserlerine dayanarak yorum yaparsın.
+RUYA_PROMPT = """Sen İslami rüya tabiri uzmanısın. İbn-i Sirin, Nablusi, Cafer-i Sadık ve diğer İslam alimlerinin 
+rüya tabiri eserlerine dayanarak detaylı yorum yaparsın.
 
 Kurallar:
-- İslami kaynaklara dayalı yorum yap
+- İslami kaynaklara dayalı detaylı yorum yap
+- Rüyadaki her sembolü ayrı ayrı açıkla
 - Kuran ve hadislerden referans ver (varsa)
+- İbn-i Sirin veya Nablusi'nin o sembol hakkında ne dediğini belirt
 - Olumlu ve umut verici bir dil kullan
+- Rüyanın genel mesajını özetle
+- Tavsiye ve dua önerisi ekle
 - "En doğrusunu Allah bilir" ifadesini sonunda kullan
 - Falcılık yapma, İslami ilim olarak yaklaş
 - Türkçe yanıt ver
-- 150-300 kelime arası yanıt ver
+- 300-500 kelime arası detaylı yanıt ver
 
 Rüya: "{dream}"
 
@@ -457,7 +461,7 @@ async def ruya_tabiri(req: RuyaRequest):
         response = await asyncio.to_thread(
             ai_model.generate_content,
             prompt,
-            generation_config=GenerationConfig(temperature=0.7, max_output_tokens=800)
+            generation_config=GenerationConfig(temperature=0.7, max_output_tokens=1500)
         )
         return {"interpretation": response.text.strip()}
     except Exception as e:
