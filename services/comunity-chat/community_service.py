@@ -22,6 +22,7 @@ from jose import jwt, JWTError
 # ── Config ─────────────────────────────────────────────────────
 SECRET_KEY    = os.getenv("JWT_SECRET", "onebune-secret")
 DATABASE_URL  = os.getenv("COMMUNITY_DB_URL")
+MAIN_DB_URL   = os.getenv("MAIN_DB_URL")
 REDIS_URL     = os.getenv("REDIS_URL")
 GEMINI_PROJECT  = os.getenv("GEMINI_PROJECT", "gen-lang-client-0907571701")
 GEMINI_LOCATION = os.getenv("GEMINI_LOCATION", "us-central1")
@@ -37,17 +38,20 @@ app = FastAPI(title="OneBune Community Chat")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 db_pool: asyncpg.Pool = None
+main_db_pool: asyncpg.Pool = None
 redis_client: aioredis.Redis = None
 
 @app.on_event("startup")
 async def startup():
-    global db_pool, redis_client
+    global db_pool, main_db_pool, redis_client
     db_pool      = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
+    main_db_pool = await asyncpg.create_pool(MAIN_DB_URL, min_size=1, max_size=5)
     redis_client = await aioredis.from_url(REDIS_URL, decode_responses=True)
 
 @app.on_event("shutdown")
 async def shutdown():
     await db_pool.close()
+    await main_db_pool.close()
     await redis_client.close()
 
 # ── JWT ────────────────────────────────────────────────────────
@@ -215,13 +219,31 @@ async def remove_presence(user_id: int, room_id: int, username: str):
 @app.websocket("/ws/{room_slug}")
 async def websocket_endpoint(ws: WebSocket, room_slug: str, token: str):
     try:
-        payload    = verify_token(token)
-        user_id    = int(payload["sub"])
-        username   = payload.get("username", "Kullanıcı")
-        is_premium = payload.get("is_premium", False)
+        payload = verify_token(token)
+        email   = payload.get("sub", "")
     except Exception:
         await ws.close(code=4001, reason="Geçersiz token")
         return
+
+    # DB'den kullanıcıyı bul (ana DB)
+    async with main_db_pool.acquire() as conn:
+        user_row = await conn.fetchrow(
+            "SELECT id, name, is_premium FROM namaz_app_users WHERE email=$1", email)
+    if not user_row:
+        await ws.close(code=4002, reason="Kullanıcı bulunamadı")
+        return
+
+    user_id    = user_row["id"]
+    username   = user_row["name"] or "Kullanıcı"
+    is_premium = user_row["is_premium"]
+
+    if not is_premium:
+        async with main_db_pool.acquire() as conn:
+            sub_row = await conn.fetchrow(
+                "SELECT id FROM namaz_app_subscriptions WHERE user_id=$1 AND status='active' AND (current_period_end IS NULL OR current_period_end > NOW())",
+                user_id)
+            if sub_row:
+                is_premium = True
 
     if not is_premium:
         await ws.close(code=4003, reason="Premium gerekli")

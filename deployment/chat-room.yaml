@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
       - name: community-chat
-        image: docker.io/hafifbilgiler/community-chat:1.1
+        image: docker.io/hafifbilgiler/community-chat:1.2
         ports:
         - containerPort: 8001
         env:
@@ -34,6 +34,11 @@ spec:
             secretKeyRef:
               name: onebune-chat-secrets
               key: community-db-url
+        - name: MAIN_DB_URL
+          valueFrom:
+            secretKeyRef:
+              name: onebune-chat-secrets
+              key: main-db-url
         - name: REDIS_URL
           valueFrom:
             secretKeyRef:
