@@ -435,14 +435,15 @@ Kurallar:
 - Olumlu ve umut verici bir dil kullan
 - Rüyanın genel mesajını özetle
 - Tavsiye ve dua önerisi ekle
-- "En doğrusunu Allah bilir" ifadesini sonunda kullan
+- "En doğrusunu Allah bilir" ifadesini sonunda mutlaka yaz
 - Falcılık yapma, İslami ilim olarak yaklaş
 - Türkçe yanıt ver
+- YANITI MUTLAKA TAMAMLA, yarıda bırakma
 - 300-500 kelime arası detaylı yanıt ver
 
 Rüya: "{dream}"
 
-Tabir:"""
+Detaylı İslami Tabir:"""
 
 from pydantic import BaseModel
 
@@ -461,7 +462,7 @@ async def ruya_tabiri(req: RuyaRequest):
         response = await asyncio.to_thread(
             ai_model.generate_content,
             prompt,
-            generation_config=GenerationConfig(temperature=0.7, max_output_tokens=1500)
+            generation_config=GenerationConfig(temperature=0.7, max_output_tokens=2000)
         )
         return {"interpretation": response.text.strip()}
     except Exception as e:
