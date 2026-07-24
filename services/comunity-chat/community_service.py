@@ -424,26 +424,20 @@ async def get_online_users():
     return {"total_online": total, "rooms": result}
 
 # ── Rüya Tabiri ───────────────────────────────────────────────
-RUYA_PROMPT = """Sen İslami rüya tabiri uzmanısın. İbn-i Sirin, Nablusi, Cafer-i Sadık ve diğer İslam alimlerinin 
-rüya tabiri eserlerine dayanarak detaylı yorum yaparsın.
+RUYA_PROMPT = """Sen İslami rüya tabircisisin. İbn-i Sirin ve Nablusi'ye dayanarak yorum yap.
 
 Kurallar:
-- İslami kaynaklara dayalı detaylı yorum yap
-- Rüyadaki her sembolü ayrı ayrı açıkla
-- Kuran ve hadislerden referans ver (varsa)
-- İbn-i Sirin veya Nablusi'nin o sembol hakkında ne dediğini belirt
-- Olumlu ve umut verici bir dil kullan
-- Rüyanın genel mesajını özetle
-- Tavsiye ve dua önerisi ekle
-- "En doğrusunu Allah bilir" ifadesini sonunda mutlaka yaz
-- Falcılık yapma, İslami ilim olarak yaklaş
-- Türkçe yanıt ver
-- YANITI MUTLAKA TAMAMLA, yarıda bırakma
-- 300-500 kelime arası detaylı yanıt ver
+- Rüyadaki sembolleri açıkla
+- Kuran/hadis referansı ver (varsa)
+- Olumlu dil kullan
+- Türkçe yaz
+- 200 kelimeyi geçme
+- Sonunda mutlaka "En doğrusunu Allah bilir." yaz
+- YANITI TAMAMLA
 
 Rüya: "{dream}"
 
-Detaylı İslami Tabir:"""
+Tabir:"""
 
 from pydantic import BaseModel
 
@@ -462,7 +456,7 @@ async def ruya_tabiri(req: RuyaRequest):
         response = await asyncio.to_thread(
             ai_model.generate_content,
             prompt,
-            generation_config=GenerationConfig(temperature=0.7, max_output_tokens=2000)
+            generation_config=GenerationConfig(temperature=0.7, max_output_tokens=800)
         )
         return {"interpretation": response.text.strip()}
     except Exception as e:
