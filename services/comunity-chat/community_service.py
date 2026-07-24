@@ -47,6 +47,20 @@ async def startup():
     db_pool      = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
     main_db_pool = await asyncpg.create_pool(MAIN_DB_URL, min_size=1, max_size=5)
     redis_client = await aioredis.from_url(REDIS_URL, decode_responses=True)
+    asyncio.create_task(daily_cleanup())
+
+async def daily_cleanup():
+    """Her gece 00:00'da 24 saatten eski mesajları sil"""
+    while True:
+        now = datetime.utcnow()
+        midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        await asyncio.sleep((midnight - now).total_seconds())
+        try:
+            async with db_pool.acquire() as conn:
+                result = await conn.execute(
+                    "DELETE FROM community_messages WHERE created_at < NOW() - INTERVAL '24 hours'")
+        except Exception:
+            pass
 
 @app.on_event("shutdown")
 async def shutdown():
@@ -379,3 +393,32 @@ async def room_messages(slug: str):
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "community-chat"}
+
+@app.get("/online")
+async def get_online_users():
+    """Tüm odalardaki online kullanıcıları döndür"""
+    async with db_pool.acquire() as conn:
+        rooms = await conn.fetch(
+            "SELECT id, slug, name, icon FROM community_rooms WHERE is_active=TRUE ORDER BY order_index")
+
+    result = []
+    for room in rooms:
+        room_id = room["id"]
+        member_ids = await redis_client.smembers(f"room:members:{room_id}")
+        users = []
+        for uid_str in member_ids:
+            key = f"presence:{uid_str}"
+            username = await redis_client.hget(key, "username")
+            if username:
+                users.append({"user_id": int(uid_str), "username": username})
+        result.append({
+            "room_id": room_id,
+            "room_slug": room["slug"],
+            "room_name": room["name"],
+            "room_icon": room["icon"],
+            "users": users,
+            "count": len(users),
+        })
+
+    total = sum(r["count"] for r in result)
+    return {"total_online": total, "rooms": result}
