@@ -422,3 +422,43 @@ async def get_online_users():
 
     total = sum(r["count"] for r in result)
     return {"total_online": total, "rooms": result}
+
+# ── Rüya Tabiri ───────────────────────────────────────────────
+RUYA_PROMPT = """Sen İslami rüya tabiri uzmanısın. İbn-i Sirin, Nablusi ve diğer İslam alimlerinin 
+rüya tabiri eserlerine dayanarak yorum yaparsın.
+
+Kurallar:
+- İslami kaynaklara dayalı yorum yap
+- Kuran ve hadislerden referans ver (varsa)
+- Olumlu ve umut verici bir dil kullan
+- "En doğrusunu Allah bilir" ifadesini sonunda kullan
+- Falcılık yapma, İslami ilim olarak yaklaş
+- Türkçe yanıt ver
+- 150-300 kelime arası yanıt ver
+
+Rüya: "{dream}"
+
+Tabir:"""
+
+from pydantic import BaseModel
+
+class RuyaRequest(BaseModel):
+    dream: str
+
+@app.post("/ruya-tabiri")
+async def ruya_tabiri(req: RuyaRequest):
+    if len(req.dream) < 10:
+        raise HTTPException(400, "Rüya çok kısa")
+    if len(req.dream) > 1000:
+        raise HTTPException(400, "Rüya çok uzun")
+
+    try:
+        prompt = RUYA_PROMPT.format(dream=req.dream[:1000])
+        response = await asyncio.to_thread(
+            ai_model.generate_content,
+            prompt,
+            generation_config=GenerationConfig(temperature=0.7, max_output_tokens=800)
+        )
+        return {"interpretation": response.text.strip()}
+    except Exception as e:
+        raise HTTPException(503, f"Tabir yapılamadı: {str(e)}")

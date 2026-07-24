@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
       - name: community-chat
-        image: docker.io/hafifbilgiler/community-chat:1.3
+        image: docker.io/hafifbilgiler/community-chat:1.4
         ports:
         - containerPort: 8001
         env:
