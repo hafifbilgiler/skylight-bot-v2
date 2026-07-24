@@ -39,11 +39,31 @@ spec:
             secretKeyRef:
               name: onebune-chat-secrets
               key: redis-url
-        - name: GEMINI_API_KEY
+        - name: GEMINI_PROJECT
           valueFrom:
             secretKeyRef:
               name: onebune-chat-secrets
-              key: gemini-api-key
+              key: gemini-project
+        - name: GEMINI_LOCATION
+          valueFrom:
+            secretKeyRef:
+              name: onebune-chat-secrets
+              key: gemini-location
+        - name: GEMINI_MODEL
+          valueFrom:
+            secretKeyRef:
+              name: onebune-chat-secrets
+              key: gemini-model
+        - name: GOOGLE_APPLICATION_CREDENTIALS
+          value: /secrets/key.json
+        volumeMounts:
+        - name: vertex-sa
+          mountPath: /secrets
+          readOnly: true
+      volumes:
+      - name: vertex-sa
+        secret:
+          secretName: vertex-sa-key
         resources:
           requests:
             memory: "256Mi"
