@@ -424,20 +424,19 @@ async def get_online_users():
     return {"total_online": total, "rooms": result}
 
 # ── Rüya Tabiri ───────────────────────────────────────────────
-RUYA_PROMPT = """Sen İslami rüya tabircisisin. İbn-i Sirin ve Nablusi'ye dayanarak yorum yap.
-
-Kurallar:
-- Rüyadaki sembolleri açıkla
-- Kuran/hadis referansı ver (varsa)
-- Olumlu dil kullan
-- Türkçe yaz
-- 200 kelimeyi geçme
-- Sonunda mutlaka "En doğrusunu Allah bilir." yaz
-- YANITI TAMAMLA
+RUYA_PROMPT = """Sen deneyimli bir İslami rüya tabircisisin. İbn-i Sirin, Nablusi ve Cafer-i Sadık'ın eserlerine dayanarak yorum yaparsın.
 
 Rüya: "{dream}"
 
-Tabir:"""
+Şu formatta Türkçe yorum yap:
+
+1. GENEL YORUM: Rüyanın genel anlamını açıkla
+2. SEMBOLLER: Rüyadaki her önemli sembolü tek tek açıkla
+3. KAYNAK: Varsa Kuran ayeti veya hadis referansı ver
+4. TAVSİYE: Rüyayı gören kişiye tavsiye ver
+5. Sonunda mutlaka şunu yaz: "En doğrusunu Allah bilir."
+
+Olumlu ve umut verici bir dil kullan. Yanıtı mutlaka tamamla, yarıda bırakma."""
 
 from pydantic import BaseModel
 
@@ -564,8 +563,46 @@ async def ruya_tabiri(req: RuyaRequest):
         response = await asyncio.to_thread(
             ai_model.generate_content,
             prompt,
-            generation_config=GenerationConfig(temperature=0.7, max_output_tokens=800)
+            generation_config=GenerationConfig(temperature=0.7, max_output_tokens=4096)
         )
         return {"interpretation": response.text.strip()}
     except Exception as e:
         raise HTTPException(503, f"Tabir yapılamadı: {str(e)}")
+
+
+# ── Kişisel Dua Üretici ──────────────────────────────────────
+class DuaRequest(BaseModel):
+    konu: str
+
+DUA_PROMPT = """Sen İslami dua uzmanısın. Kullanıcının durumuna uygun Kuran ve hadislerden dua öner.
+
+Konu: "{konu}"
+
+Kurallar:
+- Konuya uygun 1-2 dua öner
+- Arapça yazılışını ver
+- Türkçe okunuşunu ver
+- Türkçe anlamını ver
+- Kuran ayeti ise sure ve ayet numarasını belirt
+- Hadis ise kaynağını belirt (Buhari, Müslim vs)
+- Duanın hangi durumlarda okunacağını açıkla
+- 200 kelimeyi geçme
+- Türkçe yaz
+- YANITI TAMAMLA
+
+Dua Önerisi:"""
+
+@app.post("/dua-uret")
+async def dua_uret(req: DuaRequest):
+    if len(req.konu) < 3:
+        raise HTTPException(400, "Konu çok kısa")
+    try:
+        prompt = DUA_PROMPT.format(konu=req.konu[:500])
+        response = await asyncio.to_thread(
+            ai_model.generate_content,
+            prompt,
+            generation_config=GenerationConfig(temperature=0.7, max_output_tokens=800)
+        )
+        return {"dua": response.text.strip()}
+    except Exception as e:
+        raise HTTPException(503, f"Dua oluşturulamadı: {str(e)}")
