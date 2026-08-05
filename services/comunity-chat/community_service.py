@@ -446,6 +446,7 @@ class RuyaRequest(BaseModel):
 
 class QuizRequest(BaseModel):
     category: str = "Genel"
+    exclude: str = ""
 
 QUIZ_PROMPT = """Sen İslami bilgi yarışması sorusu üreten bir AI'sın.
 Kategori: {category}
@@ -462,7 +463,10 @@ async def quiz(req: QuizRequest):
     last_error = ""
     for attempt in range(3):
         try:
-            prompt = QUIZ_PROMPT.format(category=req.category)
+            exclude_note = ""
+            if req.exclude:
+                exclude_note = f"\nBu soruları SORMA (zaten soruldu): {req.exclude}"
+            prompt = QUIZ_PROMPT.format(category=req.category) + exclude_note
             response = await asyncio.to_thread(
                 ai_model.generate_content,
                 prompt,
