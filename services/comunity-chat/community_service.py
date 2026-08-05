@@ -578,19 +578,16 @@ DUA_PROMPT = """Sen İslami dua uzmanısın. Kullanıcının durumuna uygun Kura
 
 Konu: "{konu}"
 
-Kurallar:
-- Konuya uygun 1-2 dua öner
-- Arapça yazılışını ver
-- Türkçe okunuşunu ver
-- Türkçe anlamını ver
-- Kuran ayeti ise sure ve ayet numarasını belirt
-- Hadis ise kaynağını belirt (Buhari, Müslim vs)
-- Duanın hangi durumlarda okunacağını açıkla
-- 200 kelimeyi geçme
-- Türkçe yaz
-- YANITI TAMAMLA
+Şu formatta Türkçe yanıt ver:
 
-Dua Önerisi:"""
+1. Konuya uygun 1-2 dua öner
+2. Her dua için:
+   - Arapça yazılışı
+   - Türkçe okunuşu
+   - Türkçe anlamı
+   - Kaynağı (Kuran sure:ayet veya Hadis kaynağı)
+3. Duanın ne zaman okunacağını açıkla
+4. Yanıtı mutlaka tamamla, yarıda bırakma"""
 
 @app.post("/dua-uret")
 async def dua_uret(req: DuaRequest):
@@ -601,7 +598,7 @@ async def dua_uret(req: DuaRequest):
         response = await asyncio.to_thread(
             ai_model.generate_content,
             prompt,
-            generation_config=GenerationConfig(temperature=0.7, max_output_tokens=800)
+            generation_config=GenerationConfig(temperature=0.7, max_output_tokens=4096)
         )
         return {"dua": response.text.strip()}
     except Exception as e:
