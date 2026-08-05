@@ -492,6 +492,66 @@ async def quiz(req: QuizRequest):
             continue
     raise HTTPException(503, f"Quiz oluşturulamadı: {last_error}")
 
+class QuizBatchRequest(BaseModel):
+    category: str = "Genel"
+    count: int = 10
+
+QUIZ_BATCH_PROMPT = """Sen İslami bilgi yarışması sorusu üreten bir AI'sın.
+Kategori: {category}
+
+{count} adet birbirinden FARKLI 4 şıklı Türkçe soru üret.
+Sadece JSON array döndür, başka bir şey yazma.
+Her soru farklı konuda olsun, tekrar etmesin.
+
+Tam olarak bu formatta yaz:
+[{{"question": "soru 1", "options": ["A", "B", "C", "D"], "correct_index": 0, "explanation": "aciklama"}}, {{"question": "soru 2", "options": ["A", "B", "C", "D"], "correct_index": 1, "explanation": "aciklama"}}]
+"""
+
+@app.post("/quiz/batch")
+async def quiz_batch(req: QuizBatchRequest):
+    count = min(req.count, 40)
+    all_questions = []
+    batch_size = min(count, 10)  # Gemini'ye max 10'ar sor
+    
+    remaining = count
+    while remaining > 0:
+        current_batch = min(remaining, batch_size)
+        for attempt in range(3):
+            try:
+                prompt = QUIZ_BATCH_PROMPT.format(category=req.category, count=current_batch)
+                response = await asyncio.to_thread(
+                    ai_model.generate_content,
+                    prompt,
+                    generation_config=GenerationConfig(temperature=0.9, max_output_tokens=4000)
+                )
+                text = response.text.strip()
+                if "```" in text:
+                    parts = text.split("```")
+                    text = parts[1] if len(parts) > 1 else parts[0]
+                    text = text.replace("json", "").strip()
+                text = " ".join(text.split())
+                # Son ] bul
+                last_bracket = text.rfind("]")
+                if last_bracket > 0:
+                    text = text[:last_bracket + 1]
+                first_bracket = text.find("[")
+                if first_bracket > 0:
+                    text = text[first_bracket:]
+                
+                parsed = json.loads(text)
+                if isinstance(parsed, list):
+                    valid = [q for q in parsed if "question" in q and "options" in q and len(q.get("options",[])) == 4]
+                    all_questions.extend(valid)
+                    remaining -= len(valid)
+                    break
+            except Exception:
+                continue
+        else:
+            break  # 3 deneme de başarısız
+    
+    return {"questions": all_questions[:count], "total": len(all_questions[:count])}
+
+
 @app.post("/ruya-tabiri")
 async def ruya_tabiri(req: RuyaRequest):
     if len(req.dream) < 10:
