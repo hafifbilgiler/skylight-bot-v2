@@ -448,34 +448,45 @@ class QuizRequest(BaseModel):
     category: str = "Genel"
 
 QUIZ_PROMPT = """Sen İslami bilgi yarışması sorusu üreten bir AI'sın.
+Kategori: {category}
 
-Kategori: "{category}"
+Bir adet 4 şıklı Türkçe soru üret. Sadece JSON döndür, başka bir şey yazma.
+Tırnak işareti kullanma, düz metin yaz.
 
-Kurallar:
-- Türkçe 1 adet çoktan seçmeli soru üret
-- 4 şık olsun (A, B, C, D)
-- Sadece 1 doğru cevap
-- Kısa açıklama ekle (1-2 cümle)
-- SADECE JSON formatında yanıt ver, başka hiçbir şey yazma
-
-JSON formatı:
-{{"question": "soru metni", "options": ["A şıkkı", "B şıkkı", "C şıkkı", "D şıkkı"], "correct_index": 0, "explanation": "açıklama"}}"""
+Tam olarak bu formatta yaz:
+{{"question": "soru metni buraya", "options": ["A sıkkı", "B sıkkı", "C sıkkı", "D sıkkı"], "correct_index": 0, "explanation": "kisa aciklama"}}
+"""
 
 @app.post("/quiz")
 async def quiz(req: QuizRequest):
-    try:
-        prompt = QUIZ_PROMPT.format(category=req.category)
-        response = await asyncio.to_thread(
-            ai_model.generate_content,
-            prompt,
-            generation_config=GenerationConfig(temperature=0.9, max_output_tokens=500)
-        )
-        text = response.text.strip()
-        if "```" in text:
-            text = text.split("```")[1].replace("json", "").strip()
-        return json.loads(text)
-    except Exception as e:
-        raise HTTPException(503, f"Quiz oluşturulamadı: {str(e)}")
+    last_error = ""
+    for attempt in range(3):
+        try:
+            prompt = QUIZ_PROMPT.format(category=req.category)
+            response = await asyncio.to_thread(
+                ai_model.generate_content,
+                prompt,
+                generation_config=GenerationConfig(temperature=0.9, max_output_tokens=500)
+            )
+            text = response.text.strip()
+            if "```" in text:
+                parts = text.split("```")
+                text = parts[1] if len(parts) > 1 else parts[0]
+                text = text.replace("json", "").strip()
+            text = " ".join(text.split())
+            last_brace = text.rfind("}")
+            if last_brace > 0:
+                text = text[:last_brace + 1]
+            first_brace = text.find("{")
+            if first_brace > 0:
+                text = text[first_brace:]
+            parsed = json.loads(text)
+            if "question" in parsed and "options" in parsed and len(parsed["options"]) == 4:
+                return parsed
+        except Exception as e:
+            last_error = str(e)
+            continue
+    raise HTTPException(503, f"Quiz oluşturulamadı: {last_error}")
 
 @app.post("/ruya-tabiri")
 async def ruya_tabiri(req: RuyaRequest):
