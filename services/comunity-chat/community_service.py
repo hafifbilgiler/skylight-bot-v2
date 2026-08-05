@@ -444,6 +444,39 @@ from pydantic import BaseModel
 class RuyaRequest(BaseModel):
     dream: str
 
+class QuizRequest(BaseModel):
+    category: str = "Genel"
+
+QUIZ_PROMPT = """Sen İslami bilgi yarışması sorusu üreten bir AI'sın.
+
+Kategori: "{category}"
+
+Kurallar:
+- Türkçe 1 adet çoktan seçmeli soru üret
+- 4 şık olsun (A, B, C, D)
+- Sadece 1 doğru cevap
+- Kısa açıklama ekle (1-2 cümle)
+- SADECE JSON formatında yanıt ver, başka hiçbir şey yazma
+
+JSON formatı:
+{{"question": "soru metni", "options": ["A şıkkı", "B şıkkı", "C şıkkı", "D şıkkı"], "correct_index": 0, "explanation": "açıklama"}}"""
+
+@app.post("/quiz")
+async def quiz(req: QuizRequest):
+    try:
+        prompt = QUIZ_PROMPT.format(category=req.category)
+        response = await asyncio.to_thread(
+            ai_model.generate_content,
+            prompt,
+            generation_config=GenerationConfig(temperature=0.9, max_output_tokens=500)
+        )
+        text = response.text.strip()
+        if "```" in text:
+            text = text.split("```")[1].replace("json", "").strip()
+        return json.loads(text)
+    except Exception as e:
+        raise HTTPException(503, f"Quiz oluşturulamadı: {str(e)}")
+
 @app.post("/ruya-tabiri")
 async def ruya_tabiri(req: RuyaRequest):
     if len(req.dream) < 10:
