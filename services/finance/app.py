@@ -1200,6 +1200,12 @@ register_metals(app, _sys.modules[__name__])
 from whale_radar_addon import register_whale_radar
 register_whale_radar(app, _sys.modules[__name__])
 
+# ═══════════════════════════════════════════════════════════════
+# CANLI TAHMİN — Geçmiş Desen İsabet Motoru
+# ═══════════════════════════════════════════════════════════════
+from prediction_addon import register_prediction
+register_prediction(app, _sys.modules[__name__])
+
 
 # ──────────────────────────────────────────────────────────────
 # STARTUP — En son tanımlanır (decorator FastAPI'ye registry sırasıyla eklenir)

@@ -9,6 +9,7 @@ COPY app.py .
 COPY john_alerts_addon.py .
 COPY metals_addon.py .
 COPY whale_radar_addon.py .
+COPY prediction_addon.py .
 
 EXPOSE 8090
 
