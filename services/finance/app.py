@@ -21,6 +21,14 @@ BINANCE_WS_URL   = "wss://stream.binance.com:9443/ws"
 BINANCE_REST_URL = "https://api.binance.com/api/v3"
 WHALE_USD_THRESH = float(os.getenv("WHALE_USD_THRESH", "500000"))
 
+# Coin büyüklüğüne göre dinamik eşik çarpanı (BTC'de 500K normal, DOGE'de dev)
+_WHALE_TIER = {
+    "BTCUSDT": 1.0, "ETHUSDT": 1.0,
+    "BNBUSDT": 0.4, "SOLUSDT": 0.4, "XRPUSDT": 0.4,
+}
+def whale_thresh_for(symbol: str) -> float:
+    return WHALE_USD_THRESH * _WHALE_TIER.get(symbol, 0.2)
+
 DEEPINFRA_API_KEY  = os.getenv("DEEPINFRA_API_KEY", "")
 DEEPINFRA_BASE_URL = os.getenv("DEEPINFRA_BASE_URL", "https://api.deepinfra.com/v1/openai")
 FINANS_LLM_MODEL   = os.getenv("FINANS_LLM_MODEL", "Qwen/Qwen3.5-4B")
@@ -396,7 +404,7 @@ async def detect_whale(symbol: str, trade: Dict) -> Optional[Dict]:
         price = float(trade.get("p", 0))
         qty   = float(trade.get("q", 0))
         usd   = price * qty
-        if usd >= WHALE_USD_THRESH:
+        if usd >= whale_thresh_for(symbol):
             side  = "SELL" if trade.get("m", False) else "BUY"
             whale = {
                 "type": "whale", "symbol": symbol, "side": side,
@@ -685,6 +693,23 @@ async def get_rates():
                 d = r.json()
                 for cur, val in d.get("rates", {}).items():
                     result[cur] = {"try": round(1 / val, 4), "raw": val}
+            # Günlük değişim: dünkü kurla karşılaştır (frankfurter en yakın iş gününü döner)
+            try:
+                from datetime import timedelta as _td
+                ydate = (datetime.now(timezone.utc) - _td(days=1)).strftime("%Y-%m-%d")
+                r2 = await client.get(
+                    f"https://api.frankfurter.app/{ydate}",
+                    params={"from": "TRY", "to": "USD,EUR,GBP,CHF,JPY,CAD,DKK,NOK,SEK,AUD"}
+                )
+                if r2.status_code == 200:
+                    yrates = r2.json().get("rates", {})
+                    for cur, yval in yrates.items():
+                        if cur in result and yval:
+                            prev_try = 1 / yval
+                            cur_try = result[cur]["try"]
+                            result[cur]["chg"] = round((cur_try - prev_try) / prev_try * 100, 2)
+            except Exception as e2:
+                print(f"[RATES] chg hata: {e2}")
     except Exception as e:
         print(f"[RATES] {e}")
     if result:
@@ -1205,6 +1230,12 @@ register_whale_radar(app, _sys.modules[__name__])
 # ═══════════════════════════════════════════════════════════════
 from prediction_addon import register_prediction
 register_prediction(app, _sys.modules[__name__])
+
+# ═══════════════════════════════════════════════════════════════
+# PRO KATMAN — haber ön-ısıtma + balina backfill/persist
+# ═══════════════════════════════════════════════════════════════
+from pro_addon import register_pro
+register_pro(app, _sys.modules[__name__])
 
 
 # ──────────────────────────────────────────────────────────────

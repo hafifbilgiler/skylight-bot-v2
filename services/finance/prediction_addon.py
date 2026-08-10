@@ -30,6 +30,88 @@ _THRESHOLDS = {"15m": 0.003, "1h": 0.005, "4h": 0.010, "1d": 0.020}
 _HORIZON = 4
 _K = 40  # en benzer kaç geçmiş durum
 
+# ─────────────── İSABET TAKİBİ ───────────────
+# Her tahmin kaydedilir; süresi dolunca gerçekleşenle karşılaştırılır.
+# Panelde "son tahminlerimizin %X'i tuttu" olarak gösterilir. Kimsede yok.
+_ACC_FILE = "/tmp/onebune_accuracy.json"
+_HORIZON_SEC = {"15m": 3600, "1h": 14400, "4h": 57600, "1d": 345600}
+_acc_records: List[Dict] = []
+
+
+def _acc_load():
+    global _acc_records
+    try:
+        import os as _os
+        if _os.path.exists(_ACC_FILE):
+            import json as _json
+            with open(_ACC_FILE) as f:
+                _acc_records = _json.load(f)[-500:]
+    except Exception:
+        _acc_records = []
+
+
+def _acc_save():
+    try:
+        import json as _json
+        with open(_ACC_FILE, "w") as f:
+            _json.dump(_acc_records[-500:], f)
+    except Exception:
+        pass
+
+
+def _acc_evaluate(app_module):
+    """Süresi dolan tahminleri gerçekleşen fiyatla karşılaştır."""
+    now = _time.time()
+    kline_cache = getattr(app_module, "kline_cache", {})
+    changed = False
+    for rec in _acc_records:
+        if rec.get("evaluated"):
+            continue
+        hsec = _HORIZON_SEC.get(rec["interval"], 14400)
+        if now - rec["ts"] < hsec:
+            continue
+        klines = list(kline_cache.get(rec["symbol"], {}).get(rec["interval"], []))
+        if not klines:
+            continue
+        cur_price = float(klines[-1]["c"])
+        thr = _THRESHOLDS.get(rec["interval"], 0.005)
+        r = cur_price / rec["price"] - 1
+        actual = "yükseliş" if r > thr else "düşüş" if r < -thr else "yatay"
+        rec["actual"] = actual
+        rec["correct"] = (actual == rec["direction"])
+        rec["evaluated"] = True
+        rec["eval_ts"] = now
+        changed = True
+    if changed:
+        _acc_save()
+
+
+def _acc_stats() -> Optional[Dict]:
+    """Son 7 günün isabet özeti."""
+    cutoff = _time.time() - 7 * 86400
+    done = [r for r in _acc_records if r.get("evaluated") and r.get("eval_ts", 0) >= cutoff]
+    if len(done) < 5:
+        return None
+    correct = sum(1 for r in done if r.get("correct"))
+    return {"evaluated": len(done), "correct": correct, "pct": round(correct / len(done) * 100)}
+
+
+def _acc_record(symbol, interval, direction, price):
+    """Yeni tahmini kaydet (aynı sym+interval için yakın zamanda kayıt varsa atla)."""
+    now = _time.time()
+    hsec = _HORIZON_SEC.get(interval, 14400)
+    for rec in reversed(_acc_records[-50:]):
+        if rec["symbol"] == symbol and rec["interval"] == interval and (now - rec["ts"]) < hsec / 2:
+            return  # yakın zamanda zaten kayıtlı
+    _acc_records.append({
+        "symbol": symbol, "interval": interval, "direction": direction,
+        "price": price, "ts": now, "evaluated": False,
+    })
+    _acc_save()
+
+
+_acc_load()
+
 # Özellik ağırlıkları (mesafe hesabında)
 _W = {"rsi": 0.30, "mom": 0.25, "gap": 0.20, "vol": 0.15, "vr": 0.10}
 
@@ -310,6 +392,11 @@ def register_prediction(app, app_module):
         horizon_map = {"15m": "~1 saat", "1h": "~4 saat", "4h": "~16 saat", "1d": "~4 gün"}
         horizon = horizon_map.get(interval, f"{_HORIZON} mum")
 
+        # İsabet takibi: süresi dolan tahminleri değerlendir + bunu kaydet
+        _acc_evaluate(app_module)
+        _acc_record(symbol, interval, direction, closes[-1])
+        accuracy = _acc_stats()
+
         result = {
             "symbol": symbol,
             "interval": interval,
@@ -328,6 +415,7 @@ def register_prediction(app, app_module):
                 "news_count": news_count,
             },
             "interpretation": _interpretation(composite, rsi_now, mom_raw, whale_norm, confidence, news_norm, news_count),
+            "accuracy": accuracy,
             "price": closes[-1],
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "disclaimer": ("Geçmiş verilere dayalı istatistiksel dağılımdır. "
