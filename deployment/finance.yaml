@@ -24,7 +24,7 @@ spec:
         - containerPort: 8090
         env:
         - name: WHALE_USD_THRESH
-          value: "500000"
+          value: "100000"
         - name: DEEPINFRA_BASE_URL
           value: "https://api.deepinfra.com/v1/openai"
         - name: FINANS_LLM_MODEL
