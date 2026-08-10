@@ -126,7 +126,7 @@ def _own_tech_score(rsi, mom_raw, gap_raw) -> float:
 
 # ─────────────────── Kullanıcı yorumu (disiplin) ───────────────────
 
-def _interpretation(score, rsi, mom_raw, whale_norm, confidence) -> str:
+def _interpretation(score, rsi, mom_raw, whale_norm, confidence, news_norm=50, news_count=0) -> str:
     parts = []
     if score >= 58:
         parts.append("Geçmiş benzerlikler yükseliş lehine.")
@@ -146,6 +146,12 @@ def _interpretation(score, rsi, mom_raw, whale_norm, confidence) -> str:
         parts.append("Büyük oyuncular net alıcı tarafta.")
     elif whale_norm <= 35:
         parts.append("Büyük oyuncular net satıcı tarafta.")
+    # Haber akışı
+    if news_count >= 3:
+        if news_norm >= 62:
+            parts.append(f"Haber akışı olumlu ({news_count} haber analiz edildi).")
+        elif news_norm <= 38:
+            parts.append(f"Haber akışı olumsuz ({news_count} haber analiz edildi).")
     if confidence == "düşük":
         parts.append("Örnek sayısı az — bu tabloya tek başına güvenme.")
     return " ".join(parts)
@@ -259,7 +265,32 @@ def register_prediction(app, app_module):
         tot = buy_usd + sell_usd
         whale_norm = 50 if tot == 0 else _clamp(50 + (buy_usd - sell_usd) / tot * 50, 0, 100)
 
-        composite = round(0.4 * hist_norm + 0.4 * tech_norm + 0.2 * whale_norm)
+        # ── Haber duygusu (AI analiz cache'inden) ──
+        news_cache = getattr(app_module, "_news_analysis_cache", {})
+        coin_short = symbol.replace("USDT", "")
+        news_vals = []
+        for a in list(news_cache.values())[-150:]:
+            if not isinstance(a, dict):
+                continue
+            coins = [str(c).upper() for c in (a.get("affected_coins") or [])]
+            # Coin'e özel haber veya genel piyasa haberi (BTC herkesi etkiler)
+            if coins and coin_short not in coins and "BTC" not in coins:
+                continue
+            imp = (a.get("impact") or "nötr").lower()
+            stw = {"zayıf": 0.5, "orta": 1.0, "güçlü": 1.5}.get((a.get("strength") or "orta").lower(), 1.0)
+            if "yük" in imp:
+                news_vals.append(+stw)
+            elif "düş" in imp:
+                news_vals.append(-stw)
+            else:
+                news_vals.append(0.0)
+        news_count = len(news_vals)
+        news_norm = 50.0
+        if news_vals:
+            news_norm = _clamp(50 + (sum(news_vals) / len(news_vals)) * 30, 0, 100)
+
+        # Kompozit: geçmiş %35 + teknik %35 + balina %15 + haber %15
+        composite = round(0.35 * hist_norm + 0.35 * tech_norm + 0.15 * whale_norm + 0.15 * news_norm)
         if composite >= 58:
             direction, dlabel = "yükseliş", "Yükseliş eğilimi"
         elif composite <= 42:
@@ -293,8 +324,10 @@ def register_prediction(app, app_module):
                 "technical": round(tech_norm),
                 "historical": round(hist_norm),
                 "whale": round(whale_norm),
+                "news": round(news_norm),
+                "news_count": news_count,
             },
-            "interpretation": _interpretation(composite, rsi_now, mom_raw, whale_norm, confidence),
+            "interpretation": _interpretation(composite, rsi_now, mom_raw, whale_norm, confidence, news_norm, news_count),
             "price": closes[-1],
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "disclaimer": ("Geçmiş verilere dayalı istatistiksel dağılımdır. "
