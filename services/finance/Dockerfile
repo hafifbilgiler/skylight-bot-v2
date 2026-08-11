@@ -13,6 +13,7 @@ COPY prediction_addon.py .
 COPY pro_addon.py .
 COPY tension_addon.py .
 COPY pool_addon.py .
+COPY portfolio_addon.py .
 
 EXPOSE 8090
 

@@ -71,46 +71,56 @@ def _load_whales(app_module):
 # ─────────────── Balina: Binance geçmişten doldur ───────────────
 
 async def _backfill_whales(app_module):
-    """Binance aggTrades'ten son büyük işlemleri çek, radar boş başlamasın."""
+    """Binance'ten son 6 saatin büyük işlemlerini çek, radar dolu başlasın."""
     supported = getattr(app_module, "SUPPORTED_COINS", [])
     wh = getattr(app_module, "whale_history", {})
     total = 0
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    now_ms = int(_time.time() * 1000)
+    six_hours_ms = 6 * 3600 * 1000
+    async with httpx.AsyncClient(timeout=15.0) as client:
         for symbol in supported:
             try:
-                # Zaten veri varsa (kalıcı dosyadan geldi) atlama yapma, yine tara — dedup basit
                 thr = _thresh(app_module, symbol)
-                r = await client.get(
-                    "https://api.binance.com/api/v3/aggTrades",
-                    params={"symbol": symbol, "limit": 1000},
-                )
-                if r.status_code != 200:
-                    continue
                 existing_ts = {w.get("timestamp") for w in wh.get(symbol, [])}
                 found = []
-                for t in r.json():
-                    price = float(t.get("p", 0))
-                    qty = float(t.get("q", 0))
-                    usd = price * qty
-                    if usd >= thr:
-                        ts = datetime.fromtimestamp(t.get("T", 0) / 1000, tz=timezone.utc).isoformat()
-                        if ts in existing_ts:
-                            continue
-                        side = "SELL" if t.get("m", False) else "BUY"
-                        found.append({
-                            "type": "whale", "symbol": symbol, "side": side,
-                            "usd": round(usd, 0), "price": price, "qty": qty,
-                            "emoji": "🐋 WHALE ALIM" if side == "BUY" else "🐋 WHALE SATIŞ",
-                            "timestamp": ts,
-                        })
-                # Eskiden yeniye ekle
+                # Son 6 saati 30 dakikalık dilimlerle tara (aggTrades zaman aralığı)
+                start = now_ms - six_hours_ms
+                while start < now_ms:
+                    end = min(start + 30 * 60 * 1000, now_ms)
+                    try:
+                        r = await client.get(
+                            "https://api.binance.com/api/v3/aggTrades",
+                            params={"symbol": symbol, "startTime": start, "endTime": end, "limit": 1000},
+                        )
+                        if r.status_code == 200:
+                            for t in r.json():
+                                price = float(t.get("p", 0))
+                                qty = float(t.get("q", 0))
+                                usd = price * qty
+                                if usd >= thr:
+                                    ts = datetime.fromtimestamp(t.get("T", 0) / 1000, tz=timezone.utc).isoformat()
+                                    if ts in existing_ts:
+                                        continue
+                                    existing_ts.add(ts)
+                                    side = "SELL" if t.get("m", False) else "BUY"
+                                    found.append({
+                                        "type": "whale", "symbol": symbol, "side": side,
+                                        "usd": round(usd, 0), "price": price, "qty": qty,
+                                        "emoji": "🐋 WHALE ALIM" if side == "BUY" else "🐋 WHALE SATIŞ",
+                                        "timestamp": ts,
+                                    })
+                    except Exception:
+                        pass
+                    start = end
+                    await asyncio.sleep(0.12)  # rate limit nezaketi
+                # Zaman sırasına diz, ekle
+                found.sort(key=lambda x: x["timestamp"])
                 for w in found:
                     wh[symbol].append(w)
                 total += len(found)
-                await asyncio.sleep(0.15)  # rate limit nezaketi
             except Exception as e:
                 print(f"[PRO] backfill {symbol}: {e}")
-    print(f"[PRO] ✅ Balina backfill: {total} geçmiş işlem yüklendi")
+    print(f"[PRO] ✅ Balina backfill (6 saat): {total} geçmiş işlem yüklendi")
 
 
 # ─────────────── Haber: arka plan ön-ısıtma ───────────────

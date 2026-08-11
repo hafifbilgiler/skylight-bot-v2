@@ -1249,6 +1249,12 @@ register_tension(app, _sys.modules[__name__])
 from pool_addon import register_pool
 register_pool(app, _sys.modules[__name__])
 
+# ═══════════════════════════════════════════════════════════════
+# PORTFÖY (Postgres) — kişiye özel, kalıcı
+# ═══════════════════════════════════════════════════════════════
+from portfolio_addon import register_portfolio
+register_portfolio(app, _sys.modules[__name__])
+
 
 # ──────────────────────────────────────────────────────────────
 # STARTUP — En son tanımlanır (decorator FastAPI'ye registry sırasıyla eklenir)
