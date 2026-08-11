@@ -11,6 +11,7 @@ COPY metals_addon.py .
 COPY whale_radar_addon.py .
 COPY prediction_addon.py .
 COPY pro_addon.py .
+COPY tension_addon.py .
 
 EXPOSE 8090
 

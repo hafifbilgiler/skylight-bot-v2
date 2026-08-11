@@ -1237,6 +1237,12 @@ register_prediction(app, _sys.modules[__name__])
 from pro_addon import register_pro
 register_pro(app, _sys.modules[__name__])
 
+# ═══════════════════════════════════════════════════════════════
+# PATLAMA RADARI — Gerilim skoru (sürekli tarama + WS)
+# ═══════════════════════════════════════════════════════════════
+from tension_addon import register_tension
+register_tension(app, _sys.modules[__name__])
+
 
 # ──────────────────────────────────────────────────────────────
 # STARTUP — En son tanımlanır (decorator FastAPI'ye registry sırasıyla eklenir)
