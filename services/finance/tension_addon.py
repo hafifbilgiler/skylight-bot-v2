@@ -149,6 +149,18 @@ def compute_tension(app_module, symbol: str) -> Dict:
         except (TypeError, ValueError):
             volumes.append(0)
 
+    # Mum formasyonu sinyali (güçlü dönüş/hareket formasyonları)
+    pattern_sig = None
+    try:
+        detect_patterns = getattr(app_module, "detect_candle_patterns", None)
+        if detect_patterns and len(klines) >= 3:
+            pats = detect_patterns(klines)
+            strong = [p for p in pats if p.get("strength") in ("strong", "medium")]
+            if strong:
+                pattern_sig = strong[0].get("emoji", "") + " " + strong[0].get("name", "")
+    except Exception:
+        pass
+
     parts = [
         (_bollinger_squeeze(closes), "squeeze"),
         (_volume_awakening(volumes), "volume"),
@@ -159,6 +171,9 @@ def compute_tension(app_module, symbol: str) -> Dict:
     raw = sum(res[0] * _WEIGHTS[key] for (res, key) in parts)
     score = round(raw * 100)
     signals = [res[1] for (res, key) in parts if res[1]]
+    if pattern_sig:
+        signals.append(pattern_sig)
+        score = min(100, score + 12)  # güçlü formasyon gerilimi artırır
     active = len(signals)
 
     if score >= 65 and active >= 2:

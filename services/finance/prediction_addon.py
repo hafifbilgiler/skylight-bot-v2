@@ -382,8 +382,33 @@ async def _compute_prediction(app_module, symbol: str, interval: str):
     if news_vals:
         news_norm = _clamp(50 + (sum(news_vals) / len(news_vals)) * 30, 0, 100)
 
-    # Kompozit: geçmiş %35 + teknik %35 + balina %15 + haber %15
-    composite = round(0.35 * hist_norm + 0.35 * tech_norm + 0.15 * whale_norm + 0.15 * news_norm)
+    # ── Mum formasyonu bileşeni (çekiç, yutan, dip/tepe dönüşleri) ──
+    # Grafikteki ters çekiç/dökülme gibi hareketleri yakalar
+    pattern_norm = 50.0
+    active_patterns = []
+    try:
+        _klines_raw = list(kline_cache.get(symbol, {}).get(interval, []))
+        _detect_patterns = getattr(app_module, "detect_candle_patterns", None)
+        if _detect_patterns and len(_klines_raw) >= 3:
+            _pats = _detect_patterns(_klines_raw)
+            _strength_w = {"weak": 0.4, "medium": 0.8, "strong": 1.3}
+            _shift = 0.0
+            for _pat in _pats:
+                _w = _strength_w.get(_pat.get("strength", "medium"), 0.8)
+                _d = _pat.get("direction")
+                if _d == "bullish":
+                    _shift += _w
+                elif _d == "bearish":
+                    _shift -= _w
+                active_patterns.append({"name": _pat.get("name", ""), "emoji": _pat.get("emoji", ""),
+                                        "direction": _pat.get("direction"), "desc": _pat.get("desc", "")})
+            pattern_norm = _clamp(50 + _shift * 18, 0, 100)
+    except Exception:
+        pass
+
+    # Kompozit: geçmiş %30 + teknik %25 + formasyon %15 + balina %15 + haber %15
+    composite = round(0.30 * hist_norm + 0.25 * tech_norm + 0.15 * pattern_norm +
+                      0.15 * whale_norm + 0.15 * news_norm)
     if composite >= 58:
         direction, dlabel = "yükseliş", "Yükseliş eğilimi"
     elif composite <= 42:
@@ -422,10 +447,12 @@ async def _compute_prediction(app_module, symbol: str, interval: str):
         "components": {
             "technical": round(tech_norm),
             "historical": round(hist_norm),
+            "pattern": round(pattern_norm),
             "whale": round(whale_norm),
             "news": round(news_norm),
             "news_count": news_count,
         },
+        "patterns": active_patterns,
         "interpretation": _interpretation(composite, rsi_now, mom_raw, whale_norm, confidence, news_norm, news_count),
         "accuracy": accuracy,
         "price": closes[-1],
