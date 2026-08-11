@@ -12,6 +12,7 @@ COPY whale_radar_addon.py .
 COPY prediction_addon.py .
 COPY pro_addon.py .
 COPY tension_addon.py .
+COPY pool_addon.py .
 
 EXPOSE 8090
 

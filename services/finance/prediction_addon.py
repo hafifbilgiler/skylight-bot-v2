@@ -333,6 +333,22 @@ async def _compute_prediction(app_module, symbol: str, interval: str):
         tech_score = _own_tech_score(rsi_now, mom_raw, gap_raw)
     tech_norm = _clamp((tech_score + 5) * 10, 0, 100)
 
+    # ── Öğrenen havuz: gerçek geçmiş verisi varsa KNN yerine ONU kullan ──
+    pool_source = None
+    try:
+        import pool_addon as _pool
+        feats = {"rsi": rsi_vals[n - 1], "momentum": (closes[-1] - closes[-6]) / closes[-6]}
+        pooled = _pool.query_similar(app_module, symbol, feats)
+        if pooled and pooled["sample_count"] >= 8:
+            # Havuzdaki gerçek sonuç dağılımı KNN'den daha değerli
+            probs = {"up": pooled["up"], "flat": pooled["flat"], "down": pooled["down"]}
+            diff = 100 - sum(probs.values())
+            probs["flat"] += diff
+            sample_count = pooled["sample_count"]
+            pool_source = pooled["source"]
+    except Exception:
+        pass
+
     hist_norm = _clamp(50 + (probs["up"] - probs["down"]) / 2, 0, 100)
 
     whale_history = getattr(app_module, "whale_history", {})
@@ -398,7 +414,8 @@ async def _compute_prediction(app_module, symbol: str, interval: str):
         "horizon": horizon,
         "probabilities": probs,
         "sample_count": sample_count,
-        "matched_on": "5 özellikli benzerlik (RSI, momentum, trend, volatilite, hacim)",
+        "matched_on": pool_source or "5 özellikli benzerlik (RSI, momentum, trend, volatilite, hacim)",
+        "learning": bool(pool_source),
         "expected_range": {"low": round(exp_low, 2), "high": round(exp_high, 2)},
         "confidence": confidence,
         "composite": {"score": composite, "direction": direction, "label": dlabel},

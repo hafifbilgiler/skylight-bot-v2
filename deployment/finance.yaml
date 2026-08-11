@@ -18,13 +18,32 @@ spec:
     spec:
       containers:
       - name: finans
-        image: docker.io/hafifbilgiler/skylight-finans:4.3  #2.7 3.3 3.4 3.5
+        image: docker.io/hafifbilgiler/skylight-finans:4.4  #2.7 3.3 3.4 3.5
         imagePullPolicy: Always
         ports:
         - containerPort: 8090
         env:
         - name: WHALE_USD_THRESH
           value: "100000"
+        - name: DB_HOST
+          value: "postgres"
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: pg-secret
+              key: dbname
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: pg-secret
+              key: username
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: pg-secret
+              key: password
         - name: DEEPINFRA_BASE_URL
           value: "https://api.deepinfra.com/v1/openai"
         - name: FINANS_LLM_MODEL

@@ -1243,6 +1243,12 @@ register_pro(app, _sys.modules[__name__])
 from tension_addon import register_tension
 register_tension(app, _sys.modules[__name__])
 
+# ═══════════════════════════════════════════════════════════════
+# ÖĞRENEN TAHMİN HAVUZU (Postgres) — gerçek geçmişten öğrenir
+# ═══════════════════════════════════════════════════════════════
+from pool_addon import register_pool
+register_pool(app, _sys.modules[__name__])
+
 
 # ──────────────────────────────────────────────────────────────
 # STARTUP — En son tanımlanır (decorator FastAPI'ye registry sırasıyla eklenir)
