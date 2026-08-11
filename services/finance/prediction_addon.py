@@ -15,6 +15,7 @@ Endpoint: GET /predict/{symbol}?interval=1h
 app.py register aynı: register_prediction(app, _sys.modules[__name__])
 ═══════════════════════════════════════════════════════════════
 """
+import asyncio
 import math
 import time as _time
 from datetime import datetime, timezone
@@ -241,6 +242,184 @@ def _interpretation(score, rsi, mom_raw, whale_norm, confidence, news_norm=50, n
 
 # ─────────────────────────── Register ───────────────────────────
 
+async def _compute_prediction(app_module, symbol: str, interval: str):
+    """Tahmini hesapla — endpoint + arka plan görevi ortak kullanır."""
+    symbol = symbol.upper()
+    supported = getattr(app_module, "SUPPORTED_COINS", [])
+    if symbol not in supported:
+        return None
+    ck = f"{symbol}:{interval}"
+    cached = _pred_cache.get(ck)
+    if cached and (_time.time() - cached["ts"]) < _PRED_TTL:
+        return {**cached["data"], "_cached": True}
+    kline_cache = getattr(app_module, "kline_cache", {})
+    if symbol not in kline_cache or interval not in kline_cache.get(symbol, {}):
+        await app_module.fetch_historical(symbol, interval, 300)
+
+    klines = list(kline_cache.get(symbol, {}).get(interval, []))
+    if len(klines) < 60:
+        return {"error": "Yetersiz veri", "symbol": symbol}
+
+    closes = [float(k["c"]) for k in klines]
+    volumes = []
+    for k in klines:
+        try:
+            volumes.append(float(k.get("v", 0)) or None)
+        except (TypeError, ValueError):
+            volumes.append(None)
+
+    n = len(closes)
+    thr = _THRESHOLDS.get(interval, 0.005)
+
+    rsi_vals: List[Optional[float]] = [None] * n
+    for i in range(15, n):
+        rsi_vals[i] = _rsi_at(closes, i)
+    e9 = _ema_series(closes, 9)
+    e21 = _ema_series(closes, 21)
+
+    cur = _features(closes, volumes, rsi_vals, e9, e21, n - 1)
+    if cur is None:
+        return {"error": "Durum hesaplanamadı", "symbol": symbol}
+
+    # ── KNN: en benzer geçmiş durumlar ──
+    candidates = []
+    for i in range(30, n - _HORIZON):
+        f = _features(closes, volumes, rsi_vals, e9, e21, i)
+        if f is None:
+            continue
+        d = _dist(cur, f)
+        fwd = closes[i + _HORIZON] / closes[i] - 1
+        candidates.append((d, fwd))
+    candidates.sort(key=lambda x: x[0])
+    nearest = candidates[:_K]
+
+    if not nearest:
+        probs = {"up": 33, "flat": 34, "down": 33}
+        exp_low = exp_high = 0.0
+        sample_count = 0
+    else:
+        # Benzerlik ağırlığı: yakın olan daha çok sayılır
+        weighted = [(fwd, 1.0 / (0.02 + d)) for d, fwd in nearest]
+        wsum = sum(w for _, w in weighted)
+        up_w = sum(w for r, w in weighted if r > thr)
+        dn_w = sum(w for r, w in weighted if r < -thr)
+        fl_w = wsum - up_w - dn_w
+        probs = {
+            "up": round(up_w / wsum * 100),
+            "flat": round(fl_w / wsum * 100),
+            "down": round(dn_w / wsum * 100),
+        }
+        # yuvarlama farkını düzelt
+        diff = 100 - sum(probs.values())
+        probs["flat"] += diff
+        exp_low = _wpercentile(weighted, 0.25) * 100
+        exp_high = _wpercentile(weighted, 0.75) * 100
+        sample_count = len(nearest)
+
+    # ── Bileşenler ──
+    rsi_now = rsi_vals[n - 1] or 50
+    mom_raw = (closes[-1] - closes[-6]) / closes[-6]
+    gap_raw = (e9[-1] - e21[-1]) / e21[-1] if e9[-1] and e21[-1] else 0
+
+    # Teknik: önce mevcut motor, hata verirse kendi hesabımız (panel asla boş kalmaz)
+    tech_score = None
+    try:
+        sig = app_module.detect_signals(symbol, interval)
+        if isinstance(sig, dict) and "error" not in sig:
+            tech_score = sig.get("signal", {}).get("score")
+    except Exception:
+        pass
+    if tech_score is None:
+        tech_score = _own_tech_score(rsi_now, mom_raw, gap_raw)
+    tech_norm = _clamp((tech_score + 5) * 10, 0, 100)
+
+    hist_norm = _clamp(50 + (probs["up"] - probs["down"]) / 2, 0, 100)
+
+    whale_history = getattr(app_module, "whale_history", {})
+    whales = list(whale_history.get(symbol, []))[-20:]
+    buy_usd = sum(w.get("usd", 0) for w in whales if w.get("side") == "BUY")
+    sell_usd = sum(w.get("usd", 0) for w in whales if w.get("side") == "SELL")
+    tot = buy_usd + sell_usd
+    whale_norm = 50 if tot == 0 else _clamp(50 + (buy_usd - sell_usd) / tot * 50, 0, 100)
+
+    # ── Haber duygusu (AI analiz cache'inden) ──
+    news_cache = getattr(app_module, "_news_analysis_cache", {})
+    coin_short = symbol.replace("USDT", "")
+    news_vals = []
+    for a in list(news_cache.values())[-150:]:
+        if not isinstance(a, dict):
+            continue
+        coins = [str(c).upper() for c in (a.get("affected_coins") or [])]
+        # Coin'e özel haber veya genel piyasa haberi (BTC herkesi etkiler)
+        if coins and coin_short not in coins and "BTC" not in coins:
+            continue
+        imp = (a.get("impact") or "nötr").lower()
+        stw = {"zayıf": 0.5, "orta": 1.0, "güçlü": 1.5}.get((a.get("strength") or "orta").lower(), 1.0)
+        if "yük" in imp:
+            news_vals.append(+stw)
+        elif "düş" in imp:
+            news_vals.append(-stw)
+        else:
+            news_vals.append(0.0)
+    news_count = len(news_vals)
+    news_norm = 50.0
+    if news_vals:
+        news_norm = _clamp(50 + (sum(news_vals) / len(news_vals)) * 30, 0, 100)
+
+    # Kompozit: geçmiş %35 + teknik %35 + balina %15 + haber %15
+    composite = round(0.35 * hist_norm + 0.35 * tech_norm + 0.15 * whale_norm + 0.15 * news_norm)
+    if composite >= 58:
+        direction, dlabel = "yükseliş", "Yükseliş eğilimi"
+    elif composite <= 42:
+        direction, dlabel = "düşüş", "Düşüş eğilimi"
+    else:
+        direction, dlabel = "yatay", "Yatay / kararsız"
+
+    # ── Güven seviyesi ──
+    max_prob = max(probs.values())
+    if sample_count >= 30 and max_prob >= 55:
+        confidence = "yüksek"
+    elif sample_count >= 20 and max_prob >= 45:
+        confidence = "orta"
+    else:
+        confidence = "düşük"
+
+    horizon_map = {"15m": "~1 saat", "1h": "~4 saat", "4h": "~16 saat", "1d": "~4 gün"}
+    horizon = horizon_map.get(interval, f"{_HORIZON} mum")
+
+    # İsabet takibi: süresi dolan tahminleri değerlendir + bunu kaydet
+    _acc_evaluate(app_module)
+    _acc_record(symbol, interval, direction, closes[-1])
+    accuracy = _acc_stats()
+
+    result = {
+        "symbol": symbol,
+        "interval": interval,
+        "horizon": horizon,
+        "probabilities": probs,
+        "sample_count": sample_count,
+        "matched_on": "5 özellikli benzerlik (RSI, momentum, trend, volatilite, hacim)",
+        "expected_range": {"low": round(exp_low, 2), "high": round(exp_high, 2)},
+        "confidence": confidence,
+        "composite": {"score": composite, "direction": direction, "label": dlabel},
+        "components": {
+            "technical": round(tech_norm),
+            "historical": round(hist_norm),
+            "whale": round(whale_norm),
+            "news": round(news_norm),
+            "news_count": news_count,
+        },
+        "interpretation": _interpretation(composite, rsi_now, mom_raw, whale_norm, confidence, news_norm, news_count),
+        "accuracy": accuracy,
+        "price": closes[-1],
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "disclaimer": ("Geçmiş verilere dayalı istatistiksel dağılımdır. "
+                       "Gelecek garantisi değildir, yatırım tavsiyesi değildir."),
+    }
+    _pred_cache[ck] = {"data": result, "ts": _time.time()}
+    return result
+
+
 def register_prediction(app, app_module):
     global _app_module
     _app_module = app_module
@@ -248,180 +427,49 @@ def register_prediction(app, app_module):
     @app.get("/predict/{symbol}")
     async def predict(symbol: str, interval: str = Query("1h")):
         symbol = symbol.upper()
-        supported = getattr(app_module, "SUPPORTED_COINS", [])
-        if symbol not in supported:
+        if symbol not in getattr(app_module, "SUPPORTED_COINS", []):
             raise HTTPException(404)
+        r = await _compute_prediction(app_module, symbol, interval)
+        if r is None:
+            raise HTTPException(404)
+        if "error" in r:
+            return r
+        return r
 
-        ck = f"{symbol}:{interval}"
-        cached = _pred_cache.get(ck)
-        if cached and (_time.time() - cached["ts"]) < _PRED_TTL:
-            return {**cached["data"], "_cached": True}
+    @app.get("/predict")
+    async def predict_all(interval: str = Query("1h")):
+        """Tüm coinlerin tahmin skoru — kripto listesinde mini skor için."""
+        out = []
+        for sym in getattr(app_module, "SUPPORTED_COINS", []):
+            ck = f"{sym}:{interval}"
+            c = _pred_cache.get(ck)
+            if c:
+                d = c["data"]
+                out.append({"symbol": sym, "coin": sym.replace("USDT", ""),
+                            "score": d.get("composite", {}).get("score"),
+                            "direction": d.get("composite", {}).get("direction"),
+                            "confidence": d.get("confidence")})
+        out.sort(key=lambda x: x.get("score") or 0, reverse=True)
+        return {"items": out, "count": len(out), "interval": interval}
 
-        kline_cache = getattr(app_module, "kline_cache", {})
-        if symbol not in kline_cache or interval not in kline_cache.get(symbol, {}):
-            await app_module.fetch_historical(symbol, interval, 300)
-
-        klines = list(kline_cache.get(symbol, {}).get(interval, []))
-        if len(klines) < 60:
-            return {"error": "Yetersiz veri", "symbol": symbol}
-
-        closes = [float(k["c"]) for k in klines]
-        volumes = []
-        for k in klines:
+    async def _prewarm_loop():
+        # Arka planda sürekli hesapla → kullanıcı açınca HAZIR gelir (bekleme yok)
+        await asyncio.sleep(20)
+        while True:
             try:
-                volumes.append(float(k.get("v", 0)) or None)
-            except (TypeError, ValueError):
-                volumes.append(None)
+                for sym in getattr(app_module, "SUPPORTED_COINS", []):
+                    try:
+                        await _compute_prediction(app_module, sym, "1h")
+                        await asyncio.sleep(0.3)
+                    except Exception:
+                        pass
+            except Exception as e:
+                print(f"[PREDICTION] prewarm: {e}")
+            await asyncio.sleep(45)
 
-        n = len(closes)
-        thr = _THRESHOLDS.get(interval, 0.005)
+    @app.on_event("startup")
+    async def _pred_startup():
+        asyncio.create_task(_prewarm_loop())
+        print("[PREDICTION] ✅ Arka plan ön-hesaplama başladı (her 45sn)")
 
-        rsi_vals: List[Optional[float]] = [None] * n
-        for i in range(15, n):
-            rsi_vals[i] = _rsi_at(closes, i)
-        e9 = _ema_series(closes, 9)
-        e21 = _ema_series(closes, 21)
-
-        cur = _features(closes, volumes, rsi_vals, e9, e21, n - 1)
-        if cur is None:
-            return {"error": "Durum hesaplanamadı", "symbol": symbol}
-
-        # ── KNN: en benzer geçmiş durumlar ──
-        candidates = []
-        for i in range(30, n - _HORIZON):
-            f = _features(closes, volumes, rsi_vals, e9, e21, i)
-            if f is None:
-                continue
-            d = _dist(cur, f)
-            fwd = closes[i + _HORIZON] / closes[i] - 1
-            candidates.append((d, fwd))
-        candidates.sort(key=lambda x: x[0])
-        nearest = candidates[:_K]
-
-        if not nearest:
-            probs = {"up": 33, "flat": 34, "down": 33}
-            exp_low = exp_high = 0.0
-            sample_count = 0
-        else:
-            # Benzerlik ağırlığı: yakın olan daha çok sayılır
-            weighted = [(fwd, 1.0 / (0.02 + d)) for d, fwd in nearest]
-            wsum = sum(w for _, w in weighted)
-            up_w = sum(w for r, w in weighted if r > thr)
-            dn_w = sum(w for r, w in weighted if r < -thr)
-            fl_w = wsum - up_w - dn_w
-            probs = {
-                "up": round(up_w / wsum * 100),
-                "flat": round(fl_w / wsum * 100),
-                "down": round(dn_w / wsum * 100),
-            }
-            # yuvarlama farkını düzelt
-            diff = 100 - sum(probs.values())
-            probs["flat"] += diff
-            exp_low = _wpercentile(weighted, 0.25) * 100
-            exp_high = _wpercentile(weighted, 0.75) * 100
-            sample_count = len(nearest)
-
-        # ── Bileşenler ──
-        rsi_now = rsi_vals[n - 1] or 50
-        mom_raw = (closes[-1] - closes[-6]) / closes[-6]
-        gap_raw = (e9[-1] - e21[-1]) / e21[-1] if e9[-1] and e21[-1] else 0
-
-        # Teknik: önce mevcut motor, hata verirse kendi hesabımız (panel asla boş kalmaz)
-        tech_score = None
-        try:
-            sig = app_module.detect_signals(symbol, interval)
-            if isinstance(sig, dict) and "error" not in sig:
-                tech_score = sig.get("signal", {}).get("score")
-        except Exception:
-            pass
-        if tech_score is None:
-            tech_score = _own_tech_score(rsi_now, mom_raw, gap_raw)
-        tech_norm = _clamp((tech_score + 5) * 10, 0, 100)
-
-        hist_norm = _clamp(50 + (probs["up"] - probs["down"]) / 2, 0, 100)
-
-        whale_history = getattr(app_module, "whale_history", {})
-        whales = list(whale_history.get(symbol, []))[-20:]
-        buy_usd = sum(w.get("usd", 0) for w in whales if w.get("side") == "BUY")
-        sell_usd = sum(w.get("usd", 0) for w in whales if w.get("side") == "SELL")
-        tot = buy_usd + sell_usd
-        whale_norm = 50 if tot == 0 else _clamp(50 + (buy_usd - sell_usd) / tot * 50, 0, 100)
-
-        # ── Haber duygusu (AI analiz cache'inden) ──
-        news_cache = getattr(app_module, "_news_analysis_cache", {})
-        coin_short = symbol.replace("USDT", "")
-        news_vals = []
-        for a in list(news_cache.values())[-150:]:
-            if not isinstance(a, dict):
-                continue
-            coins = [str(c).upper() for c in (a.get("affected_coins") or [])]
-            # Coin'e özel haber veya genel piyasa haberi (BTC herkesi etkiler)
-            if coins and coin_short not in coins and "BTC" not in coins:
-                continue
-            imp = (a.get("impact") or "nötr").lower()
-            stw = {"zayıf": 0.5, "orta": 1.0, "güçlü": 1.5}.get((a.get("strength") or "orta").lower(), 1.0)
-            if "yük" in imp:
-                news_vals.append(+stw)
-            elif "düş" in imp:
-                news_vals.append(-stw)
-            else:
-                news_vals.append(0.0)
-        news_count = len(news_vals)
-        news_norm = 50.0
-        if news_vals:
-            news_norm = _clamp(50 + (sum(news_vals) / len(news_vals)) * 30, 0, 100)
-
-        # Kompozit: geçmiş %35 + teknik %35 + balina %15 + haber %15
-        composite = round(0.35 * hist_norm + 0.35 * tech_norm + 0.15 * whale_norm + 0.15 * news_norm)
-        if composite >= 58:
-            direction, dlabel = "yükseliş", "Yükseliş eğilimi"
-        elif composite <= 42:
-            direction, dlabel = "düşüş", "Düşüş eğilimi"
-        else:
-            direction, dlabel = "yatay", "Yatay / kararsız"
-
-        # ── Güven seviyesi ──
-        max_prob = max(probs.values())
-        if sample_count >= 30 and max_prob >= 55:
-            confidence = "yüksek"
-        elif sample_count >= 20 and max_prob >= 45:
-            confidence = "orta"
-        else:
-            confidence = "düşük"
-
-        horizon_map = {"15m": "~1 saat", "1h": "~4 saat", "4h": "~16 saat", "1d": "~4 gün"}
-        horizon = horizon_map.get(interval, f"{_HORIZON} mum")
-
-        # İsabet takibi: süresi dolan tahminleri değerlendir + bunu kaydet
-        _acc_evaluate(app_module)
-        _acc_record(symbol, interval, direction, closes[-1])
-        accuracy = _acc_stats()
-
-        result = {
-            "symbol": symbol,
-            "interval": interval,
-            "horizon": horizon,
-            "probabilities": probs,
-            "sample_count": sample_count,
-            "matched_on": "5 özellikli benzerlik (RSI, momentum, trend, volatilite, hacim)",
-            "expected_range": {"low": round(exp_low, 2), "high": round(exp_high, 2)},
-            "confidence": confidence,
-            "composite": {"score": composite, "direction": direction, "label": dlabel},
-            "components": {
-                "technical": round(tech_norm),
-                "historical": round(hist_norm),
-                "whale": round(whale_norm),
-                "news": round(news_norm),
-                "news_count": news_count,
-            },
-            "interpretation": _interpretation(composite, rsi_now, mom_raw, whale_norm, confidence, news_norm, news_count),
-            "accuracy": accuracy,
-            "price": closes[-1],
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "disclaimer": ("Geçmiş verilere dayalı istatistiksel dağılımdır. "
-                           "Gelecek garantisi değildir, yatırım tavsiyesi değildir."),
-        }
-        _pred_cache[ck] = {"data": result, "ts": _time.time()}
-        return result
-
-    print("[PREDICTION] ✅ v2 register edildi: /predict/{symbol} (KNN benzerlik motoru)")
+    print("[PREDICTION] ✅ v2 register edildi: /predict/{symbol} + /predict (KNN)")
