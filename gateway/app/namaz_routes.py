@@ -66,6 +66,12 @@ SMTP_FROM = os.getenv("SMTP_FROM", SMTP_USER or "noreply@one-bune.com")
 ABUSE_CONTROL_URL = os.getenv("ABUSE_CONTROL_URL", "http://skylight-bot-abuse-control:8010")
 
 # =====================================================
+# SABIT TEST HESABI
+# =====================================================
+TEST_EMAIL = "testers@duavenamaz.com"
+TEST_CODE = "123456"
+
+# =====================================================
 # KENDI DB POOL'U - main.py'deki pool'dan ayri bir nesne
 # ama AYNI veritabanina baglanir
 # =====================================================
@@ -201,9 +207,40 @@ async def namaz_request_code_endpoint(req: NamazOTPRequest, request: Request):
             existing_user = cur.fetchone()
 
             if req.mode == "login" and not existing_user:
-                raise HTTPException(status_code=404, detail="Kullanici bulunamadi.")
+                # Test hesabi icin otomatik kullanici olustur
+                if req.email.lower() == TEST_EMAIL:
+                    cur.execute("INSERT INTO namaz_app_users (email, name, is_premium) VALUES (%s, %s, true) RETURNING id", (req.email, "Tester"))
+                    new_user = cur.fetchone()
+                    cur.execute("""
+                        INSERT INTO namaz_app_subscriptions (user_id, plan_id, status, billing_period, current_period_end)
+                        VALUES (%s, 'lifetime', 'active', 'lifetime', '2030-01-01')
+                    """, (new_user[0],))
+                    conn.commit()
+                    existing_user = new_user
+                else:
+                    raise HTTPException(status_code=404, detail="Kullanici bulunamadi.")
             if req.mode == "register" and existing_user:
                 raise HTTPException(status_code=400, detail="E-posta kullanimda.")
+
+            # --- TEST HESABI: email gonderme, kodu sabit yap ---
+            if req.email.lower() == TEST_EMAIL:
+                cur.execute("""
+                    INSERT INTO namaz_app_otp_codes (email, code, expire_at, created_at)
+                    VALUES (%s, %s, '2030-01-01', NOW())
+                    ON CONFLICT (email) DO UPDATE
+                    SET code = EXCLUDED.code, expire_at = EXCLUDED.expire_at, created_at = NOW()
+                """, (req.email, TEST_CODE))
+                conn.commit()
+                if req.mode == "register" and not existing_user:
+                    cur.execute("INSERT INTO namaz_app_users (email, name, is_premium) VALUES (%s, %s, true) RETURNING id", (req.email, "Tester"))
+                    new_user = cur.fetchone()
+                    cur.execute("""
+                        INSERT INTO namaz_app_subscriptions (user_id, plan_id, status, billing_period, current_period_end)
+                        VALUES (%s, 'lifetime', 'active', 'lifetime', '2030-01-01')
+                    """, (new_user[0],))
+                    conn.commit()
+                return {"status": "success", "message": "Kod gonderildi."}
+            # --- TEST HESABI SONU ---
 
             generated_otp = str(random.randint(100000, 999999))
             cur.execute("""
@@ -248,6 +285,9 @@ async def namaz_verify_otp(body: NamazOTPVerify, request: Request):
     name = (body.name or "").strip() if mode == "register" else None
     ip_address = _namaz_get_client_ip(request)
 
+    # Test hesabi kontrolu
+    is_test = email == TEST_EMAIL
+
     try:
         _namaz_abuse_post("/otp/verify/check", {"email": email, "ip_address": ip_address})
 
@@ -263,10 +303,13 @@ async def namaz_verify_otp(body: NamazOTPVerify, request: Request):
                 raise HTTPException(status_code=400, detail="Kod bulunamadi.")
 
             stored_code, expire_at = row
-            now_utc = datetime.datetime.now(datetime.timezone.utc)
-            if expire_at is None or now_utc > expire_at:
-                _namaz_abuse_post("/otp/verify/mark-failed", {"email": email, "ip_address": ip_address})
-                raise HTTPException(status_code=400, detail="Kod suresi dolmus.")
+
+            # Test hesabi icin sure kontrolu ATLA
+            if not is_test:
+                now_utc = datetime.datetime.now(datetime.timezone.utc)
+                if expire_at is None or now_utc > expire_at:
+                    _namaz_abuse_post("/otp/verify/mark-failed", {"email": email, "ip_address": ip_address})
+                    raise HTTPException(status_code=400, detail="Kod suresi dolmus.")
 
             if code != stored_code:
                 _namaz_abuse_post("/otp/verify/mark-failed", {"email": email, "ip_address": ip_address})
@@ -277,7 +320,13 @@ async def namaz_verify_otp(body: NamazOTPVerify, request: Request):
             if mode == "register":
                 cur.execute("SELECT id FROM namaz_app_users WHERE email = %s", (email,))
                 if cur.fetchone():
-                    raise HTTPException(status_code=400, detail="Bu email zaten kayitli.")
+                    # Test hesabi: zaten varsa login'e cevir
+                    if is_test:
+                        mode = "login"
+                    else:
+                        raise HTTPException(status_code=400, detail="Bu email zaten kayitli.")
+
+            if mode == "register":
                 cur.execute(
                     "INSERT INTO namaz_app_users (email, name) VALUES (%s, %s) RETURNING id, name",
                     (email, name or email.split("@")[0])
@@ -291,7 +340,9 @@ async def namaz_verify_otp(body: NamazOTPVerify, request: Request):
             else:
                 raise HTTPException(status_code=400, detail="Gecersiz mode.")
 
-            cur.execute("DELETE FROM namaz_app_otp_codes WHERE email = %s", (email,))
+            # Test hesabi icin OTP'yi SILME (tekrar kullanilabilir)
+            if not is_test:
+                cur.execute("DELETE FROM namaz_app_otp_codes WHERE email = %s", (email,))
             cur.execute("UPDATE namaz_app_users SET last_login = NOW() WHERE id = %s", (user_row[0],))
             conn.commit()
 
