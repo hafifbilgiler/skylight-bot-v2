@@ -329,6 +329,66 @@ def query_similar(app_module, symbol: str, features: Dict) -> Optional[Dict]:
         return None
 
 
+def scorecard(app_module) -> Dict:
+    """Şeffaf isabet karnesi — coin bazında + genel + yön bazında.
+    KİMSEDE OLMAYAN: gerçek başarı oranını dürüstçe gösterir."""
+    if not _use_db:
+        return {"enabled": False, "note": "Karne için veritabanı gerekli"}
+    try:
+        conn = _db_pool.getconn()
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                # Genel
+                cur.execute("SELECT COUNT(*) FILTER (WHERE evaluated) as ev, "
+                            "COUNT(*) FILTER (WHERE correct) as ok FROM onebune_market_snapshots")
+                g = cur.fetchone()
+                overall_pct = round(g["ok"] / g["ev"] * 100) if g["ev"] else None
+                # Coin bazında
+                cur.execute("""SELECT symbol,
+                               COUNT(*) FILTER (WHERE evaluated) as ev,
+                               COUNT(*) FILTER (WHERE correct) as ok
+                               FROM onebune_market_snapshots
+                               WHERE evaluated = TRUE
+                               GROUP BY symbol HAVING COUNT(*) FILTER (WHERE evaluated) >= 3
+                               ORDER BY (COUNT(*) FILTER (WHERE correct))::float /
+                                        NULLIF(COUNT(*) FILTER (WHERE evaluated),0) DESC""")
+                per_coin = []
+                for row in cur.fetchall():
+                    if row["ev"]:
+                        per_coin.append({
+                            "symbol": row["symbol"],
+                            "coin": row["symbol"].replace("USDT", ""),
+                            "evaluated": row["ev"],
+                            "correct": row["ok"],
+                            "pct": round(row["ok"] / row["ev"] * 100),
+                        })
+                # Yön bazında (yükseliş tahminleri mi düşüş mü daha iyi?)
+                cur.execute("""SELECT pred_dir,
+                               COUNT(*) FILTER (WHERE evaluated) as ev,
+                               COUNT(*) FILTER (WHERE correct) as ok
+                               FROM onebune_market_snapshots
+                               WHERE evaluated = TRUE GROUP BY pred_dir""")
+                by_dir = {}
+                for row in cur.fetchall():
+                    if row["ev"]:
+                        by_dir[row["pred_dir"]] = {
+                            "evaluated": row["ev"], "correct": row["ok"],
+                            "pct": round(row["ok"] / row["ev"] * 100),
+                        }
+        finally:
+            _db_pool.putconn(conn)
+        return {
+            "enabled": True,
+            "overall": {"evaluated": g["ev"], "correct": g["ok"], "pct": overall_pct},
+            "per_coin": per_coin,
+            "by_direction": by_dir,
+            "note": ("Bu karne gerçek geçmiş tahminlerimizin sonucudur. "
+                     "Hiçbir şey saklamıyoruz — tutmayanlar da burada."),
+        }
+    except Exception as e:
+        return {"enabled": True, "error": str(e)}
+
+
 def pool_stats(app_module) -> Dict:
     """Havuz istatistiği (kaç kayıt, isabet oranı)."""
     if not _use_db:
@@ -394,6 +454,10 @@ def register_pool(app, app_module):
     @app.get("/pool/stats")
     async def pool_stats_ep():
         return pool_stats(app_module)
+
+    @app.get("/pool/scorecard")
+    async def scorecard_ep():
+        return scorecard(app_module)
 
     @app.on_event("startup")
     async def _pool_startup():
