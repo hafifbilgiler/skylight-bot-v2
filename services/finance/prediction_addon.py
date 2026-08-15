@@ -25,7 +25,7 @@ from fastapi import Query, HTTPException
 
 _app_module = None
 _pred_cache: Dict[str, Dict] = {}
-_PRED_TTL = 60
+_PRED_TTL = 90
 
 _THRESHOLDS = {"15m": 0.003, "1h": 0.005, "4h": 0.010, "1d": 0.020}
 _HORIZON = 4
@@ -242,16 +242,18 @@ def _interpretation(score, rsi, mom_raw, whale_norm, confidence, news_norm=50, n
 
 # ─────────────────────────── Register ───────────────────────────
 
-async def _compute_prediction(app_module, symbol: str, interval: str):
-    """Tahmini hesapla — endpoint + arka plan görevi ortak kullanır."""
+async def _compute_prediction(app_module, symbol: str, interval: str, force: bool = False):
+    """Tahmini hesapla — endpoint + arka plan görevi ortak kullanır.
+    force=True → cache'i atla, taze hesapla (prewarm/refresh için)."""
     symbol = symbol.upper()
     supported = getattr(app_module, "SUPPORTED_COINS", [])
     if symbol not in supported:
         return None
     ck = f"{symbol}:{interval}"
-    cached = _pred_cache.get(ck)
-    if cached and (_time.time() - cached["ts"]) < _PRED_TTL:
-        return {**cached["data"], "_cached": True}
+    if not force:
+        cached = _pred_cache.get(ck)
+        if cached and (_time.time() - cached["ts"]) < _PRED_TTL:
+            return {**cached["data"], "_cached": True}
     kline_cache = getattr(app_module, "kline_cache", {})
     if symbol not in kline_cache or interval not in kline_cache.get(symbol, {}):
         await app_module.fetch_historical(symbol, interval, 300)
@@ -473,12 +475,27 @@ def register_prediction(app, app_module):
         symbol = symbol.upper()
         if symbol not in getattr(app_module, "SUPPORTED_COINS", []):
             raise HTTPException(404)
+        ck = f"{symbol}:{interval}"
+        cached = _pred_cache.get(ck)
+        # STALE-WHILE-REVALIDATE: cache'te ne varsa ANINDA döndür (eski bile olsa),
+        # arkada sessizce tazele. Kullanıcı asla beklemez.
+        if cached:
+            age = _time.time() - cached["ts"]
+            if age >= _PRED_TTL:
+                # Eskimiş → arkada tazele ama bekletme, eskiyi hemen ver
+                asyncio.create_task(_refresh_bg(app_module, symbol, interval))
+            return {**cached["data"], "_cached": True, "_age": round(age)}
+        # Cache tamamen boş → ilk defa, hesaplamak zorundayız
         r = await _compute_prediction(app_module, symbol, interval)
         if r is None:
             raise HTTPException(404)
-        if "error" in r:
-            return r
         return r
+
+    async def _refresh_bg(app_module, symbol, interval):
+        try:
+            await _compute_prediction(app_module, symbol, interval, force=True)
+        except Exception:
+            pass
 
     @app.get("/predict")
     async def predict_all(interval: str = Query("1h")):
@@ -498,18 +515,19 @@ def register_prediction(app, app_module):
 
     async def _prewarm_loop():
         # Arka planda sürekli hesapla → kullanıcı açınca HAZIR gelir (bekleme yok)
-        await asyncio.sleep(20)
+        # Açılışta HEMEN bir tur (bekleme yok), sonra periyodik
+        await asyncio.sleep(8)
         while True:
             try:
                 for sym in getattr(app_module, "SUPPORTED_COINS", []):
                     try:
-                        await _compute_prediction(app_module, sym, "1h")
-                        await asyncio.sleep(0.3)
+                        await _compute_prediction(app_module, sym, "1h", force=True)
+                        await asyncio.sleep(0.25)
                     except Exception:
                         pass
             except Exception as e:
                 print(f"[PREDICTION] prewarm: {e}")
-            await asyncio.sleep(45)
+            await asyncio.sleep(40)
 
     @app.on_event("startup")
     async def _pred_startup():
