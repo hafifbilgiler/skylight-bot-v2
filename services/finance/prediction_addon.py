@@ -16,12 +16,68 @@ app.py register aynı: register_prediction(app, _sys.modules[__name__])
 ═══════════════════════════════════════════════════════════════
 """
 import asyncio
+import json as _json
 import math
+import os as _os
 import time as _time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from fastapi import Query, HTTPException
+
+# ── Redis (gateway ile aynı — tahminler kalıcı, ekran hiç boş kalmaz) ──
+try:
+    import redis.asyncio as _aioredis
+    _REDIS_OK = True
+except Exception:
+    _REDIS_OK = False
+
+_REDIS_URL = _os.getenv("REDIS_URL", "redis://skylight-redis:6379")
+_PRED_REDIS_DB = int(_os.getenv("PRED_CACHE_DB", "6"))   # DB 6 tahmin için
+_REDIS_KEY_TTL = 900   # Redis'te 15dk tut (prewarm sürekli tazeler)
+_redis_conn = None
+
+
+async def _get_redis():
+    """Lazy Redis bağlantısı. Hata olursa None (RAM cache ile devam)."""
+    global _redis_conn
+    if not _REDIS_OK:
+        return None
+    if _redis_conn is not None:
+        return _redis_conn
+    try:
+        _redis_conn = await _aioredis.from_url(
+            f"{_REDIS_URL}/{_PRED_REDIS_DB}",
+            encoding="utf-8", decode_responses=True,
+            max_connections=10, socket_connect_timeout=1.0,
+        )
+        return _redis_conn
+    except Exception as e:
+        print(f"[PREDICTION] Redis bağlanamadı (RAM ile devam): {e}")
+        _redis_conn = None
+        return None
+
+
+async def _redis_set(ck: str, data: Dict):
+    r = await _get_redis()
+    if r:
+        try:
+            await r.set(f"pred:{ck}", _json.dumps(data), ex=_REDIS_KEY_TTL)
+        except Exception:
+            pass
+
+
+async def _redis_get(ck: str) -> Optional[Dict]:
+    r = await _get_redis()
+    if r:
+        try:
+            raw = await r.get(f"pred:{ck}")
+            if raw:
+                return _json.loads(raw)
+        except Exception:
+            pass
+    return None
+
 
 _app_module = None
 _pred_cache: Dict[str, Dict] = {}
@@ -463,6 +519,8 @@ async def _compute_prediction(app_module, symbol: str, interval: str, force: boo
                        "Gelecek garantisi değildir, yatırım tavsiyesi değildir."),
     }
     _pred_cache[ck] = {"data": result, "ts": _time.time()}
+    # Redis'e de yaz — pod restart olsa bile durur, ekran boş kalmaz
+    await _redis_set(ck, result)
     return result
 
 
@@ -485,7 +543,14 @@ def register_prediction(app, app_module):
                 # Eskimiş → arkada tazele ama bekletme, eskiyi hemen ver
                 asyncio.create_task(_refresh_bg(app_module, symbol, interval))
             return {**cached["data"], "_cached": True, "_age": round(age)}
-        # Cache tamamen boş → ilk defa, hesaplamak zorundayız
+        # RAM boş → Redis'e bak (pod yeni açıldıysa RAM boş ama Redis dolu olabilir)
+        redis_data = await _redis_get(ck)
+        if redis_data:
+            # Redis'ten geleni RAM'e de al, arkada tazele
+            _pred_cache[ck] = {"data": redis_data, "ts": _time.time() - _PRED_TTL}
+            asyncio.create_task(_refresh_bg(app_module, symbol, interval))
+            return {**redis_data, "_cached": True, "_source": "redis"}
+        # Redis'te de yok → ilk defa, hesaplamak zorundayız
         r = await _compute_prediction(app_module, symbol, interval)
         if r is None:
             raise HTTPException(404)
@@ -518,7 +583,6 @@ def register_prediction(app, app_module):
         # AÇILIŞTA: her coin'in verisini bir kez çek (fetch), sonra hep hazır tut
         await asyncio.sleep(8)
         coins = getattr(app_module, "SUPPORTED_COINS", [])
-        intervals = ["15m", "1h", "4h", "1d"]
         # İlk tur: veriyi garantile + 1h ısıt (en çok kullanılan)
         for sym in coins:
             try:
@@ -527,19 +591,28 @@ def register_prediction(app, app_module):
             except Exception:
                 pass
         print("[PREDICTION] ✅ İlk ısıtma bitti — 1h tüm coinler hazır")
-        # Sürekli döngü: tüm interval'ları sırayla taze tut
+        # Sürekli döngü: 1h her turda (10sn), diğer interval'lar her 3. turda (30sn)
+        _tur = 0
         while True:
             try:
+                _tur += 1
+                do_others = (_tur % 3 == 0)  # 15m/4h/1d her 3 turda bir
                 for sym in coins:
-                    for iv in intervals:
-                        try:
-                            await _compute_prediction(app_module, sym, iv, force=True)
-                            await asyncio.sleep(0.15)
-                        except Exception:
-                            pass
+                    try:
+                        await _compute_prediction(app_module, sym, "1h", force=True)
+                        await asyncio.sleep(0.1)
+                    except Exception:
+                        pass
+                    if do_others:
+                        for iv in ("15m", "4h", "1d"):
+                            try:
+                                await _compute_prediction(app_module, sym, iv, force=True)
+                                await asyncio.sleep(0.1)
+                            except Exception:
+                                pass
             except Exception as e:
                 print(f"[PREDICTION] prewarm: {e}")
-            await asyncio.sleep(30)
+            await asyncio.sleep(10)
 
     @app.on_event("startup")
     async def _pred_startup():

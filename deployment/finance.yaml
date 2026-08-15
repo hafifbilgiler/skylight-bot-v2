@@ -18,13 +18,15 @@ spec:
     spec:
       containers:
       - name: finans
-        image: docker.io/hafifbilgiler/skylight-finans:4.9  #2.7 3.3 3.4 3.5
+        image: docker.io/hafifbilgiler/skylight-finans:5.0  #2.7 3.3 3.4 3.5
         imagePullPolicy: Always
         ports:
         - containerPort: 8090
         env:
         - name: WHALE_USD_THRESH
           value: "100000"
+        - name: REDIS_URL
+          value: "redis://skylight-redis:6379"
         - name: DB_HOST
           value: "postgres"
         - name: DB_PORT
