@@ -515,19 +515,31 @@ def register_prediction(app, app_module):
 
     async def _prewarm_loop():
         # Arka planda sürekli hesapla → kullanıcı açınca HAZIR gelir (bekleme yok)
-        # Açılışta HEMEN bir tur (bekleme yok), sonra periyodik
+        # AÇILIŞTA: her coin'in verisini bir kez çek (fetch), sonra hep hazır tut
         await asyncio.sleep(8)
+        coins = getattr(app_module, "SUPPORTED_COINS", [])
+        intervals = ["15m", "1h", "4h", "1d"]
+        # İlk tur: veriyi garantile + 1h ısıt (en çok kullanılan)
+        for sym in coins:
+            try:
+                await _compute_prediction(app_module, sym, "1h", force=True)
+                await asyncio.sleep(0.2)
+            except Exception:
+                pass
+        print("[PREDICTION] ✅ İlk ısıtma bitti — 1h tüm coinler hazır")
+        # Sürekli döngü: tüm interval'ları sırayla taze tut
         while True:
             try:
-                for sym in getattr(app_module, "SUPPORTED_COINS", []):
-                    try:
-                        await _compute_prediction(app_module, sym, "1h", force=True)
-                        await asyncio.sleep(0.25)
-                    except Exception:
-                        pass
+                for sym in coins:
+                    for iv in intervals:
+                        try:
+                            await _compute_prediction(app_module, sym, iv, force=True)
+                            await asyncio.sleep(0.15)
+                        except Exception:
+                            pass
             except Exception as e:
                 print(f"[PREDICTION] prewarm: {e}")
-            await asyncio.sleep(40)
+            await asyncio.sleep(30)
 
     @app.on_event("startup")
     async def _pred_startup():
