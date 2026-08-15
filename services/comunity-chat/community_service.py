@@ -603,3 +603,112 @@ async def dua_uret(req: DuaRequest):
         return {"dua": response.text.strip()}
     except Exception as e:
         raise HTTPException(503, f"Dua oluşturulamadı: {str(e)}")
+
+# ── AI Manevi Koç ─────────────────────────────────────────────
+class ManeviKocRequest(BaseModel):
+    stats: dict = {}
+
+@app.post("/manevi-koc")
+async def manevi_koc(req: ManeviKocRequest):
+    stats = req.stats
+    gun = stats.get("gun", "")
+    tarih = stats.get("tarih", "")
+    toplam_zikir = stats.get("toplam_zikir", 0)
+    quiz_skor = stats.get("quiz_skor", 0)
+
+    prompt = f"""Sen kişisel bir İslami manevi koçsun. Kullanıcıya günlük rehberlik yapıyorsun.
+
+Bugün: {tarih} ({gun})
+Kullanıcı istatistikleri:
+- Toplam zikir: {toplam_zikir}
+- Quiz en iyi seri: {quiz_skor}
+
+Şu JSON formatında yanıt ver (sadece JSON, başka bir şey yazma):
+{{"motivasyon": "Bugüne özel 2-3 cümlelik kişiselleştirilmiş selamlama ve motivasyon mesajı. Cuma ise Cumaya özel, Pazartesi ise haftaya başlangıç vs.", "ayet": "Bugüne uygun bir Kuran ayeti (sure adı ve ayet numarası ile birlikte). Arapça + Türkçe meali.", "dua": "Bugüne uygun kısa bir dua. Arapça okunuşu + Türkçe anlamı.", "hedefler": "Bugün için 3-4 maddelik pratik ibadet hedefi listesi (emoji ile). Kullanıcının zikir ve quiz istatistiklerine göre kişiselleştir.", "mesaj": "2-3 cümlelik genel tavsiye veya hatırlatma. Hadis referansı ile destekle."}}
+
+Kurallar:
+- Samimi, sıcak, motive edici ol
+- Günün özelliğine göre içerik üret (Cuma: Kehf suresi, Pazartesi: yeni başlangıç vs.)
+- İstatistiklere göre kişiselleştir
+- Her seferinde farklı ayet ve dua seç
+- Sadece JSON döndür"""
+
+    try:
+        response = await asyncio.to_thread(
+            ai_model.generate_content,
+            prompt,
+            generation_config=GenerationConfig(temperature=0.9, max_output_tokens=2048)
+        )
+        text = response.text.strip()
+        if "```" in text:
+            parts = text.split("```")
+            text = parts[1] if len(parts) > 1 else parts[0]
+            text = text.replace("json", "").strip()
+        text = text.strip()
+        result = json.loads(text)
+        return result
+    except json.JSONDecodeError:
+        return {
+            "motivasyon": "Hayırlı günler! Bugün de Allah'a yakınlaşmak için güzel bir fırsat.",
+            "ayet": "\"Şüphesiz her güçlükle bir kolaylık vardır.\" (İnşirah, 94:6)",
+            "dua": "Allahümme inni es'elüke ilmen nafia - Allah'ım senden faydalı ilim isterim.",
+            "hedefler": "🕌 5 vakit namazı kaçırma\n📿 100 zikir çek\n📖 1 sayfa Kuran oku\n🤲 Sabah-akşam dualarını oku",
+            "mesaj": "Hz. Peygamber (s.a.v.) buyurdu: 'Allah'a en sevimli amel, az da olsa devamlı olanıdır.' (Buhari)"
+        }
+    except Exception as e:
+        raise HTTPException(503, f"Manevi koç hatası: {str(e)}")
+
+
+# ── AI Arapça Kamera (Gemini Multimodal) ──────────────────────
+import base64
+from vertexai.generative_models import Part, Image as VertexImage
+
+class ArapceKameraRequest(BaseModel):
+    image_base64: str
+
+@app.post("/arapca-kamera")
+async def arapca_kamera(req: ArapceKameraRequest):
+    if not req.image_base64:
+        raise HTTPException(400, "Resim boş")
+    if len(req.image_base64) > 10_000_000:
+        raise HTTPException(400, "Resim çok büyük (max 7MB)")
+
+    try:
+        image_bytes = base64.b64decode(req.image_base64)
+        image_part = Part.from_data(data=image_bytes, mime_type="image/jpeg")
+
+        prompt = """Bu resimdeki Arapça metni oku ve analiz et.
+
+Şu JSON formatında Türkçe yanıt ver (sadece JSON, başka bir şey yazma):
+{"arapca": "Resimdeki Arapça metnin tam yazılışı (Arapça harflerle)", "okunusu": "Metnin Türkçe harflerle okunuşu (transliterasyon)", "ceviri": "Metnin Türkçe çevirisi/meali", "aciklama": "Bu metin hakkında kısa açıklama: Kuran ayeti mi, hadis mi, dua mı? Hangi sureden, hangi bağlamda? 2-3 cümle."}
+
+Kurallar:
+- Eğer Kuran ayeti ise sure adı ve ayet numarasını belirt
+- Eğer hadis ise kaynağını belirt
+- Eğer dua ise ne zaman okunduğunu belirt
+- Okunuşu Türkçe'ye uygun yaz (örn: Bismillahirrahmanirrahim)
+- Resimde Arapça metin yoksa: {"arapca": "", "okunusu": "", "ceviri": "", "aciklama": "Resimde Arapça metin bulunamadı."}
+- Sadece JSON döndür"""
+
+        response = await asyncio.to_thread(
+            ai_model.generate_content,
+            [image_part, prompt],
+            generation_config=GenerationConfig(temperature=0.3, max_output_tokens=1024)
+        )
+        text = response.text.strip()
+        if "```" in text:
+            parts = text.split("```")
+            text = parts[1] if len(parts) > 1 else parts[0]
+            text = text.replace("json", "").strip()
+        text = text.strip()
+        result = json.loads(text)
+        return result
+    except json.JSONDecodeError:
+        return {
+            "arapca": "",
+            "okunusu": "",
+            "ceviri": "Metin okunamadı. Lütfen daha net bir fotoğraf çekin.",
+            "aciklama": ""
+        }
+    except Exception as e:
+        raise HTTPException(503, f"Kamera hatası: {str(e)}")
