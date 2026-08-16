@@ -93,6 +93,9 @@ def _deployment_obj(name, ns, image, port, env, ntype, node):
     #   yoksa "failed switching to redis: operation not permitted" hatası.
     if ntype == "app":
         caps = {"drop": ["ALL"]}
+    elif ntype == "nginx":
+        # Nginx 80 portunu (1024 altı) bağlamak için NET_BIND_SERVICE gerekir
+        caps = {"drop": ["ALL"], "add": ["SETUID", "SETGID", "CHOWN", "DAC_OVERRIDE", "NET_BIND_SERVICE"]}
     else:
         # Servisler kendi user'ına geçebilmek için setuid/setgid tutar, gerisi düşer
         caps = {"drop": ["ALL"], "add": ["SETUID", "SETGID", "CHOWN", "DAC_OVERRIDE"]}
