@@ -1,0 +1,104 @@
+# ═══════════════════════════════════════════════════════════════
+# ORKESTRATÖR SERVİSİNİN KENDİ YETKİSİ
+# Orkestratör (backend pod) bu SA ile çalışır.
+# Namespace OLUŞTURABİLİR ama yine sınırlı — secret okuma, node yok.
+# Bu, cluster-admin'den çok daha dar. Sızsa bile lab dışına çıkamaz.
+# ═══════════════════════════════════════════════════════════════
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: onebune-lab-system      # orkestratörün yaşadığı yer
+  labels:
+    onebune.lab/system: "true"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lab-orchestrator
+  namespace: onebune-lab-system
+---
+# Orkestratör ClusterRole — namespace + lab kaynaklarını yönetir
+# ama SECRET okuma, NODE, mevcut prod ns'lere dokunma YOK
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: lab-orchestrator-role
+rules:
+  # Namespace oluştur/sil (sadece lab-* yönetmek için — kod tarafında filtrelenir)
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  # Lab kaynakları (her ns'de deployment/service/pod yönetimi)
+  - apiGroups: ["apps"]
+    resources: ["deployments", "deployments/scale", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/status"]
+    verbs: ["get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create", "get"]
+  - apiGroups: [""]
+    resources: ["services", "configmaps", "persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Workspace şablonundaki RBAC'ı kurmak için (SA/Role/RoleBinding/quota)
+  - apiGroups: [""]
+    resources: ["serviceaccounts", "resourcequotas", "limitranges"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "create", "delete"]
+# KRİTİK: secrets okuma YOK, nodes YOK, clusterrole/clusterrolebinding yazma YOK.
+# Orkestratör kodu ayrıca sadece "lab-" ön ekli ns'lere dokunur (çift koruma).
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: lab-orchestrator-binding
+subjects:
+  - kind: ServiceAccount
+    name: lab-orchestrator
+    namespace: onebune-lab-system
+roleRef:
+  kind: ClusterRole
+  name: lab-orchestrator-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# ── 5 GÜN TTL — süresi dolan workspace'leri siler ──
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: lab-ttl-cleaner
+  namespace: onebune-lab-system
+spec:
+  schedule: "0 * * * *"          # her saat başı kontrol
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: lab-orchestrator
+          restartPolicy: OnFailure
+          containers:
+            - name: cleaner
+              image: bitnami/kubectl:latest
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  NOW=$(date +%s)
+                  # onebune.lab/expires geçmiş olan workspace ns'lerini sil
+                  for ns in $(kubectl get ns -l onebune.lab/workspace=true -o jsonpath='{.items[*].metadata.name}'); do
+                    EXP=$(kubectl get ns "$ns" -o jsonpath='{.metadata.annotations.onebune\.lab/expires}')
+                    if [ -n "$EXP" ]; then
+                      EXP_TS=$(date -d "$EXP" +%s 2>/dev/null || echo 0)
+                      if [ "$EXP_TS" -gt 0 ] && [ "$NOW" -gt "$EXP_TS" ]; then
+                        echo "Süresi doldu, siliniyor: $ns (expires: $EXP)"
+                        kubectl delete ns "$ns" --wait=false
+                      fi
+                    fi
+                  done

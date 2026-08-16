@@ -1,0 +1,147 @@
+# ═══════════════════════════════════════════════════════════════
+# KULLANICI WORKSPACE ŞABLONU
+# Her kullanıcı için orkestratör bu şablonu {USER_ID} ile doldurup uygular.
+# Güvenlik: sınırlı Role, pod token'sız, izole ağ, quota, 8 pod limiti, 5 gün TTL.
+# {USER_ID} = kullanıcının güvenli id'si (örn. u_ab12cd), orkestratör doldurur.
+# ═══════════════════════════════════════════════════════════════
+
+# ── 1. Namespace (kullanıcının workspace'i) ──
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lab-{USER_ID}
+  labels:
+    onebune.lab/workspace: "true"
+    onebune.lab/user: "{USER_ID}"
+  annotations:
+    # 5 günlük yaşam — TTL CronJob bu tarihe bakıp siler
+    onebune.lab/created: "{CREATED_TS}"       # orkestratör ISO tarih yazar
+    onebune.lab/expires: "{EXPIRES_TS}"       # created + 5 gün
+---
+# ── 2. ServiceAccount (orkestratörün bu ns'de kullanacağı kimlik) ──
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lab-operator
+  namespace: lab-{USER_ID}
+automountServiceAccountToken: false
+---
+# ── 3. Role — SADECE bu namespace'te, SADECE gerekli fiiller ──
+# cluster-admin DEĞİL. node/secret-okuma/başka-ns/RBAC yetkisi YOK.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: lab-operator-role
+  namespace: lab-{USER_ID}
+rules:
+  # Deployment / ölçekleme (uyut-uyandır için scale)
+  - apiGroups: ["apps"]
+    resources: ["deployments", "deployments/scale", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Pod (durum okuma + exec = terminal)
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/status"]
+    verbs: ["get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]        # TERMINAL için — sadece bu ns'deki pod'a
+    verbs: ["create", "get"]
+  # Service
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # ConfigMap (env/ayar için)
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  # PVC (kalıcı veri isteyen bileşenler için — opsiyonel)
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "create", "delete"]
+# NOT: secrets YOK, nodes YOK, namespaces YOK, rbac YOK, clusterrole YOK.
+---
+# ── 4. RoleBinding — SA'ya yukarıdaki Role'ü bağla ──
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: lab-operator-binding
+  namespace: lab-{USER_ID}
+subjects:
+  - kind: ServiceAccount
+    name: lab-operator
+    namespace: lab-{USER_ID}
+roleRef:
+  kind: Role
+  name: lab-operator-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# ── 5. ResourceQuota — en fazla 8 pod + kaynak tavanı ──
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: lab-quota
+  namespace: lab-{USER_ID}
+spec:
+  hard:
+    pods: "8"                    # KULLANICI KURALI: en fazla 8 pod
+    requests.cpu: "2"            # toplam 2 CPU
+    requests.memory: "4Gi"       # toplam 4Gi RAM
+    limits.cpu: "4"
+    limits.memory: "6Gi"
+    services: "8"
+    persistentvolumeclaims: "4"
+---
+# ── 6. LimitRange — pod başına tavan (bomba pod engeli) ──
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: lab-limits
+  namespace: lab-{USER_ID}
+spec:
+  limits:
+    - type: Container
+      default:              # belirtilmezse bu limit uygulanır
+        cpu: "500m"
+        memory: "512Mi"
+      defaultRequest:
+        cpu: "100m"
+        memory: "128Mi"
+      max:                  # hiçbir container bunu aşamaz
+        cpu: "1"
+        memory: "1Gi"
+---
+# ── 7. NetworkPolicy — pod'lar SADECE kendi ns içinde konuşur ──
+# Başka namespace'e, node'a, cluster servislerine çıkamaz.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: lab-isolate
+  namespace: lab-{USER_ID}
+spec:
+  podSelector: {}            # ns'deki TÜM pod'lara uygula
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Sadece aynı namespace'ten gelen trafiğe izin
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              onebune.lab/user: "{USER_ID}"
+  egress:
+    # Sadece aynı namespace içine + DNS (çözümleme için)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              onebune.lab/user: "{USER_ID}"
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+# NOT: internete çıkış YOK (kripto madenci/veri sızdırma engeli).
+# Gerekirse belirli image çekimi için ayrı bir egress kuralı eklenebilir.
