@@ -264,7 +264,9 @@ def get_status(user_id: str) -> dict:
                       else "starting" if phase in ("Pending", "Running")
                       else "error",
         })
-    return {"namespace": ns, "pods": pods, "count": len(pods)}
+    # Cluster'daki PVC'ler (frontend CLI'dan silineni ekrandan da kaldırsın)
+    pvcs = [p.metadata.name for p in k["core"].list_namespaced_persistent_volume_claim(ns).items]
+    return {"namespace": ns, "pods": pods, "pvcs": pvcs, "count": len(pods)}
 
 
 # ═══════════ DESTROY ═══════════
