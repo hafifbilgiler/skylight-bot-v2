@@ -35,6 +35,35 @@ def _guard_ns(ns: str):
         raise ValueError(f"Güvenlik: '{ns}' lab namespace'i değil, işlem reddedildi.")
 
 
+def _force_del_deploy(k, name, ns):
+    """Deployment'ı force sil — pod'lar hemen gitsin (Terminating'de takılmasın)."""
+    opts = k["client"].V1DeleteOptions(grace_period_seconds=0, propagation_policy="Background")
+    try:
+        k["apps"].delete_namespaced_deployment(name, ns, body=opts)
+    except Exception:
+        pass
+    # Deployment'ın pod'larını da force sil (garanti)
+    try:
+        pods = k["core"].list_namespaced_pod(ns, label_selector=f"app={name}").items
+        for p in pods:
+            try:
+                k["core"].delete_namespaced_pod(p.metadata.name, ns,
+                    body=k["client"].V1DeleteOptions(grace_period_seconds=0, propagation_policy="Background"))
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _force_del_pvc(k, name, ns):
+    """PVC'yi force sil."""
+    opts = k["client"].V1DeleteOptions(grace_period_seconds=0, propagation_policy="Background")
+    try:
+        k["core"].delete_namespaced_persistent_volume_claim(name, ns, body=opts)
+    except Exception:
+        pass
+
+
 def ns_name(user_id: str) -> str:
     return f"{NS_PREFIX}{user_id}"
 
@@ -159,7 +188,7 @@ def deploy_graph(user_id: str, graph: dict) -> dict:
     for name in current_deploys - set(desired_deploys):
         if name.endswith("-files"):
             continue  # uploader pod'u — PVC silinince ayrıca silinir
-        k["apps"].delete_namespaced_deployment(name, ns)
+        _force_del_deploy(k, name, ns)
         removed.append(f"Deployment/{name}")
 
     # ── SERVICE senkron ──
@@ -181,19 +210,12 @@ def deploy_graph(user_id: str, graph: dict) -> dict:
         removed.append(f"Service/{name}")
 
     # ── PVC SİLME (EN SON — mount eden pod'lar yukarıda silindi) ──
-    # Canvas'ta olmayan PVC → kullanıcı ekrandan sildi → cluster'dan da git
+    # Canvas'ta olmayan PVC → kullanıcı ekrandan sildi → cluster'dan da git (force)
     for name in current_pvcs - set(desired_pvcs):
-        # PVC'ye bağlı uploader pod'unu da sil (yoksa PVC Terminating'de takılır)
-        up_name = f"{name}-files"
-        try:
-            k["apps"].delete_namespaced_deployment(up_name, ns)
-        except Exception:
-            pass
-        try:
-            k["core"].delete_namespaced_persistent_volume_claim(name, ns)
-            removed.append(f"PVC/{name}")
-        except Exception:
-            pass
+        # PVC'ye bağlı uploader pod'unu FORCE sil (Terminating'de takılmasın)
+        _force_del_deploy(k, f"{name}-files", ns)
+        _force_del_pvc(k, name, ns)
+        removed.append(f"PVC/{name}")
 
     return {
         "namespace": ns,

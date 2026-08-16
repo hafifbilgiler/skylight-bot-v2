@@ -207,12 +207,14 @@ def file_upload(req: UploadReq, token: Optional[str] = Header(None, alias="X-Tok
     if not fname:
         fname = "dosya"
     try:
-        # Önce dizini oluştur
-        _exec_in(ns, pod, ["sh", "-c", f"mkdir -p '{target_dir}'"])
+        # Dizini oluştur ve herkese açık yap (hangi user'lı pod bağlanırsa okusun/yazsın)
+        _exec_in(ns, pod, ["sh", "-c", f"mkdir -p '{target_dir}' && chmod -R 777 '{target_dir}'"])
         # base64 içeriğini stdin'den ver → pod içinde çöz → dosyaya yaz
         target = f"{target_dir}/{fname}"
         cmd = ["sh", "-c", f"base64 -d > '{target}'"]
         _exec_in(ns, pod, cmd, stdin_data=req.content_b64)
+        # Dosyayı herkese okuma/yazma yap (non-root pod'lar da erişsin)
+        _exec_in(ns, pod, ["sh", "-c", f"chmod 666 '{target}'"])
         # Yazıldı mı doğrula
         check = _exec_in(ns, pod, ["sh", "-c", f"ls -la '{target}' 2>&1"])
         if "No such" in check or "cannot" in check.lower():
