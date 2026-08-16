@@ -126,16 +126,27 @@ def deploy_graph(user_id: str, graph: dict) -> dict:
     except Exception:
         pass
 
-    # İstenen durum: canvas'tan gelen deployment/service adları
+    # İstenen durum: canvas'tan gelen nesne adları
     desired_deploys = {o["metadata"]["name"]: o for o in objects if o["kind"] == "Deployment"}
     desired_svcs    = {o["metadata"]["name"]: o for o in objects if o["kind"] == "Service"}
+    desired_pvcs    = {o["metadata"]["name"]: o for o in objects if o["kind"] == "PersistentVolumeClaim"}
 
     # Mevcut durum: cluster'da şu an ne var
     current_deploys = {d.metadata.name for d in k["apps"].list_namespaced_deployment(ns).items}
     current_svcs = {s.metadata.name for s in k["core"].list_namespaced_service(ns).items
                     if s.metadata.labels and (s.metadata.labels.get("app") or s.metadata.labels.get("onebune.lab/svc"))}
+    current_pvcs = {p.metadata.name for p in k["core"].list_namespaced_persistent_volume_claim(ns).items}
 
     applied, kept, removed = [], [], []
+
+    # ── PVC senkron (önce PVC — pod'lar ona bağlanacak) ──
+    # PVC OLUŞTURULUR ama SİLİNMEZ (veri kaybını önlemek için — kullanıcı özel silmeli)
+    for name, obj in desired_pvcs.items():
+        if name in current_pvcs:
+            kept.append(f"PVC/{name}")     # zaten var — veri korunur
+        else:
+            k["core"].create_namespaced_persistent_volume_claim(ns, obj)
+            applied.append(f"PVC/{name}")
 
     # ── DEPLOYMENT senkron ──
     for name, obj in desired_deploys.items():

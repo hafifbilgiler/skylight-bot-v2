@@ -43,6 +43,11 @@ def build_manifests(graph: dict, user_id: str) -> list:
         img = resolve_image(node)
         port = _port_of(node)
 
+        # ── PVC node'u: PersistentVolumeClaim üretir, pod değil ──
+        if t == "pvc":
+            objects.append(_pvc_obj(base, ns, node))
+            continue
+
         # ── Service node'u: bir K8s Service nesnesi üretir, kendi pod'u yok ──
         # Bağlantı yönü iki türlü olabilir: service→app VEYA app→service
         if t == "service":
@@ -79,14 +84,34 @@ def build_manifests(graph: dict, user_id: str) -> list:
                     dep_host = _safe_name(dep["name"])
                     env.update(CONNECTION_ENV[dep_type](dep_host))
 
-        objects.append(_deployment_obj(base, ns, img, port, env, t, node))
+        # Bu pod'a bağlı PVC var mı? (pod→pvc VEYA pvc→pod) → mount et
+        mounted_pvc, mount_path = None, None
+        for dep in deps_of.get(nid, []):
+            if dep and dep["type"] == "pvc":
+                mounted_pvc = _safe_name(dep["name"])
+                mount_path = node.get("mountPath") or "/data"
+        if not mounted_pvc:
+            for e in edges:
+                if e["to"] == nid:
+                    src = nodes.get(e["from"])
+                    if src and src["type"] == "pvc":
+                        mounted_pvc = _safe_name(src["name"])
+                        mount_path = node.get("mountPath") or "/data"
+
+        # Kullanıcının eklediği env'ler (config panelinden)
+        for kv in node.get("extraEnv", []):
+            if kv.get("key"):
+                env[kv["key"]] = kv.get("value", "")
+
+        objects.append(_deployment_obj(base, ns, img, port, env, t, node, mounted_pvc, mount_path))
         # NOT: otomatik internal service KALDIRILDI — kullanıcı kendi Service'ini eklesin (öğrenme)
 
     return objects
 
 
-def _deployment_obj(name, ns, image, port, env, ntype, node):
-    """Bir Deployment — güvenli defaultlarla (non-root, token yok)."""
+def _deployment_obj(name, ns, image, port, env, ntype, node, mounted_pvc=None, mount_path=None):
+    """Bir Deployment — güvenli defaultlarla (non-root, token yok).
+    mounted_pvc verilirse o PVC mount_path'e bağlanır."""
     # Güvenlik: privilege escalation kapalı.
     # App'ler: drop ALL (user değiştirmez, en sıkı).
     # Servisler (redis/postgres/vb): SETUID/SETGID gerekir (root→servis user geçişi),
@@ -121,6 +146,16 @@ def _deployment_obj(name, ns, image, port, env, ntype, node):
         sec["runAsUser"] = 1000
     # Redis/Postgres/RabbitMQ/Nginx: kendi imaj user'ına geçer (setuid/setgid ile)
 
+    pod_spec = {
+        "automountServiceAccountToken": False,  # POD TOKEN'SIZ (sızma engeli)
+        "containers": [container],
+    }
+    # PVC mount: kullanıcının kalıcı diskini istediği dizine bağla
+    if mounted_pvc:
+        container["volumeMounts"] = [{"name": "data-vol", "mountPath": mount_path or "/data"}]
+        pod_spec["volumes"] = [{"name": "data-vol",
+                                "persistentVolumeClaim": {"claimName": mounted_pvc}}]
+
     return {
         "apiVersion": "apps/v1", "kind": "Deployment",
         "metadata": {"name": name, "namespace": ns,
@@ -130,11 +165,33 @@ def _deployment_obj(name, ns, image, port, env, ntype, node):
             "selector": {"matchLabels": {"app": name}},
             "template": {
                 "metadata": {"labels": {"app": name}},
-                "spec": {
-                    "automountServiceAccountToken": False,  # POD TOKEN'SIZ (sızma engeli)
-                    "containers": [container],
-                },
+                "spec": pod_spec,
             },
+        },
+    }
+
+
+def _pvc_obj(name, ns, node):
+    """Kullanıcının kalıcı diski (PersistentVolumeClaim). Max 1GB."""
+    from config import MAX_PVC_SIZE_GB
+    # Kullanıcı boyut isteyebilir ama tavanı aşamaz
+    try:
+        want = float(str(node.get("sizeGb", 1)).replace("Gi", "").replace("GB", ""))
+    except Exception:
+        want = 1
+    size = min(max(want, 0.1), MAX_PVC_SIZE_GB)   # 0.1GB - 1GB arası
+    # Gi cinsinden (tam sayı değilse Mi'ye çevir)
+    if size >= 1 and size == int(size):
+        storage = f"{int(size)}Gi"
+    else:
+        storage = f"{int(size * 1024)}Mi"
+    return {
+        "apiVersion": "v1", "kind": "PersistentVolumeClaim",
+        "metadata": {"name": name, "namespace": ns,
+                     "labels": {"onebune.lab/pvc": name}},
+        "spec": {
+            "accessModes": ["ReadWriteOnce"],
+            "resources": {"requests": {"storage": storage}},
         },
     }
 

@@ -6,6 +6,8 @@ import os
 
 # ── Kullanıcı kuralları (Serkan'ın belirlediği) ──
 MAX_PODS_PER_USER = 8          # bir kullanıcı en fazla 8 pod
+MAX_PVC_PER_USER = 1           # bir kullanıcı en fazla 1 PVC
+MAX_PVC_SIZE_GB = 1            # PVC tavanı 1GB
 WORKSPACE_TTL_DAYS = 5         # workspace 5 gün yaşar
 NS_PREFIX = "lab-"            # tüm workspace ns'leri bu önekle (çift koruma)
 SYSTEM_NS = "onebune-lab-system"
@@ -76,15 +78,20 @@ def validate_graph(graph: dict) -> tuple:
     if not nodes:
         return False, "Boş mimari — en az bir bileşen ekleyin."
 
-    # 8 pod kuralı (service node'u pod değil, sayılmaz)
-    pod_nodes = [n for n in nodes if n.get("type") != "service"]
+    # 8 pod kuralı (service ve pvc node'ları pod değil, sayılmaz)
+    pod_nodes = [n for n in nodes if n.get("type") not in ("service", "pvc")]
     if len(pod_nodes) > MAX_PODS_PER_USER:
         return False, f"En fazla {MAX_PODS_PER_USER} pod kurabilirsiniz (şu an {len(pod_nodes)})."
 
-    # Her node whitelist'te mi? (service node'u pod değil, imaj gerekmez)
+    # PVC kuralı: en fazla 1 PVC
+    pvc_nodes = [n for n in nodes if n.get("type") == "pvc"]
+    if len(pvc_nodes) > MAX_PVC_PER_USER:
+        return False, f"En fazla {MAX_PVC_PER_USER} kalıcı disk (PVC) oluşturabilirsiniz."
+
+    # Her node whitelist'te mi? (service/pvc node'u pod değil, imaj gerekmez)
     for n in nodes:
-        if n.get("type") == "service":
-            continue  # service bir K8s Service nesnesi, pod'u yok
+        if n.get("type") in ("service", "pvc"):
+            continue  # service ve pvc pod değil
         img = resolve_image(n)
         if not img:
             return False, f"Bilinmeyen bileşen türü: {n.get('type')} — güvenlik için reddedildi."
