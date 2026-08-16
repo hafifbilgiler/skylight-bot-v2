@@ -71,11 +71,14 @@ def workspace(token: Optional[str] = Header(None, alias="X-Token")):
 
 @app.post("/lab/deploy")
 def deploy(req: DeployReq, token: Optional[str] = Header(None, alias="X-Token")):
-    """Canvas → pod'lar (Start). Güvenlik doğrulaması + workspace + deploy."""
+    """Canvas → pod'lar (Start). Boş canvas = hepsini sil (senkron)."""
     uid = resolve_user(token)
-    ok, err = validate_graph(req.graph)
-    if not ok:
-        raise HTTPException(400, err)
+    nodes = req.graph.get("nodes", [])
+    # Boş canvas: doğrulama atla, akıllı senkron her şeyi siler
+    if nodes:
+        ok, err = validate_graph(req.graph)
+        if not ok:
+            raise HTTPException(400, err)
     try:
         k8s_ops.ensure_workspace(uid)
         result = k8s_ops.deploy_graph(uid, req.graph)
