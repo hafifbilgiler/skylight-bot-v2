@@ -207,7 +207,7 @@ def _uploader_objs(pvc_name, ns):
         "name": "filehelper",
         "image": "alpine:3.20",
         "command": ["sh", "-c", "while true; do sleep 3600; done"],  # dosya işlemleri exec ile
-        "volumeMounts": [{"name": "data", "mountPath": "/srv"}],
+        "volumeMounts": [{"name": "data", "mountPath": "/data"}],
         "securityContext": {
             "allowPrivilegeEscalation": False,
             "capabilities": {"drop": ["ALL"], "add": ["CHOWN", "DAC_OVERRIDE"]},

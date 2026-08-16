@@ -146,36 +146,50 @@ def _exec_in(ns, pod, command, stdin_data=None):
     if stdin_data is None:
         return stream(k["core"].connect_get_namespaced_pod_exec, pod, ns,
                       command=command, stderr=True, stdin=False, stdout=True, tty=False)
-    # stdin akışı: veriyi parça parça gönder (büyük dosya için)
+    # stdin akışı: önce TÜM veriyi yaz, sonra stdin kapanana kadar çıktı oku
     resp = stream(k["core"].connect_get_namespaced_pod_exec, pod, ns,
                   command=command, stderr=True, stdin=True, stdout=True, tty=False,
                   _preload_content=False)
     out = ""
-    # Veriyi bloklar halinde stdin'e yaz
-    CHUNK = 8192
+    CHUNK = 16384
     idx = 0
-    while resp.is_open():
-        resp.update(timeout=5)
+    # 1) Tüm veriyi gönder
+    while idx < len(stdin_data):
+        resp.update(timeout=1)
         if resp.peek_stdout():
             out += resp.read_stdout()
         if resp.peek_stderr():
             out += resp.read_stderr()
-        if idx < len(stdin_data):
-            chunk = stdin_data[idx:idx+CHUNK]
-            resp.write_stdin(chunk)
-            idx += CHUNK
-        else:
-            resp.close()
+        chunk = stdin_data[idx:idx+CHUNK]
+        resp.write_stdin(chunk)
+        idx += CHUNK
+    # 2) stdin'i EOF ile kapat (base64 -d işlemeyi bitirsin)
+    try:
+        resp.write_stdin("\x04")  # Ctrl-D benzeri; ardından kanalı kapat
+    except Exception:
+        pass
+    # 3) Komut bitene kadar çıktıyı topla (max ~15sn)
+    import time as _t
+    deadline = _t.time() + 15
+    while resp.is_open() and _t.time() < deadline:
+        resp.update(timeout=1)
+        if resp.peek_stdout():
+            out += resp.read_stdout()
+        if resp.peek_stderr():
+            out += resp.read_stderr()
+        if not resp.peek_stdout() and not resp.peek_stderr():
             break
+    resp.close()
     return out
 
 @app.post("/lab/file_list")
 def file_list(req: ListReq, token: Optional[str] = Header(None, alias="X-Token")):
-    """PVC içindeki bir dizini listele. Disk /srv altında mount'lu."""
+    """PVC içindeki dosyaları listele. Disk /data altında mount'lu (standart)."""
     uid = resolve_user(token)
     ns, pod = _uploader_pod(uid, req.pvc)
-    # Güvenlik: path içinde .. yok, /srv köküne sabitle
-    safe_path = "/srv/" + req.path.strip("/").replace("..", "")
+    # Güvenlik: path içinde .. yok, /data köküne sabitle
+    rel = req.path.strip("/").replace("..", "")
+    safe_path = "/data/" + rel if rel else "/data"
     out = _exec_in(ns, pod, ["sh", "-c", f"ls -la '{safe_path}' 2>&1 || echo BOS"])
     return {"path": req.path, "listing": out}
 
@@ -186,8 +200,12 @@ def file_upload(req: UploadReq, token: Optional[str] = Header(None, alias="X-Tok
     uid = resolve_user(token)
     ns, pod = _uploader_pod(uid, req.pvc)
     rel = req.path.strip("/").replace("..", "")
-    target_dir = "/srv/" + rel if rel else "/srv"
-    fname = req.filename.replace("/", "").replace("..", "")
+    target_dir = "/data/" + rel if rel else "/data"
+    # Dosya adını güvenli yap: boşluk, parantez, özel karakterler → alt çizgi
+    import re as _re
+    fname = _re.sub(r"[^A-Za-z0-9._-]", "_", req.filename.replace("..", ""))
+    if not fname:
+        fname = "dosya"
     try:
         # Önce dizini oluştur
         _exec_in(ns, pod, ["sh", "-c", f"mkdir -p '{target_dir}'"])
@@ -212,7 +230,7 @@ def file_delete(req: UploadReq, token: Optional[str] = Header(None, alias="X-Tok
     ns, pod = _uploader_pod(uid, req.pvc)
     rel = req.path.strip("/").replace("..", "")
     fname = req.filename.replace("/", "").replace("..", "")
-    target = "/srv/" + (rel + "/" if rel else "") + fname
+    target = "/data/" + (rel + "/" if rel else "") + fname
     out = _exec_in(ns, pod, ["sh", "-c", f"rm -f '{target}' && echo SILINDI"])
     return {"ok": "SILINDI" in out, "detail": out}
 
