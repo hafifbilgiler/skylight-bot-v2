@@ -199,23 +199,18 @@ def _pvc_obj(name, ns, node):
 
 
 def _uploader_objs(pvc_name, ns):
-    """Bir PVC için dosya yöneticisi (filebrowser) pod + service.
-    Kullanıcı tarayıcıdan bu panele girip dosya yükler/düzenler.
+    """Bir PVC için hafif bir yardımcı pod (alpine).
+    Dosya işlemleri exec ile yapılır (upload/list/delete).
     PVC RWX olduğu için diğer pod'lar da aynı anda aynı diske erişir."""
-    up_name = f"{pvc_name}-files"   # örn. disk-1-files
-    # filebrowser — hafif web dosya yöneticisi
+    up_name = f"{pvc_name}-files"
     container = {
-        "name": "filebrowser",
-        "image": "filebrowser/filebrowser:s6",
-        "ports": [{"containerPort": 80}],
-        "env": [
-            {"name": "FB_BASEURL", "value": f"/files/{pvc_name}"},
-            {"name": "FB_NOAUTH", "value": "true"},   # panel erişimi zaten JWT+proxy ile korunur
-        ],
+        "name": "filehelper",
+        "image": "alpine:3.20",
+        "command": ["sh", "-c", "while true; do sleep 3600; done"],  # dosya işlemleri exec ile
         "volumeMounts": [{"name": "data", "mountPath": "/srv"}],
         "securityContext": {
             "allowPrivilegeEscalation": False,
-            "capabilities": {"drop": ["ALL"], "add": ["SETUID", "SETGID", "CHOWN", "DAC_OVERRIDE", "NET_BIND_SERVICE"]},
+            "capabilities": {"drop": ["ALL"], "add": ["CHOWN", "DAC_OVERRIDE"]},
         },
     }
     deploy = {
@@ -236,17 +231,7 @@ def _uploader_objs(pvc_name, ns):
             },
         },
     }
-    svc = {
-        "apiVersion": "v1", "kind": "Service",
-        "metadata": {"name": up_name, "namespace": ns,
-                     "labels": {"app": up_name, "onebune.lab/svc": up_name}},
-        "spec": {
-            "selector": {"app": up_name},
-            "ports": [{"port": 80, "targetPort": 80}],
-            "type": "ClusterIP",
-        },
-    }
-    return [deploy, svc]
+    return [deploy]   # service'e gerek yok, exec ile erişiyoruz
 
 
 def _internal_service_obj(name, ns, port):

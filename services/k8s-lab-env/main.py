@@ -111,47 +111,83 @@ def destroy(token: Optional[str] = Header(None, alias="X-Token")):
     return k8s_ops.destroy_workspace(uid)
 
 
-# ═══════════ UPLOADER PROXY (dosya yöneticisine erişim) ═══════════
+# ═══════════ DOSYA İŞLEMLERİ (PVC'ye upload/list) — exec ile ═══════════
 from fastapi import Request
-from fastapi.responses import Response
+from pydantic import BaseModel as _BM
+import base64 as _b64
 
-@app.api_route("/lab/files/{pvc}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-@app.api_route("/lab/files/{pvc}", methods=["GET"])
-async def files_proxy(pvc: str, request: Request, path: str = "", token: str = ""):
-    """Kullanıcının filebrowser (uploader) pod'una HTTP proxy.
-    Sadece kendi namespace'indeki {pvc}-files service'ine gider."""
-    # Token query'den veya header'dan
-    tok = token or request.query_params.get("token") or request.headers.get("x-token", "")
-    try:
-        uid = resolve_user(tok)
-    except Exception:
-        return Response("Oturum geçersiz", status_code=401)
+class UploadReq(_BM):
+    pvc: str
+    path: str          # hedef dizin, örn. /usr/share/nginx/html
+    filename: str
+    content_b64: str   # dosya içeriği base64
 
+class ListReq(_BM):
+    pvc: str
+    path: str = "/"
+
+def _uploader_pod(uid, pvc):
+    """PVC'nin uploader pod adını bul."""
+    k = k8s_ops._load_k8s()
     ns = k8s_ops.ns_name(uid)
-    try:
-        k8s_ops._guard_ns(ns)
-    except Exception:
-        return Response("Erişim reddedildi", status_code=403)
-
-    # Hedef: cluster içi filebrowser service
+    k8s_ops._guard_ns(ns)
     import re as _re
-    safe_pvc = _re.sub(r"[^a-z0-9-]", "", pvc.lower())
-    target = f"http://{safe_pvc}-files.{ns}.svc.cluster.local:80/files/{safe_pvc}/{path}"
+    safe = _re.sub(r"[^a-z0-9-]", "", pvc.lower())
+    for p in k["core"].list_namespaced_pod(ns, label_selector=f"app={safe}-files").items:
+        if p.status.phase == "Running":
+            return ns, p.metadata.name
+    raise HTTPException(400, "Dosya yöneticisi pod'u hazır değil — önce Çalıştır'a bas")
 
-    import httpx
-    body = await request.body()
-    headers = {k: v for k, v in request.headers.items()
-               if k.lower() not in ("host", "x-token", "authorization")}
+def _exec_in(ns, pod, command):
+    """Pod içinde komut çalıştır, çıktıyı döndür."""
+    k = k8s_ops._load_k8s()
+    from kubernetes.stream import stream
+    return stream(k["core"].connect_get_namespaced_pod_exec, pod, ns,
+                  command=command, stderr=True, stdin=False, stdout=True, tty=False)
+
+@app.post("/lab/file_list")
+def file_list(req: ListReq, token: Optional[str] = Header(None, alias="X-Token")):
+    """PVC içindeki bir dizini listele. Disk /srv altında mount'lu."""
+    uid = resolve_user(token)
+    ns, pod = _uploader_pod(uid, req.pvc)
+    # Güvenlik: path içinde .. yok, /srv köküne sabitle
+    safe_path = "/srv/" + req.path.strip("/").replace("..", "")
+    out = _exec_in(ns, pod, ["sh", "-c", f"ls -la '{safe_path}' 2>&1 || echo BOS"])
+    return {"path": req.path, "listing": out}
+
+@app.post("/lab/file_upload")
+def file_upload(req: UploadReq, token: Optional[str] = Header(None, alias="X-Token")):
+    """Dosyayı PVC'nin belirtilen dizinine yaz (uploader pod üzerinden)."""
+    uid = resolve_user(token)
+    ns, pod = _uploader_pod(uid, req.pvc)
+    # Hedef dizin /srv altına map'lenir (PVC orada mount'lu)
+    rel = req.path.strip("/").replace("..", "")
+    target_dir = "/srv/" + rel if rel else "/srv"
+    fname = req.filename.replace("/", "").replace("..", "")
+    # base64'ü pod içinde çöz ve yaz (büyük dosya için stdin yerine echo|base64 -d)
     try:
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as cx:
-            r = await cx.request(request.method, target,
-                                 params=dict(request.query_params), content=body, headers=headers)
-        # Yanıtı olduğu gibi geri döndür
-        resp_headers = {k: v for k, v in r.headers.items()
-                        if k.lower() not in ("transfer-encoding", "content-encoding", "content-length")}
-        return Response(content=r.content, status_code=r.status_code, headers=resp_headers)
+        # içeriği base64 olarak pod'a gönder
+        cmd = ["sh", "-c",
+               f"mkdir -p '{target_dir}' && echo '{req.content_b64}' | base64 -d > '{target_dir}/{fname}' && echo OK && ls -la '{target_dir}/{fname}'"]
+        out = _exec_in(ns, pod, cmd)
+        if "OK" not in out:
+            raise HTTPException(500, f"Yazma hatası: {out}")
+        return {"ok": True, "path": f"{target_dir}/{fname}", "detail": out}
+    except HTTPException:
+        raise
     except Exception as e:
-        return Response(f"Dosya yöneticisine ulaşılamadı: {e}", status_code=502)
+        raise HTTPException(500, f"Upload hatası: {e}")
+
+@app.post("/lab/file_delete")
+def file_delete(req: UploadReq, token: Optional[str] = Header(None, alias="X-Token")):
+    """PVC'den dosya sil."""
+    uid = resolve_user(token)
+    ns, pod = _uploader_pod(uid, req.pvc)
+    rel = req.path.strip("/").replace("..", "")
+    fname = req.filename.replace("/", "").replace("..", "")
+    target = "/srv/" + (rel + "/" if rel else "") + fname
+    out = _exec_in(ns, pod, ["sh", "-c", f"rm -f '{target}' && echo SILINDI"])
+    return {"ok": "SILINDI" in out, "detail": out}
 
 
 # ═══════════ TERMINAL (WebSocket → pod exec) ═══════════
