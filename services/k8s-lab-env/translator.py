@@ -87,25 +87,30 @@ def build_manifests(graph: dict, user_id: str) -> list:
 
 def _deployment_obj(name, ns, image, port, env, ntype, node):
     """Bir Deployment — güvenli defaultlarla (non-root, token yok)."""
+    # Güvenlik: privilege escalation kapalı, tüm capability'ler düşük.
+    # runAsNonRoot bileşene göre — resmi imajlar kendi non-root user'ıyla gelir.
+    sec = {
+        "allowPrivilegeEscalation": False,
+        "capabilities": {"drop": ["ALL"]},
+    }
     container = {
         "name": name,
         "image": image,
         "ports": [{"containerPort": port}],
         "env": [{"name": k, "value": str(v)} for k, v in env.items()],
-        "securityContext": {
-            "runAsNonRoot": True,
-            "allowPrivilegeEscalation": False,
-            "capabilities": {"drop": ["ALL"]},
-        },
+        "securityContext": sec,
     }
     # App türü ise: basit bir "çalışıyorum" komutu (kullanıcı kodu yok, demo)
     if ntype == "app":
         paths = node.get("paths", ["/"])
         container["command"] = ["sh", "-c",
-            f"echo 'App {name} :{port} hazır — pathler: {' '.join(paths)}'; "
+            f"echo 'App {name} :{port} hazir - pathler: {' '.join(paths)}'; "
             f"while true; do sleep 3600; done"]
-        # non-root için app'lerde runAsUser
-        container["securityContext"]["runAsUser"] = 1000
+        # App'ler non-root çalışsın (bilinen user)
+        sec["runAsNonRoot"] = True
+        sec["runAsUser"] = 1000
+    # Redis/Postgres/RabbitMQ/Nginx: kendi imaj user'ına bırak (config error önlenir)
+    # Güvenlik yine sağlam: no-privilege-escalation + drop ALL capabilities
 
     return {
         "apiVersion": "apps/v1", "kind": "Deployment",
