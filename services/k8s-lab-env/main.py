@@ -138,12 +138,36 @@ def _uploader_pod(uid, pvc):
             return ns, p.metadata.name
     raise HTTPException(400, "Dosya yöneticisi pod'u hazır değil — önce Çalıştır'a bas")
 
-def _exec_in(ns, pod, command):
-    """Pod içinde komut çalıştır, çıktıyı döndür."""
+def _exec_in(ns, pod, command, stdin_data=None):
+    """Pod içinde komut çalıştır, çıktıyı döndür.
+    stdin_data verilirse komuta stdin olarak akıtılır (büyük binary için)."""
     k = k8s_ops._load_k8s()
     from kubernetes.stream import stream
-    return stream(k["core"].connect_get_namespaced_pod_exec, pod, ns,
-                  command=command, stderr=True, stdin=False, stdout=True, tty=False)
+    if stdin_data is None:
+        return stream(k["core"].connect_get_namespaced_pod_exec, pod, ns,
+                      command=command, stderr=True, stdin=False, stdout=True, tty=False)
+    # stdin akışı: veriyi parça parça gönder (büyük dosya için)
+    resp = stream(k["core"].connect_get_namespaced_pod_exec, pod, ns,
+                  command=command, stderr=True, stdin=True, stdout=True, tty=False,
+                  _preload_content=False)
+    out = ""
+    # Veriyi bloklar halinde stdin'e yaz
+    CHUNK = 8192
+    idx = 0
+    while resp.is_open():
+        resp.update(timeout=5)
+        if resp.peek_stdout():
+            out += resp.read_stdout()
+        if resp.peek_stderr():
+            out += resp.read_stderr()
+        if idx < len(stdin_data):
+            chunk = stdin_data[idx:idx+CHUNK]
+            resp.write_stdin(chunk)
+            idx += CHUNK
+        else:
+            resp.close()
+            break
+    return out
 
 @app.post("/lab/file_list")
 def file_list(req: ListReq, token: Optional[str] = Header(None, alias="X-Token")):
@@ -157,22 +181,25 @@ def file_list(req: ListReq, token: Optional[str] = Header(None, alias="X-Token")
 
 @app.post("/lab/file_upload")
 def file_upload(req: UploadReq, token: Optional[str] = Header(None, alias="X-Token")):
-    """Dosyayı PVC'nin belirtilen dizinine yaz (uploader pod üzerinden)."""
+    """Dosyayı PVC'nin belirtilen dizinine yaz (uploader pod üzerinden).
+    base64 stdin'den akıtılır — büyük binary (PNG vb.) için 'Argument list too long' olmaz."""
     uid = resolve_user(token)
     ns, pod = _uploader_pod(uid, req.pvc)
-    # Hedef dizin /srv altına map'lenir (PVC orada mount'lu)
     rel = req.path.strip("/").replace("..", "")
     target_dir = "/srv/" + rel if rel else "/srv"
     fname = req.filename.replace("/", "").replace("..", "")
-    # base64'ü pod içinde çöz ve yaz (büyük dosya için stdin yerine echo|base64 -d)
     try:
-        # içeriği base64 olarak pod'a gönder
-        cmd = ["sh", "-c",
-               f"mkdir -p '{target_dir}' && echo '{req.content_b64}' | base64 -d > '{target_dir}/{fname}' && echo OK && ls -la '{target_dir}/{fname}'"]
-        out = _exec_in(ns, pod, cmd)
-        if "OK" not in out:
-            raise HTTPException(500, f"Yazma hatası: {out}")
-        return {"ok": True, "path": f"{target_dir}/{fname}", "detail": out}
+        # Önce dizini oluştur
+        _exec_in(ns, pod, ["sh", "-c", f"mkdir -p '{target_dir}'"])
+        # base64 içeriğini stdin'den ver → pod içinde çöz → dosyaya yaz
+        target = f"{target_dir}/{fname}"
+        cmd = ["sh", "-c", f"base64 -d > '{target}'"]
+        _exec_in(ns, pod, cmd, stdin_data=req.content_b64)
+        # Yazıldı mı doğrula
+        check = _exec_in(ns, pod, ["sh", "-c", f"ls -la '{target}' 2>&1"])
+        if "No such" in check or "cannot" in check.lower():
+            raise HTTPException(500, f"Dosya yazılamadı: {check}")
+        return {"ok": True, "path": target, "detail": check}
     except HTTPException:
         raise
     except Exception as e:
