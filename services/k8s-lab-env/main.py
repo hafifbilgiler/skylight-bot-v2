@@ -111,6 +111,49 @@ def destroy(token: Optional[str] = Header(None, alias="X-Token")):
     return k8s_ops.destroy_workspace(uid)
 
 
+# ═══════════ UPLOADER PROXY (dosya yöneticisine erişim) ═══════════
+from fastapi import Request
+from fastapi.responses import Response
+
+@app.api_route("/lab/files/{pvc}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+@app.api_route("/lab/files/{pvc}", methods=["GET"])
+async def files_proxy(pvc: str, request: Request, path: str = "", token: str = ""):
+    """Kullanıcının filebrowser (uploader) pod'una HTTP proxy.
+    Sadece kendi namespace'indeki {pvc}-files service'ine gider."""
+    # Token query'den veya header'dan
+    tok = token or request.query_params.get("token") or request.headers.get("x-token", "")
+    try:
+        uid = resolve_user(tok)
+    except Exception:
+        return Response("Oturum geçersiz", status_code=401)
+
+    ns = k8s_ops.ns_name(uid)
+    try:
+        k8s_ops._guard_ns(ns)
+    except Exception:
+        return Response("Erişim reddedildi", status_code=403)
+
+    # Hedef: cluster içi filebrowser service
+    import re as _re
+    safe_pvc = _re.sub(r"[^a-z0-9-]", "", pvc.lower())
+    target = f"http://{safe_pvc}-files.{ns}.svc.cluster.local:80/files/{safe_pvc}/{path}"
+
+    import httpx
+    body = await request.body()
+    headers = {k: v for k, v in request.headers.items()
+               if k.lower() not in ("host", "x-token", "authorization")}
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as cx:
+            r = await cx.request(request.method, target,
+                                 params=dict(request.query_params), content=body, headers=headers)
+        # Yanıtı olduğu gibi geri döndür
+        resp_headers = {k: v for k, v in r.headers.items()
+                        if k.lower() not in ("transfer-encoding", "content-encoding", "content-length")}
+        return Response(content=r.content, status_code=r.status_code, headers=resp_headers)
+    except Exception as e:
+        return Response(f"Dosya yöneticisine ulaşılamadı: {e}", status_code=502)
+
+
 # ═══════════ TERMINAL (WebSocket → pod exec) ═══════════
 @app.websocket("/lab/terminal/{pod_name}")
 async def terminal(ws: WebSocket, pod_name: str, token: str = ""):

@@ -140,13 +140,29 @@ def deploy_graph(user_id: str, graph: dict) -> dict:
     applied, kept, removed = [], [], []
 
     # ── PVC senkron (önce PVC — pod'lar ona bağlanacak) ──
-    # PVC OLUŞTURULUR ama SİLİNMEZ (veri kaybını önlemek için — kullanıcı özel silmeli)
     for name, obj in desired_pvcs.items():
         if name in current_pvcs:
             kept.append(f"PVC/{name}")     # zaten var — veri korunur
         else:
             k["core"].create_namespaced_persistent_volume_claim(ns, obj)
             applied.append(f"PVC/{name}")
+    # Canvas'ta olmayan PVC'leri sil (kullanıcı ekrandan sildi → veri de gider)
+    for name in current_pvcs - set(desired_pvcs):
+        # Önce PVC'ye bağlı uploader pod'unu sil (yoksa PVC silinemez)
+        up_name = f"{name}-files"
+        try:
+            k["apps"].delete_namespaced_deployment(up_name, ns)
+        except Exception:
+            pass
+        try:
+            k["core"].delete_namespaced_service(up_name, ns)
+        except Exception:
+            pass
+        try:
+            k["core"].delete_namespaced_persistent_volume_claim(name, ns)
+            removed.append(f"PVC/{name}")
+        except Exception:
+            pass
 
     # ── DEPLOYMENT senkron ──
     for name, obj in desired_deploys.items():
@@ -155,8 +171,10 @@ def deploy_graph(user_id: str, graph: dict) -> dict:
         else:
             k["apps"].create_namespaced_deployment(ns, obj)
             applied.append(f"Deployment/{name}")
-    # Canvas'ta olmayan deployment'ları sil
+    # Canvas'ta olmayan deployment'ları sil (uploader -files hariç, onları PVC senkronu yönetir)
     for name in current_deploys - set(desired_deploys):
+        if name.endswith("-files"):
+            continue  # uploader pod'u — PVC silinince ayrıca silinir
         k["apps"].delete_namespaced_deployment(name, ns)
         removed.append(f"Deployment/{name}")
 
@@ -173,6 +191,8 @@ def deploy_graph(user_id: str, graph: dict) -> dict:
             k["core"].create_namespaced_service(ns, obj)
             applied.append(f"Service/{name}")
     for name in current_svcs - set(desired_svcs):
+        if name.endswith("-files"):
+            continue  # uploader service — PVC silinince ayrıca silinir
         k["core"].delete_namespaced_service(name, ns)
         removed.append(f"Service/{name}")
 

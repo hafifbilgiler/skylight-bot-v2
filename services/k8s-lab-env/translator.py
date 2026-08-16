@@ -43,9 +43,11 @@ def build_manifests(graph: dict, user_id: str) -> list:
         img = resolve_image(node)
         port = _port_of(node)
 
-        # ── PVC node'u: PersistentVolumeClaim üretir, pod değil ──
+        # ── PVC node'u: PersistentVolumeClaim + otomatik uploader pod ──
         if t == "pvc":
             objects.append(_pvc_obj(base, ns, node))
+            # Her PVC için bir dosya yöneticisi (filebrowser) pod'u — kullanıcı buradan dosya yükler
+            objects.extend(_uploader_objs(base, ns))
             continue
 
         # ── Service node'u: bir K8s Service nesnesi üretir, kendi pod'u yok ──
@@ -190,10 +192,61 @@ def _pvc_obj(name, ns, node):
         "metadata": {"name": name, "namespace": ns,
                      "labels": {"onebune.lab/pvc": name}},
         "spec": {
-            "accessModes": ["ReadWriteOnce"],
+            "accessModes": ["ReadWriteMany"],   # NFS RWX destekler — çoklu pod paylaşır
             "resources": {"requests": {"storage": storage}},
         },
     }
+
+
+def _uploader_objs(pvc_name, ns):
+    """Bir PVC için dosya yöneticisi (filebrowser) pod + service.
+    Kullanıcı tarayıcıdan bu panele girip dosya yükler/düzenler.
+    PVC RWX olduğu için diğer pod'lar da aynı anda aynı diske erişir."""
+    up_name = f"{pvc_name}-files"   # örn. disk-1-files
+    # filebrowser — hafif web dosya yöneticisi
+    container = {
+        "name": "filebrowser",
+        "image": "filebrowser/filebrowser:s6",
+        "ports": [{"containerPort": 80}],
+        "env": [
+            {"name": "FB_BASEURL", "value": f"/files/{pvc_name}"},
+            {"name": "FB_NOAUTH", "value": "true"},   # panel erişimi zaten JWT+proxy ile korunur
+        ],
+        "volumeMounts": [{"name": "data", "mountPath": "/srv"}],
+        "securityContext": {
+            "allowPrivilegeEscalation": False,
+            "capabilities": {"drop": ["ALL"], "add": ["SETUID", "SETGID", "CHOWN", "DAC_OVERRIDE", "NET_BIND_SERVICE"]},
+        },
+    }
+    deploy = {
+        "apiVersion": "apps/v1", "kind": "Deployment",
+        "metadata": {"name": up_name, "namespace": ns,
+                     "labels": {"app": up_name, "onebune.lab/uploader": pvc_name}},
+        "spec": {
+            "replicas": 1,
+            "selector": {"matchLabels": {"app": up_name}},
+            "template": {
+                "metadata": {"labels": {"app": up_name}},
+                "spec": {
+                    "automountServiceAccountToken": False,
+                    "containers": [container],
+                    "volumes": [{"name": "data",
+                                 "persistentVolumeClaim": {"claimName": pvc_name}}],
+                },
+            },
+        },
+    }
+    svc = {
+        "apiVersion": "v1", "kind": "Service",
+        "metadata": {"name": up_name, "namespace": ns,
+                     "labels": {"app": up_name, "onebune.lab/svc": up_name}},
+        "spec": {
+            "selector": {"app": up_name},
+            "ports": [{"port": 80, "targetPort": 80}],
+            "type": "ClusterIP",
+        },
+    }
+    return [deploy, svc]
 
 
 def _internal_service_obj(name, ns, port):
