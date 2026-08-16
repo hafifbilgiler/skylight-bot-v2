@@ -139,30 +139,14 @@ def deploy_graph(user_id: str, graph: dict) -> dict:
 
     applied, kept, removed = [], [], []
 
-    # ── PVC senkron (önce PVC — pod'lar ona bağlanacak) ──
+    # ── PVC senkron: sadece OLUŞTURMA (önce PVC, pod'lar ona bağlanacak) ──
     for name, obj in desired_pvcs.items():
         if name in current_pvcs:
             kept.append(f"PVC/{name}")     # zaten var — veri korunur
         else:
             k["core"].create_namespaced_persistent_volume_claim(ns, obj)
             applied.append(f"PVC/{name}")
-    # Canvas'ta olmayan PVC'leri sil (kullanıcı ekrandan sildi → veri de gider)
-    for name in current_pvcs - set(desired_pvcs):
-        # Önce PVC'ye bağlı uploader pod'unu sil (yoksa PVC silinemez)
-        up_name = f"{name}-files"
-        try:
-            k["apps"].delete_namespaced_deployment(up_name, ns)
-        except Exception:
-            pass
-        try:
-            k["core"].delete_namespaced_service(up_name, ns)
-        except Exception:
-            pass
-        try:
-            k["core"].delete_namespaced_persistent_volume_claim(name, ns)
-            removed.append(f"PVC/{name}")
-        except Exception:
-            pass
+    # NOT: PVC SİLME en sona alındı (mount eden pod'lar önce silinmeli)
 
     # ── DEPLOYMENT senkron ──
     for name, obj in desired_deploys.items():
@@ -195,6 +179,21 @@ def deploy_graph(user_id: str, graph: dict) -> dict:
             continue  # uploader service — PVC silinince ayrıca silinir
         k["core"].delete_namespaced_service(name, ns)
         removed.append(f"Service/{name}")
+
+    # ── PVC SİLME (EN SON — mount eden pod'lar yukarıda silindi) ──
+    # Canvas'ta olmayan PVC → kullanıcı ekrandan sildi → cluster'dan da git
+    for name in current_pvcs - set(desired_pvcs):
+        # PVC'ye bağlı uploader pod'unu da sil (yoksa PVC Terminating'de takılır)
+        up_name = f"{name}-files"
+        try:
+            k["apps"].delete_namespaced_deployment(up_name, ns)
+        except Exception:
+            pass
+        try:
+            k["core"].delete_namespaced_persistent_volume_claim(name, ns)
+            removed.append(f"PVC/{name}")
+        except Exception:
+            pass
 
     return {
         "namespace": ns,
