@@ -87,11 +87,18 @@ def build_manifests(graph: dict, user_id: str) -> list:
 
 def _deployment_obj(name, ns, image, port, env, ntype, node):
     """Bir Deployment — güvenli defaultlarla (non-root, token yok)."""
-    # Güvenlik: privilege escalation kapalı, tüm capability'ler düşük.
-    # runAsNonRoot bileşene göre — resmi imajlar kendi non-root user'ıyla gelir.
+    # Güvenlik: privilege escalation kapalı.
+    # App'ler: drop ALL (user değiştirmez, en sıkı).
+    # Servisler (redis/postgres/vb): SETUID/SETGID gerekir (root→servis user geçişi),
+    #   yoksa "failed switching to redis: operation not permitted" hatası.
+    if ntype == "app":
+        caps = {"drop": ["ALL"]}
+    else:
+        # Servisler kendi user'ına geçebilmek için setuid/setgid tutar, gerisi düşer
+        caps = {"drop": ["ALL"], "add": ["SETUID", "SETGID", "CHOWN", "DAC_OVERRIDE"]}
     sec = {
         "allowPrivilegeEscalation": False,
-        "capabilities": {"drop": ["ALL"]},
+        "capabilities": caps,
     }
     container = {
         "name": name,
@@ -109,8 +116,7 @@ def _deployment_obj(name, ns, image, port, env, ntype, node):
         # App'ler non-root çalışsın (bilinen user)
         sec["runAsNonRoot"] = True
         sec["runAsUser"] = 1000
-    # Redis/Postgres/RabbitMQ/Nginx: kendi imaj user'ına bırak (config error önlenir)
-    # Güvenlik yine sağlam: no-privilege-escalation + drop ALL capabilities
+    # Redis/Postgres/RabbitMQ/Nginx: kendi imaj user'ına geçer (setuid/setgid ile)
 
     return {
         "apiVersion": "apps/v1", "kind": "Deployment",
