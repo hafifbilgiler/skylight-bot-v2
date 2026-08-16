@@ -51,10 +51,20 @@ def health():
 
 @app.post("/lab/workspace")
 def workspace(token: Optional[str] = Header(None, alias="X-Token")):
-    """Kullanıcı workspace'ini garanti et (yoksa oluştur)."""
+    """Workspace'i garanti et + kayıtlı canvas + pod durumunu döndür (refresh için)."""
     uid = resolve_user(token)
     try:
-        return k8s_ops.ensure_workspace(uid)
+        ws = k8s_ops.ensure_workspace(uid)
+        # Kayıtlı canvas'ı ve mevcut pod durumunu ekle
+        try:
+            ws["canvas"] = k8s_ops.load_canvas(uid)
+        except Exception:
+            ws["canvas"] = {"nodes": [], "edges": []}
+        try:
+            ws["status"] = k8s_ops.get_status(uid)
+        except Exception:
+            ws["status"] = {"pods": []}
+        return ws
     except Exception as e:
         raise HTTPException(500, f"Workspace hatası: {e}")
 

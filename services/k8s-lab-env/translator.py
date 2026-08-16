@@ -44,16 +44,29 @@ def build_manifests(graph: dict, user_id: str) -> list:
         port = _port_of(node)
 
         # ── Service node'u: bir K8s Service nesnesi üretir, kendi pod'u yok ──
+        # Bağlantı yönü iki türlü olabilir: service→app VEYA app→service
         if t == "service":
-            # Service hangi app'e bağlı? (edge: service -> app)
-            targets = deps_of.get(nid, [])
-            app = next((x for x in targets if x and x["type"] == "app"), None)
+            # Bu service'e bağlı VEYA bu service'in bağlandığı app'i bul
+            app = None
+            # service → app (service'ten app'e ok)
+            for dep in deps_of.get(nid, []):
+                if dep and dep["type"] == "app":
+                    app = dep; break
+            # app → service (app'ten service'e ok)
             if not app:
-                continue  # bağlı app yoksa service atla
+                for e in edges:
+                    if e["to"] == nid:
+                        src = nodes.get(e["from"])
+                        if src and src["type"] == "app":
+                            app = src; break
+            if not app:
+                continue  # hiçbir app'e bağlı değilse service atla (öğretici: boş service işe yaramaz)
             objects.append(_service_obj(base, ns, app, node))
             continue
 
-        # ── Diğerleri: Deployment + (erişim için) Service ──
+        # ── Diğerleri: SADECE Deployment (otomatik service YOK) ──
+        # Öğretici amaç: app tek başına dışarıdan erişilemez.
+        # Kullanıcı Service ekleyip bağlayınca erişim öğrenir.
         env = dict(COMPONENT_ENV.get(t, {}))
 
         # App ise: bağlı olduğu servislerin bağlantı env'lerini ekle
@@ -63,12 +76,11 @@ def build_manifests(graph: dict, user_id: str) -> list:
                     continue
                 dep_type = dep["type"]
                 if dep_type in CONNECTION_ENV:
-                    dep_host = _safe_name(dep["name"])   # service adı = pod adı
+                    dep_host = _safe_name(dep["name"])
                     env.update(CONNECTION_ENV[dep_type](dep_host))
 
         objects.append(_deployment_obj(base, ns, img, port, env, t, node))
-        # Her bileşen için dahili erişim Service'i (app'lerin DB'ye ulaşması için)
-        objects.append(_internal_service_obj(base, ns, port))
+        # NOT: otomatik internal service KALDIRILDI — kullanıcı kendi Service'ini eklesin (öğrenme)
 
     return objects
 

@@ -73,6 +73,44 @@ def ensure_workspace(user_id: str) -> dict:
 
 
 # ═══════════ DEPLOY (Start) ═══════════
+# ═══════════ CANVAS STATE (ConfigMap'te sakla) ═══════════
+CANVAS_CM = "lab-canvas"   # kullanıcının çizimini tutan ConfigMap
+
+def save_canvas(user_id: str, graph: dict):
+    """Canvas çizimini ns'deki ConfigMap'e kaydet (refresh'te geri gelsin)."""
+    import json
+    k = _load_k8s()
+    ns = ns_name(user_id)
+    _guard_ns(ns)
+    body = {
+        "apiVersion": "v1", "kind": "ConfigMap",
+        "metadata": {"name": CANVAS_CM, "namespace": ns},
+        "data": {"canvas": json.dumps(graph, ensure_ascii=False)},
+    }
+    try:
+        k["core"].create_namespaced_config_map(ns, body)
+    except k["client"].ApiException as e:
+        if e.status == 409:
+            k["core"].patch_namespaced_config_map(CANVAS_CM, ns, body)
+        else:
+            raise
+
+
+def load_canvas(user_id: str) -> dict:
+    """Kayıtlı canvas'ı oku. Yoksa boş döner."""
+    import json
+    k = _load_k8s()
+    ns = ns_name(user_id)
+    _guard_ns(ns)
+    try:
+        cm = k["core"].read_namespaced_config_map(CANVAS_CM, ns)
+        return json.loads(cm.data.get("canvas", "{}"))
+    except k["client"].ApiException as e:
+        if e.status == 404:
+            return {"nodes": [], "edges": []}
+        raise
+
+
 def deploy_graph(user_id: str, graph: dict) -> dict:
     """Canvas grafiğini namespace'e uygula — pod'ları ayağa kaldır."""
     k = _load_k8s()
@@ -80,6 +118,12 @@ def deploy_graph(user_id: str, graph: dict) -> dict:
     _guard_ns(ns)
 
     objects = build_manifests(graph, user_id)
+
+    # Canvas çizimini kaydet (refresh'te geri gelsin)
+    try:
+        save_canvas(user_id, graph)
+    except Exception:
+        pass  # kayıt başarısız olsa da deploy devam etsin
 
     # Önce mevcut deployment/service'leri temizle (canvas = tek gerçek kaynak)
     _clean_workloads(ns)
