@@ -6,17 +6,10 @@
 # ═══════════════════════════════════════════════════════════════
 
 apiVersion: v1
-kind: Namespace
-metadata:
-  name: onebune-lab-system      # orkestratörün yaşadığı yer
-  labels:
-    onebune.lab/system: "true"
----
-apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: lab-orchestrator
-  namespace: onebune-lab-system
+  namespace: skylight-bot-v2      # orkestratör gateway ile aynı ns'de çalışır
 ---
 # Orkestratör ClusterRole — namespace + lab kaynaklarını yönetir
 # ama SECRET okuma, NODE, mevcut prod ns'lere dokunma YOK
@@ -62,7 +55,7 @@ metadata:
 subjects:
   - kind: ServiceAccount
     name: lab-orchestrator
-    namespace: onebune-lab-system
+    namespace: skylight-bot-v2
 roleRef:
   kind: ClusterRole
   name: lab-orchestrator-role
@@ -73,7 +66,7 @@ apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: lab-ttl-cleaner
-  namespace: onebune-lab-system
+  namespace: skylight-bot-v2
 spec:
   schedule: "0 * * * *"          # her saat başı kontrol
   concurrencyPolicy: Forbid

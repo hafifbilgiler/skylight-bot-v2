@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+kubernetes
+PyJWT
+pyyaml
+websockets

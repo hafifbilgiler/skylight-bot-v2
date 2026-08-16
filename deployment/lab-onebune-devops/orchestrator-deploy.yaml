@@ -1,0 +1,48 @@
+# Orkestratör — gateway ile AYNI namespace'te (skylight-bot-v2), aynı JWT secret'ı kullanır
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: skylight-k8s-lab
+  namespace: skylight-bot-v2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: skylight-k8s-lab
+  template:
+    metadata:
+      labels:
+        app: skylight-k8s-lab
+    spec:
+      serviceAccountName: lab-orchestrator      # sınırlı yetkili SA (rbac.yaml'dan)
+      containers:
+      - name: orchestrator
+        image: docker.io/hafifbilgiler/skylight-k8s-lab:1.0
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+        env:
+        - name: IN_CLUSTER
+          value: "true"
+        # Gateway ile AYNI JWT secret — kullanıcı token'ları tanınsın
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: gateway-secret
+              key: jwt-secret
+        resources:
+          requests: {cpu: "100m", memory: "128Mi"}
+          limits: {cpu: "500m", memory: "512Mi"}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: skylight-k8s-lab
+  namespace: skylight-bot-v2
+spec:
+  selector:
+    app: skylight-k8s-lab
+  ports:
+  - port: 8000
+    targetPort: 8000
+  type: ClusterIP
