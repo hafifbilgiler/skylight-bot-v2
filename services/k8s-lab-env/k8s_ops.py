@@ -64,6 +64,34 @@ def _force_del_pvc(k, name, ns):
         pass
 
 
+def _deploy_changed(k, name, ns, desired):
+    """Mevcut deployment ile istenen arasında anlamlı fark var mı?
+    env, imaj, mount değişmişse True (güncelle/rollout gerekir)."""
+    try:
+        cur = k["apps"].read_namespaced_deployment(name, ns)
+    except Exception:
+        return True  # okunamıyorsa güncelle
+    try:
+        cur_c = cur.spec.template.spec.containers[0]
+        des_c = desired["spec"]["template"]["spec"]["containers"][0]
+        # İmaj değişti mi
+        if cur_c.image != des_c.get("image"):
+            return True
+        # Env değişti mi (isim=değer kümesi)
+        cur_env = {e.name: (e.value or "") for e in (cur_c.env or [])}
+        des_env = {e["name"]: str(e.get("value", "")) for e in des_c.get("env", [])}
+        if cur_env != des_env:
+            return True
+        # Volume mount değişti mi (PVC bağlama)
+        cur_mounts = {(m.name, m.mount_path) for m in (cur_c.volume_mounts or [])}
+        des_mounts = {(m["name"], m["mountPath"]) for m in des_c.get("volumeMounts", [])}
+        if cur_mounts != des_mounts:
+            return True
+    except Exception:
+        return True  # emin değilsek güncelle
+    return False
+
+
 def ns_name(user_id: str) -> str:
     return f"{NS_PREFIX}{user_id}"
 
@@ -180,7 +208,13 @@ def deploy_graph(user_id: str, graph: dict) -> dict:
     # ── DEPLOYMENT senkron ──
     for name, obj in desired_deploys.items():
         if name in current_deploys:
-            kept.append(f"Deployment/{name}")   # zaten var — DOKUNMA (pod kesintisiz)
+            # Zaten var — değişmiş mi kontrol et (env, imaj, mount)
+            if _deploy_changed(k, name, ns, obj):
+                # Değişmiş → güncelle (pod yeni ayarlarla yeniden başlar = rollout)
+                k["apps"].patch_namespaced_deployment(name, ns, obj)
+                applied.append(f"Deployment/{name} (güncellendi)")
+            else:
+                kept.append(f"Deployment/{name}")   # değişmemiş — dokunma (kesintisiz)
         else:
             k["apps"].create_namespaced_deployment(ns, obj)
             applied.append(f"Deployment/{name}")
