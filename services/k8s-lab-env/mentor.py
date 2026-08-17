@@ -179,13 +179,19 @@ def chat_stream(message, graph, status=None):
     # 1) Niyet belirle (kısa, streaming değil)
     intent_sys = (
         "Kullanıcının mesajını sınıflandır. SADECE tek kelime döndür:\n"
-        "BUILD = yeni bileşen kurmak/eklemek/silmek istiyorsa\n"
+        "CLEAR = her şeyi silmek/temizlemek istiyorsa (örn: 'hepsini sil', 'temizle', 'her şeyi kaldır', 'canvası boşalt')\n"
+        "BUILD = yeni bileşen kurmak/eklemek istiyorsa (örn: 'redis kur', 'app ekle')\n"
         "ASK = soru soruyorsa veya bilgi istiyorsa\n"
-        "Sadece BUILD veya ASK yaz."
+        "Sadece CLEAR, BUILD veya ASK yaz."
     )
     intent_res = _llm([{"role": "system", "content": intent_sys},
                        {"role": "user", "content": message}], max_tokens=10, temperature=0)
     intent = (intent_res.get("text", "ASK") if "error" not in intent_res else "ASK").strip().upper()
+
+    if "CLEAR" in intent:
+        # Her şeyi sil işareti — frontend canvas'ı boşaltıp deploy'u siler
+        yield "[[CLEAR]]"
+        return
 
     if "BUILD" in intent:
         # Kurma: JSON üret (stream değil), özel işaretle gönder
