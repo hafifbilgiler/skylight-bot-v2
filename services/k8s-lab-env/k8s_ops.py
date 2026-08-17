@@ -333,3 +333,25 @@ def destroy_workspace(user_id: str) -> dict:
     _guard_ns(ns)
     k["core"].delete_namespace(ns)
     return {"namespace": ns, "destroyed": True}
+
+
+def rollout_restart(user_id: str, name: str) -> dict:
+    """Bir deployment'ı rollout restart et — kubectl rollout restart gibi.
+    Pod template'ine restart zaman damgası ekler, K8s pod'u yeniden oluşturur."""
+    k = _load_k8s()
+    ns = ns_name(user_id)
+    _guard_ns(ns)
+    import re as _re
+    safe = _re.sub(r"[^a-z0-9-]", "", (name or "").lower())
+    if not safe:
+        return {"ok": False, "message": "Geçersiz bileşen adı"}
+    # restart annotation'ı ekle → yeni pod template hash → rollout tetiklenir
+    now = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    patch = {"spec": {"template": {"metadata": {"annotations": {
+        "kubectl.kubernetes.io/restartedAt": now
+    }}}}}
+    try:
+        k["apps"].patch_namespaced_deployment(safe, ns, patch)
+        return {"ok": True, "name": safe, "restartedAt": now}
+    except Exception as e:
+        return {"ok": False, "message": f"Rollout hatası: {e}"}

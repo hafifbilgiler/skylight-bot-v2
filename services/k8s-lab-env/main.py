@@ -111,6 +111,16 @@ def destroy(token: Optional[str] = Header(None, alias="X-Token")):
     return k8s_ops.destroy_workspace(uid)
 
 
+class RestartReq(BaseModel):
+    name: str   # deployment adı (pod/bileşen adı)
+
+@app.post("/lab/restart")
+def restart(req: RestartReq, token: Optional[str] = Header(None, alias="X-Token")):
+    """Bir deployment'ı rollout restart et — pod yeniden başlar (yeni ayarlarla)."""
+    uid = resolve_user(token)
+    return k8s_ops.rollout_restart(uid, req.name)
+
+
 # ═══════════ DOSYA İŞLEMLERİ (PVC'ye upload/list) — exec ile ═══════════
 from fastapi import Request
 from pydantic import BaseModel as _BM
