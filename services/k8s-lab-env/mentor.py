@@ -140,6 +140,96 @@ def build(instruction, graph):
         return {"error": f"LLM geçerli JSON üretmedi: {e}", "raw": res["text"][:500]}
 
 
+def _llm_stream(messages, max_tokens=1200, temperature=0.3):
+    """DeepInfra'dan streaming — cevabı parça parça yield eder."""
+    if not DEEPINFRA_API_KEY:
+        yield "[HATA] DeepInfra API anahtarı ayarlı değil."
+        return
+    try:
+        with httpx.stream(
+            "POST", DEEPINFRA_URL,
+            headers={"Authorization": f"Bearer {DEEPINFRA_API_KEY}",
+                     "Content-Type": "application/json"},
+            json={"model": DEEPINFRA_MODEL, "messages": messages,
+                  "max_tokens": max_tokens, "temperature": temperature, "stream": True},
+            timeout=90,
+        ) as r:
+            for line in r.iter_lines():
+                if not line:
+                    continue
+                if line.startswith("data: "):
+                    payload = line[6:]
+                    if payload.strip() == "[DONE]":
+                        break
+                    try:
+                        obj = json.loads(payload)
+                        delta = obj["choices"][0]["delta"].get("content", "")
+                        if delta:
+                            yield delta
+                    except Exception:
+                        continue
+    except Exception as e:
+        yield f"[HATA] LLM akış hatası: {e}"
+
+
+def chat_stream(message, graph, status=None):
+    """Streaming sohbet. Niyeti belirler:
+    - BUILD ise: canvas JSON'unu tek parça özel işaretle yield eder ([[BUILD]]{...})
+    - ASK ise: cevabı parça parça (streaming) yield eder."""
+    # 1) Niyet belirle (kısa, streaming değil)
+    intent_sys = (
+        "Kullanıcının mesajını sınıflandır. SADECE tek kelime döndür:\n"
+        "BUILD = yeni bileşen kurmak/eklemek/silmek istiyorsa\n"
+        "ASK = soru soruyorsa veya bilgi istiyorsa\n"
+        "Sadece BUILD veya ASK yaz."
+    )
+    intent_res = _llm([{"role": "system", "content": intent_sys},
+                       {"role": "user", "content": message}], max_tokens=10, temperature=0)
+    intent = (intent_res.get("text", "ASK") if "error" not in intent_res else "ASK").strip().upper()
+
+    if "BUILD" in intent:
+        # Kurma: JSON üret (stream değil), özel işaretle gönder
+        b = build(message, graph)
+        if "error" in b:
+            yield "[HATA] " + b["error"]
+        else:
+            yield "[[BUILD]]" + json.dumps(b["canvas"], ensure_ascii=False)
+        return
+
+    # Soru: workspace bağlamıyla streaming cevap
+    summary = _summarize_workspace(graph, status)
+    system = (
+        "Sen bir Kubernetes DevOps mentörüsün. Kullanıcı görsel bir K8s laboratuvarında "
+        "bileşenler kurmuş. Onun KENDİ mimarisi hakkındaki sorularını yanıtla — genel değil, "
+        "aşağıdaki gerçek duruma göre. Türkçe, kısa, öğretici ol. Markdown başlık kullanma. "
+        "Bir şey mimaride yoksa 'şu an yok' de.\n\n" + PALETTE_INFO
+    )
+    user = f"KULLANICININ MEVCUT MİMARİSİ:\n{summary}\n\nSORU: {message}"
+    for chunk in _llm_stream([{"role": "system", "content": system},
+                              {"role": "user", "content": user}]):
+        yield chunk
+
+
+def analyze_stream(graph, status, logs_by_pod=None):
+    """Analizi streaming yap — yorum parça parça aksın."""
+    summary = _summarize_workspace(graph, status)
+    log_text = ""
+    if logs_by_pod:
+        log_text = "\n\nPOD LOGLARI (son satırlar):\n"
+        for pod, log in logs_by_pod.items():
+            log_text += f"--- {pod} ---\n{(log or '')[-800:]}\n"
+    system = (
+        "Sen bir Kubernetes DevOps mentörüsün. Kullanıcı görsel bir K8s laboratuvarında "
+        "bileşenler kuruyor. Türkçe, kısa ve öğretici konuş. Mimariyi incele, sorunları "
+        "tespit et, NEDEN olduğunu açıkla, nasıl düzeltileceğini söyle. Doğru şeyleri takdir et. "
+        "Markdown başlık kullanma."
+    )
+    user = f"{summary}{log_text}\n\nBu mimariyi analiz et: sorunlar, nedenleri, öneriler."
+    for chunk in _llm_stream([{"role": "system", "content": system},
+                              {"role": "user", "content": user}]):
+        yield chunk
+
+
 def chat(message, graph, status=None):
     """Kullanıcının mesajını workspace bağlamında ele al.
     LLM önce niyeti belirler: SORU mu (cevap ver) yoksa KURMA isteği mi (canvas üret).

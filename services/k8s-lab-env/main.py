@@ -155,10 +155,48 @@ def mentor_build(req: MentorReq, token: Optional[str] = Header(None, alias="X-To
         raise HTTPException(400, "Bir şey yaz.")
     status = None
     try:
-        status = k8s_ops.get_status(uid)   # soruları workspace durumuyla cevaplasın
+        status = k8s_ops.get_status(uid)
     except Exception:
         pass
     return _mentor.chat(req.instruction, req.graph, status)
+
+
+from fastapi.responses import StreamingResponse
+
+@app.post("/lab/mentor_stream")
+def mentor_stream(req: MentorReq, token: Optional[str] = Header(None, alias="X-Token")):
+    """Streaming sohbet — cevap parça parça akar. Soru=stream, kurma=[[BUILD]]{json}."""
+    uid = resolve_user(token)
+    status = None
+    try:
+        status = k8s_ops.get_status(uid)
+    except Exception:
+        pass
+    def gen():
+        for chunk in _mentor.chat_stream(req.instruction, req.graph, status):
+            yield chunk
+    return StreamingResponse(gen(), media_type="text/plain; charset=utf-8")
+
+
+@app.post("/lab/mentor_analyze_stream")
+def mentor_analyze_stream(req: MentorReq, token: Optional[str] = Header(None, alias="X-Token")):
+    """Streaming analiz — yorum parça parça akar."""
+    uid = resolve_user(token)
+    status = k8s_ops.get_status(uid)
+    logs = {}
+    try:
+        for p in status.get("pods", []):
+            if p.get("phase") != "Running" or not p.get("ready"):
+                try:
+                    logs[p.get("name")] = k8s_ops.get_pod_logs(uid, p.get("name"), tail=30)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    def gen():
+        for chunk in _mentor.analyze_stream(req.graph, status, logs):
+            yield chunk
+    return StreamingResponse(gen(), media_type="text/plain; charset=utf-8")
 
 
 # ═══════════ DOSYA İŞLEMLERİ (PVC'ye upload/list) — exec ile ═══════════
