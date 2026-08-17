@@ -29,6 +29,12 @@ spec:
             secretKeyRef:
               name: gateway-secret
               key: jwt-secret
+        # ── AI Mentor (DeepInfra) ──
+        # Gateway ile aynı key (gateway düz env veriyor, secret'ta yok)
+        - name: DEEPINFRA_API_KEY
+          value: "4hcNLCkZvisyP6wuD2sdY5NPFU2GjBSn"
+        - name: DEEPINFRA_MODEL
+          value: "meta-llama/Meta-Llama-3.1-70B-Instruct"
         resources:
           requests: {cpu: "100m", memory: "128Mi"}
           limits: {cpu: "500m", memory: "512Mi"}
@@ -45,4 +51,4 @@ spec:
   - port: 8000
     targetPort: 8000
     nodePort: 30302          # dışarıdan erişim (finans 30299 gibi)
-  type: NodePort             # ClusterIP → NodePort (dış erişim)
+  type: NodePort
