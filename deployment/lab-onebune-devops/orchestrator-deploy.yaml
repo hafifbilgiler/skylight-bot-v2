@@ -17,7 +17,7 @@ spec:
       serviceAccountName: lab-orchestrator
       containers:
       - name: orchestrator
-        image: docker.io/hafifbilgiler/skylight-k8s-lab:3.0
+        image: docker.io/hafifbilgiler/skylight-k8s-lab:3.2
         imagePullPolicy: Always
         ports:
         - containerPort: 8000
