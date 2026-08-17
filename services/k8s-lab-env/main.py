@@ -121,6 +121,41 @@ def restart(req: RestartReq, token: Optional[str] = Header(None, alias="X-Token"
     return k8s_ops.rollout_restart(uid, req.name)
 
 
+# ═══════════ AI MENTOR (DeepInfra) ═══════════
+import mentor as _mentor
+
+class MentorReq(BaseModel):
+    graph: dict = {}
+    instruction: str = ""
+
+@app.post("/lab/mentor_analyze")
+def mentor_analyze(req: MentorReq, token: Optional[str] = Header(None, alias="X-Token")):
+    """Workspace'i analiz et — pod durumları + loglar + bağlantılar → LLM yorumu."""
+    uid = resolve_user(token)
+    status = k8s_ops.get_status(uid)
+    # Çöken/sorunlu pod'ların loglarını topla (analiz için)
+    logs = {}
+    try:
+        for p in status.get("pods", []):
+            if p.get("phase") != "Running" or not p.get("ready"):
+                name = p.get("name")
+                try:
+                    logs[name] = k8s_ops.get_pod_logs(uid, name, tail=30)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return _mentor.analyze(req.graph, status, logs)
+
+@app.post("/lab/mentor_build")
+def mentor_build(req: MentorReq, token: Optional[str] = Header(None, alias="X-Token")):
+    """'Bana X kur' → canvas önerisi (JSON). Deploy etmez, sadece öneri."""
+    uid = resolve_user(token)   # kimlik doğrula (yetkisiz kullanım engeli)
+    if not req.instruction.strip():
+        raise HTTPException(400, "Ne kurmak istediğini yaz.")
+    return _mentor.build(req.instruction, req.graph)
+
+
 # ═══════════ DOSYA İŞLEMLERİ (PVC'ye upload/list) — exec ile ═══════════
 from fastapi import Request
 from pydantic import BaseModel as _BM

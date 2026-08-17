@@ -8,6 +8,11 @@ import os
 MAX_PODS_PER_USER = 8          # bir kullanıcı en fazla 8 pod
 MAX_PVC_PER_USER = 1           # bir kullanıcı en fazla 1 PVC
 MAX_PVC_SIZE_GB = 1            # PVC tavanı 1GB
+
+# ── AI Mentor (DeepInfra) ──
+DEEPINFRA_API_KEY = os.environ.get("DEEPINFRA_API_KEY", "")
+DEEPINFRA_MODEL = os.environ.get("DEEPINFRA_MODEL", "meta-llama/Meta-Llama-3.1-70B-Instruct")
+DEEPINFRA_URL = "https://api.deepinfra.com/v1/openai/chat/completions"
 WORKSPACE_TTL_DAYS = 5         # workspace 5 gün yaşar
 NS_PREFIX = "lab-"            # tüm workspace ns'leri bu önekle (çift koruma)
 SYSTEM_NS = "onebune-lab-system"

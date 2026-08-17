@@ -335,6 +335,19 @@ def destroy_workspace(user_id: str) -> dict:
     return {"namespace": ns, "destroyed": True}
 
 
+def get_pod_logs(user_id: str, pod_name: str, tail: int = 30) -> str:
+    """Bir pod'un son log satırlarını döndür (mentor analizi için)."""
+    k = _load_k8s()
+    ns = ns_name(user_id)
+    _guard_ns(ns)
+    import re as _re
+    safe = _re.sub(r"[^a-z0-9-]", "", (pod_name or "").lower())
+    try:
+        return k["core"].read_namespaced_pod_log(safe, ns, tail_lines=tail)
+    except Exception as e:
+        return f"(log alınamadı: {e})"
+
+
 def rollout_restart(user_id: str, name: str) -> dict:
     """Bir deployment'ı rollout restart et — kubectl rollout restart gibi.
     Pod template'ine restart zaman damgası ekler, K8s pod'u yeniden oluşturur."""
