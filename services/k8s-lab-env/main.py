@@ -120,7 +120,7 @@ class UploadReq(_BM):
     pvc: str
     path: str          # hedef dizin, örn. /usr/share/nginx/html
     filename: str
-    content_b64: str   # dosya içeriği base64
+    content_b64: str = ""   # dosya içeriği base64 (silme isteğinde boş)
 
 class ListReq(_BM):
     pvc: str
