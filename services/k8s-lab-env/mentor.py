@@ -138,3 +138,47 @@ def build(instruction, graph):
         return {"canvas": parsed}
     except Exception as e:
         return {"error": f"LLM geçerli JSON üretmedi: {e}", "raw": res["text"][:500]}
+
+
+def chat(message, graph, status=None):
+    """Kullanıcının mesajını workspace bağlamında ele al.
+    LLM önce niyeti belirler: SORU mu (cevap ver) yoksa KURMA isteği mi (canvas üret).
+    Dönenler:
+      - {"mode":"answer","text":...}  → sohbet cevabı
+      - {"mode":"build","canvas":...} → canvas önerisi (kurma)
+    """
+    summary = _summarize_workspace(graph, status)
+    # 1) Niyet belirle: bu bir kurma isteği mi, yoksa soru mu?
+    intent_sys = (
+        "Kullanıcının mesajını sınıflandır. SADECE tek kelime döndür:\n"
+        "BUILD = yeni bileşen kurmak/eklemek/silmek istiyorsa (örn: 'redis kur', 'app ekle', 'postgres bağla')\n"
+        "ASK = soru soruyorsa veya bilgi istiyorsa (örn: 'redis neden çöktü', 'bu bağlantı doğru mu', 'nasıl çalışır')\n"
+        "Sadece BUILD veya ASK yaz."
+    )
+    intent_res = _llm([{"role": "system", "content": intent_sys},
+                       {"role": "user", "content": message}], max_tokens=10, temperature=0)
+    if "error" in intent_res:
+        return intent_res
+    intent = intent_res["text"].strip().upper()
+
+    # 2a) Kurma isteği → mevcut build() kullan
+    if "BUILD" in intent:
+        b = build(message, graph)
+        if "error" in b:
+            return b
+        return {"mode": "build", "canvas": b["canvas"]}
+
+    # 2b) Soru → workspace'i bilerek cevapla
+    system = (
+        "Sen bir Kubernetes DevOps mentörüsün. Kullanıcı görsel bir K8s laboratuvarında "
+        "bileşenler kurmuş. Onun KENDİ mimarisi hakkındaki sorularını yanıtla — genel değil, "
+        "aşağıdaki gerçek duruma göre. Türkçe, kısa, öğretici ol. Markdown başlık kullanma, "
+        "düz paragraf ve kısa maddeler kullan. Bir şey mimaride yoksa 'şu an yok' de.\n\n"
+        + PALETTE_INFO
+    )
+    user = f"KULLANICININ MEVCUT MİMARİSİ:\n{summary}\n\nSORU: {message}"
+    res = _llm([{"role": "system", "content": system},
+                {"role": "user", "content": user}])
+    if "error" in res:
+        return res
+    return {"mode": "answer", "text": res["text"]}

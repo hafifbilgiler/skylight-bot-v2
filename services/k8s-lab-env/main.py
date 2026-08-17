@@ -149,11 +149,16 @@ def mentor_analyze(req: MentorReq, token: Optional[str] = Header(None, alias="X-
 
 @app.post("/lab/mentor_build")
 def mentor_build(req: MentorReq, token: Optional[str] = Header(None, alias="X-Token")):
-    """'Bana X kur' → canvas önerisi (JSON). Deploy etmez, sadece öneri."""
-    uid = resolve_user(token)   # kimlik doğrula (yetkisiz kullanım engeli)
+    """Sohbet: mesaj SORU ise cevap, KURMA ise canvas önerisi. Deploy etmez."""
+    uid = resolve_user(token)
     if not req.instruction.strip():
-        raise HTTPException(400, "Ne kurmak istediğini yaz.")
-    return _mentor.build(req.instruction, req.graph)
+        raise HTTPException(400, "Bir şey yaz.")
+    status = None
+    try:
+        status = k8s_ops.get_status(uid)   # soruları workspace durumuyla cevaplasın
+    except Exception:
+        pass
+    return _mentor.chat(req.instruction, req.graph, status)
 
 
 # ═══════════ DOSYA İŞLEMLERİ (PVC'ye upload/list) — exec ile ═══════════
