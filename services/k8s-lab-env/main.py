@@ -11,6 +11,7 @@ import os
 
 from config import validate_graph, MAX_PODS_PER_USER, WORKSPACE_TTL_DAYS
 import k8s_ops
+import premium as _premium
 
 app = FastAPI(title="ONE-BUNE DevOps Lab Orchestrator")
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
@@ -19,25 +20,63 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"],
 
 # ── Kullanıcı kimliği: JWT'den user_id çöz (gateway ile aynı mantık) ──
 def resolve_user(token: Optional[str]) -> str:
-    """JWT token'dan güvenli user_id üret. Gateway'in JWT'sini kullanır."""
+    """JWT token'dan güvenli user_id üret + PREMIUM zorunlu.
+    DevOps Lab premium bir üründür — premium olmayan 403 alır."""
     if not token:
         raise HTTPException(401, "Giriş gerekli")
     try:
         import jwt as pyjwt
-        # NOT: gateway ile aynı secret env'den gelir; imza doğrulanır
         secret = os.getenv("JWT_SECRET", "")
         if secret:
             payload = pyjwt.decode(token, secret, algorithms=["HS256"])
         else:
             payload = pyjwt.decode(token, options={"verify_signature": False})
         sub = payload.get("sub", "")
-        # email → güvenli kısa id (ns adında kullanılabilir)
-        import hashlib, re
-        safe = re.sub(r"[^a-z0-9]", "", sub.split("@")[0].lower())[:12]
-        h = hashlib.sha1(sub.encode()).hexdigest()[:6]
-        return f"{safe or 'u'}{h}"
     except Exception:
         raise HTTPException(401, "Geçersiz oturum")
+    # PREMIUM KONTROLÜ — lab'ın tüm işlemleri premium ister
+    if not _premium.is_premium_email(sub):
+        raise HTTPException(403, "DevOps Lab premium bir özelliktir — abonelik gerekli.")
+    # email → güvenli kısa id (ns adında kullanılabilir)
+    import hashlib, re
+    safe = re.sub(r"[^a-z0-9]", "", sub.split("@")[0].lower())[:12]
+    h = hashlib.sha1(sub.encode()).hexdigest()[:6]
+    return f"{safe or 'u'}{h}"
+
+
+# JWT'den ham email (premium kontrolü için — DB'de email ile eşleşir)
+def resolve_email(token: Optional[str]) -> str:
+    if not token:
+        raise HTTPException(401, "Giriş gerekli")
+    try:
+        import jwt as pyjwt
+        secret = os.getenv("JWT_SECRET", "")
+        if secret:
+            payload = pyjwt.decode(token, secret, algorithms=["HS256"])
+        else:
+            payload = pyjwt.decode(token, options={"verify_signature": False})
+        return payload.get("sub", "")
+    except Exception:
+        raise HTTPException(401, "Geçersiz oturum")
+
+
+# Premium zorunlu — değilse 403. Lab premium bir üründür.
+def require_premium(token: Optional[str]):
+    """Kullanıcı premium değilse 403 döndür."""
+    email = resolve_email(token)
+    if not _premium.is_premium_email(email):
+        raise HTTPException(403, "DevOps Lab premium bir özelliktir — abonelik gerekli.")
+    return email
+
+
+@app.get("/lab/plan")
+def lab_plan(token: Optional[str] = Header(None, alias="X-Token")):
+    """Kullanıcının premium durumu — frontend kilit ekranı kararı için.
+    Bu endpoint premium GEREKTİRMEZ (herkes kendi planını sorabilir)."""
+    if not token:
+        return {"is_premium": False, "logged_in": False}
+    email = resolve_email(token)
+    return {"is_premium": _premium.is_premium_email(email), "logged_in": bool(email)}
 
 
 class DeployReq(BaseModel):

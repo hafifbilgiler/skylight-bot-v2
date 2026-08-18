@@ -5,3 +5,4 @@ PyJWT
 pyyaml
 websockets
 httpx
+psycopg2-binary
