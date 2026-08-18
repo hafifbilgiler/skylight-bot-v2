@@ -321,7 +321,7 @@ def wake_workspace(user_id: str) -> dict:
 
 # ═══════════ STATUS ═══════════
 def get_status(user_id: str) -> dict:
-    """Namespace'teki pod'ların durumu — frontend yeşil/sarı nokta için."""
+    """Namespace'teki pod'ların durumu + workspace kaynak kullanımı."""
     k = _load_k8s()
     ns = ns_name(user_id)
     _guard_ns(ns)
@@ -342,7 +342,32 @@ def get_status(user_id: str) -> dict:
         })
     # Cluster'daki PVC'ler (frontend CLI'dan silineni ekrandan da kaldırsın)
     pvcs = [p.metadata.name for p in k["core"].list_namespaced_persistent_volume_claim(ns).items]
-    return {"namespace": ns, "pods": pods, "pvcs": pvcs, "count": len(pods)}
+
+    # Workspace kaynak kullanımı (ResourceQuota'dan) — kullanıcı ne kadar kaldığını görsün
+    quota = None
+    try:
+        rqs = k["core"].list_namespaced_resource_quota(ns).items
+        if rqs:
+            st = rqs[0].status or {}
+            used = dict(st.used or {})
+            hard = dict(st.hard or {})
+            def _g(d, *keys):
+                for kk in keys:
+                    if kk in d:
+                        return d[kk]
+                return None
+            quota = {
+                "podsUsed": _g(used, "pods", "count/pods"),
+                "podsHard": _g(hard, "pods", "count/pods"),
+                "cpuUsed": _g(used, "requests.cpu", "cpu"),
+                "cpuHard": _g(hard, "requests.cpu", "cpu"),
+                "memUsed": _g(used, "requests.memory", "memory"),
+                "memHard": _g(hard, "requests.memory", "memory"),
+            }
+    except Exception:
+        pass
+
+    return {"namespace": ns, "pods": pods, "pvcs": pvcs, "count": len(pods), "quota": quota}
 
 
 # ═══════════ DESTROY ═══════════
@@ -357,26 +382,93 @@ def destroy_workspace(user_id: str) -> dict:
 
 def get_pod_logs(user_id: str, pod_name: str, tail: int = 30) -> str:
     """Bir pod'un son log satırlarını döndür.
-    pod_name tam pod adı VEYA deployment/bileşen adı olabilir (app label ile eşleştirir)."""
+    pod_name tam pod adı VEYA deployment/bileşen adı olabilir (app label ile eşleştirir).
+    Pod hazır değilse/çökmüşse durumu açıklayan net mesaj döner."""
     k = _load_k8s()
     ns = ns_name(user_id)
     _guard_ns(ns)
     import re as _re
     safe = _re.sub(r"[^a-z0-9-]", "", (pod_name or "").lower())
-    # Önce app label ile pod bul (deployment adı = app label)
+
+    # 1) app label ile pod bul (deployment adı = app label)
+    pod = None
     try:
         pods = k["core"].list_namespaced_pod(ns, label_selector=f"app={safe}").items
         if pods:
-            # Çalışan/en yeni pod'u seç
             pods.sort(key=lambda p: p.metadata.creation_timestamp or 0, reverse=True)
-            real = pods[0].metadata.name
-            return k["core"].read_namespaced_pod_log(real, ns, tail_lines=tail)
+            pod = pods[0]
     except Exception:
         pass
-    # Label ile bulunamadıysa: tam ad olarak dene
+
+    # 2) Label ile bulunamadıysa: isim öneki ile ara (pod adı safe ile başlıyor mu)
+    if pod is None:
+        try:
+            allpods = k["core"].list_namespaced_pod(ns).items
+            matches = [p for p in allpods if (p.metadata.name or "").startswith(safe)]
+            if matches:
+                matches.sort(key=lambda p: p.metadata.creation_timestamp or 0, reverse=True)
+                pod = matches[0]
+        except Exception:
+            pass
+
+    if pod is None:
+        return f"'{safe}' için pod bulunamadı. Bileşen çalışıyor mu? (⚡ Çalıştır'a bastın mı?)"
+
+    real = pod.metadata.name
+    phase = (pod.status.phase if pod.status else "") or "?"
+
+    # Pod'un container adı (log için gerekebilir)
+    cname = None
     try:
-        return k["core"].read_namespaced_pod_log(safe, ns, tail_lines=tail)
+        if pod.spec and pod.spec.containers:
+            cname = pod.spec.containers[0].name
+    except Exception:
+        pass
+
+    # 3) Pod henüz başlamadıysa (Pending/ContainerCreating) → net mesaj
+    if phase in ("Pending",):
+        # Neden pending? container durumlarına bak
+        reason = ""
+        try:
+            cs = (pod.status.container_statuses or [])
+            for c in cs:
+                w = c.state.waiting if c.state else None
+                if w and w.reason:
+                    reason = f" ({w.reason})"
+                    break
+        except Exception:
+            pass
+        return f"Pod '{real}' henüz başlıyor{reason}. Birkaç saniye sonra tekrar dene (↻)."
+
+    # 4) Logu çek — önce normal, container adıyla
+    def _read(previous=False):
+        kwargs = {"tail_lines": tail}
+        if cname:
+            kwargs["container"] = cname
+        if previous:
+            kwargs["previous"] = True
+        return k["core"].read_namespaced_pod_log(real, ns, **kwargs)
+
+    try:
+        out = _read(previous=False)
+        if out and out.strip():
+            return out
+        # Log boşsa ve pod çökmüşse önceki logu dene
+        try:
+            prev = _read(previous=True)
+            if prev and prev.strip():
+                return "(önceki çöken container logu:)\n" + prev
+        except Exception:
+            pass
+        return f"Pod '{real}' çalışıyor ({phase}) ama henüz log üretmedi."
     except Exception as e:
+        # Çöken pod: önceki logu dene
+        try:
+            prev = _read(previous=True)
+            if prev and prev.strip():
+                return "(önceki çöken container logu:)\n" + prev
+        except Exception:
+            pass
         return f"(log alınamadı: {e})"
 
 

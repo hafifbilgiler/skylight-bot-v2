@@ -200,7 +200,26 @@ def _deployment_obj(name, ns, image, port, env, ntype, node, mounted_pvc=None, m
     # Secret/ConfigMap bağlıysa envFrom ile tüm anahtarları env yap
     if env_from:
         container["envFrom"] = env_from
-    # App türü ise: kaynak limitleri + probe + demo komut
+
+    # Kaynak istekleri/limitleri — TÜM pod bileşenleri (app, redis, postgres, nginx...)
+    cpu_req = _clamp_cpu(node.get("cpuReq", "100m"), 500)
+    cpu_lim = _clamp_cpu(node.get("cpuLim", "500m"), 1000)
+    mem_req = _clamp_mem(node.get("memReq", "128Mi"), 512)
+    mem_lim = _clamp_mem(node.get("memLim", "256Mi"), 1024)
+    container["resources"] = {
+        "requests": {"cpu": cpu_req, "memory": mem_req},
+        "limits": {"cpu": cpu_lim, "memory": mem_lim},
+    }
+    # Sağlık kontrolü (probe path verilmişse — tüm bileşenler)
+    probe_path = (node.get("probePath") or "").strip()
+    if probe_path:
+        probe_port = int(node.get("probePort") or port)
+        httpget = {"httpGet": {"path": probe_path, "port": probe_port},
+                   "initialDelaySeconds": 5, "periodSeconds": 10}
+        container["readinessProbe"] = dict(httpget)
+        container["livenessProbe"] = dict(httpget)
+
+    # App türü ise: demo komut (kullanıcı kodu yok) + non-root
     if ntype == "app":
         paths = node.get("paths", ["/"])
         container["command"] = ["sh", "-c",
@@ -208,23 +227,7 @@ def _deployment_obj(name, ns, image, port, env, ntype, node, mounted_pvc=None, m
             f"while true; do sleep 3600; done"]
         sec["runAsNonRoot"] = True
         sec["runAsUser"] = 1000
-        # Kaynak istekleri/limitleri (kullanıcının girdiği, güvenli tavanlarla)
-        cpu_req = _clamp_cpu(node.get("cpuReq", "100m"), 500)
-        cpu_lim = _clamp_cpu(node.get("cpuLim", "500m"), 1000)
-        mem_req = _clamp_mem(node.get("memReq", "128Mi"), 512)
-        mem_lim = _clamp_mem(node.get("memLim", "256Mi"), 1024)
-        container["resources"] = {
-            "requests": {"cpu": cpu_req, "memory": mem_req},
-            "limits": {"cpu": cpu_lim, "memory": mem_lim},
-        }
-        # Sağlık kontrolü (probe path verilmişse)
-        probe_path = (node.get("probePath") or "").strip()
-        if probe_path:
-            probe_port = int(node.get("probePort") or port)
-            httpget = {"httpGet": {"path": probe_path, "port": probe_port},
-                       "initialDelaySeconds": 5, "periodSeconds": 10}
-            container["readinessProbe"] = dict(httpget)
-            container["livenessProbe"] = dict(httpget)
+    # Redis/Postgres/RabbitMQ/Nginx/MySQL/MongoDB: gerçek imaj kendi komutuyla çalışır
 
     pod_spec = {
         "automountServiceAccountToken": False,  # POD TOKEN'SIZ (sızma engeli)
@@ -255,9 +258,10 @@ def _deployment_obj(name, ns, image, port, env, ntype, node, mounted_pvc=None, m
     if volumes:
         pod_spec["volumes"] = volumes
 
-    # Replika sayısı (app için kullanıcı belirler, 1-5 arası)
+    # Replika sayısı: app ve nginx ölçeklenebilir (stateless).
+    # DB'ler (redis/postgres/mysql/mongodb/rabbitmq) stateful → tek kopya (veri tutarlılığı).
     replicas = 1
-    if ntype == "app":
+    if ntype in ("app", "nginx"):
         try:
             replicas = max(1, min(5, int(node.get("replicas", 1))))
         except Exception:

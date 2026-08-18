@@ -86,6 +86,10 @@ CONNECTION_ENV = {
                               "POSTGRES_HOST": host, "PGHOST": host},
     "rabbitmq": lambda host: {"RABBITMQ_URL": f"amqp://guest:guest@{host}:5672/",
                               "RABBITMQ_HOST": host},
+    "mysql":    lambda host: {"DATABASE_URL": f"mysql://root:labpass@{host}:3306/app",
+                              "MYSQL_HOST": host},
+    "mongodb":  lambda host: {"MONGO_URL": f"mongodb://{host}:27017/app",
+                              "MONGO_HOST": host},
 }
 
 # ── Servislerin kendi başlangıç env'leri (şifre vb.) ──
@@ -94,6 +98,8 @@ COMPONENT_ENV = {
     "redis": {},
     "rabbitmq": {"RABBITMQ_DEFAULT_USER": "guest", "RABBITMQ_DEFAULT_PASS": "guest"},
     "nginx": {},
+    "mysql": {"MYSQL_ROOT_PASSWORD": "labpass", "MYSQL_DATABASE": "app"},
+    "mongodb": {},
 }
 
 # ── K8s bağlantısı ──
