@@ -53,22 +53,22 @@ def build_manifests(graph: dict, user_id: str) -> list:
         # ── Service node'u: bir K8s Service nesnesi üretir, kendi pod'u yok ──
         # Bağlantı yönü iki türlü olabilir: service→app VEYA app→service
         if t == "service":
-            # Bu service'e bağlı VEYA bu service'in bağlandığı app'i bul
-            app = None
-            # service → app (service'ten app'e ok)
+            # Service bir pod'u (app veya nginx) hedefler — önüne geçer
+            target_pod = None
+            # service → pod (service'ten pod'a ok)
             for dep in deps_of.get(nid, []):
-                if dep and dep["type"] == "app":
-                    app = dep; break
-            # app → service (app'ten service'e ok)
-            if not app:
+                if dep and dep["type"] in ("app", "nginx"):
+                    target_pod = dep; break
+            # pod → service (pod'tan service'e ok)
+            if not target_pod:
                 for e in edges:
                     if e["to"] == nid:
                         src = nodes.get(e["from"])
-                        if src and src["type"] == "app":
-                            app = src; break
-            if not app:
-                continue  # hiçbir app'e bağlı değilse service atla (öğretici: boş service işe yaramaz)
-            objects.append(_service_obj(base, ns, app, node))
+                        if src and src["type"] in ("app", "nginx"):
+                            target_pod = src; break
+            if not target_pod:
+                continue  # hiçbir pod'a bağlı değilse service atla (boş service işe yaramaz)
+            objects.append(_service_obj(base, ns, target_pod, node))
             continue
 
         # ── Diğerleri: SADECE Deployment (otomatik service YOK) ──
