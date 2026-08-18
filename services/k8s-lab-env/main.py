@@ -145,7 +145,7 @@ def status(token: Optional[str] = Header(None, alias="X-Token")):
 
 
 class PodLogsReq(BaseModel):
-    pod: str
+    pod: str = ""
     tail: int = 60
 
 @app.post("/lab/pod_logs")
@@ -156,11 +156,17 @@ def pod_logs(req: PodLogsReq, token: Optional[str] = Header(None, alias="X-Token
         tail = max(1, min(200, int(req.tail)))
     except Exception:
         tail = 60
+    pod = (req.pod or "").strip()
+    if not pod:
+        return {"logs": "", "error": "pod adı gelmedi (proxy.php güncel mi?)"}
     try:
-        logs = k8s_ops.get_pod_logs(uid, req.pod, tail=tail)
-        return {"logs": logs or ""}
+        logs = k8s_ops.get_pod_logs(uid, pod, tail=tail)
+        # get_pod_logs artık boş dönmez (durum mesajı verir) ama garanti olsun
+        if not logs or not str(logs).strip():
+            logs = f"'{pod}' için log çıktısı boş. Pod çalışıyor mu?"
+        return {"logs": logs}
     except Exception as e:
-        return {"error": str(e)}
+        return {"logs": "", "error": str(e)}
 
 
 @app.post("/lab/destroy")

@@ -441,13 +441,42 @@ def get_pod_logs(user_id: str, pod_name: str, tail: int = 30) -> str:
         return f"Pod '{real}' henüz başlıyor{reason}. Birkaç saniye sonra tekrar dene (↻)."
 
     # 4) Logu çek — önce normal, container adıyla
+    def _clean(raw):
+        """Log çıktısını okunabilir metne çevir: bytes→str, b'...' repr, ANSI temizle."""
+        if raw is None:
+            return ""
+        # bytes ise decode et
+        if isinstance(raw, (bytes, bytearray)):
+            raw = raw.decode("utf-8", errors="replace")
+        raw = str(raw)
+        # Bazen string olarak b'...' repr gelir → gerçek içeriğe çevir
+        if raw.startswith("b'") and raw.endswith("'"):
+            inner = raw[2:-1]
+            # \n \t \x1b gibi kaçışları gerçek karaktere çevir
+            try:
+                inner = inner.encode().decode("unicode_escape")
+                raw = inner
+            except Exception:
+                raw = inner
+        elif raw.startswith('b"') and raw.endswith('"'):
+            inner = raw[2:-1]
+            try:
+                raw = inner.encode().decode("unicode_escape")
+            except Exception:
+                raw = inner
+        # ANSI kaçış dizilerini temizle (\x1b[...m renk kodları)
+        raw = _re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", raw)
+        raw = raw.replace("\\x1b", "").replace("\r", "")
+        return raw
+
     def _read(previous=False):
         kwargs = {"tail_lines": tail}
         if cname:
             kwargs["container"] = cname
         if previous:
             kwargs["previous"] = True
-        return k["core"].read_namespaced_pod_log(real, ns, **kwargs)
+        raw = k["core"].read_namespaced_pod_log(real, ns, **kwargs)
+        return _clean(raw)
 
     try:
         out = _read(previous=False)
