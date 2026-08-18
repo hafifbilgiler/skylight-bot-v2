@@ -187,6 +187,8 @@ def deploy_graph(user_id: str, graph: dict) -> dict:
     desired_deploys = {o["metadata"]["name"]: o for o in objects if o["kind"] == "Deployment"}
     desired_svcs    = {o["metadata"]["name"]: o for o in objects if o["kind"] == "Service"}
     desired_pvcs    = {o["metadata"]["name"]: o for o in objects if o["kind"] == "PersistentVolumeClaim"}
+    desired_secrets = {o["metadata"]["name"]: o for o in objects if o["kind"] == "Secret"}
+    desired_cms     = {o["metadata"]["name"]: o for o in objects if o["kind"] == "ConfigMap"}
 
     # Mevcut durum: cluster'da şu an ne var
     current_deploys = {d.metadata.name for d in k["apps"].list_namespaced_deployment(ns).items}
@@ -195,6 +197,24 @@ def deploy_graph(user_id: str, graph: dict) -> dict:
     current_pvcs = {p.metadata.name for p in k["core"].list_namespaced_persistent_volume_claim(ns).items}
 
     applied, kept, removed = [], [], []
+
+    # ── SECRET senkron (envFrom için — deployment'tan ÖNCE olmalı) ──
+    for name, obj in desired_secrets.items():
+        try:
+            k["core"].read_namespaced_secret(name, ns)
+            k["core"].replace_namespaced_secret(name, ns, obj)   # güncelle
+        except Exception:
+            k["core"].create_namespaced_secret(ns, obj)
+        applied.append(f"Secret/{name}")
+
+    # ── CONFIGMAP senkron (lab-canvas hariç — o ayrı yönetiliyor) ──
+    for name, obj in desired_cms.items():
+        try:
+            k["core"].read_namespaced_config_map(name, ns)
+            k["core"].replace_namespaced_config_map(name, ns, obj)
+        except Exception:
+            k["core"].create_namespaced_config_map(ns, obj)
+        applied.append(f"ConfigMap/{name}")
 
     # ── PVC senkron: sadece OLUŞTURMA (önce PVC, pod'lar ona bağlanacak) ──
     for name, obj in desired_pvcs.items():

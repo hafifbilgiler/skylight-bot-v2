@@ -46,8 +46,29 @@ def build_manifests(graph: dict, user_id: str) -> list:
         # ── PVC node'u: PersistentVolumeClaim + otomatik uploader pod ──
         if t == "pvc":
             objects.append(_pvc_obj(base, ns, node))
-            # Her PVC için bir dosya yöneticisi (filebrowser) pod'u — kullanıcı buradan dosya yükler
             objects.extend(_uploader_objs(base, ns))
+            continue
+
+        # ── Secret / ConfigMap node'u: K8s Secret/ConfigMap nesnesi ──
+        if t in ("secret", "configmap"):
+            data = node.get("data", [])
+            kv = {d["key"]: str(d.get("value", "")) for d in data if d.get("key")}
+            if not kv:
+                continue  # boş secret/configmap oluşturma
+            if t == "secret":
+                import base64 as _b64
+                objects.append({
+                    "apiVersion": "v1", "kind": "Secret",
+                    "metadata": {"name": base, "namespace": ns},
+                    "type": "Opaque",
+                    "data": {k: _b64.b64encode(v.encode()).decode() for k, v in kv.items()},
+                })
+            else:
+                objects.append({
+                    "apiVersion": "v1", "kind": "ConfigMap",
+                    "metadata": {"name": base, "namespace": ns},
+                    "data": kv,
+                })
             continue
 
         # ── Service node'u: bir K8s Service nesnesi üretir, kendi pod'u yok ──
@@ -105,13 +126,37 @@ def build_manifests(graph: dict, user_id: str) -> list:
             if kv.get("key"):
                 env[kv["key"]] = kv.get("value", "")
 
-        objects.append(_deployment_obj(base, ns, img, port, env, t, node, mounted_pvc, mount_path))
+        # App'e bağlı Secret/ConfigMap'ler → envFrom (tüm anahtarlar env olur)
+        env_from = []
+        if t == "app":
+            # secret/configmap → app (kaynaktan app'e) VEYA app → secret/configmap
+            seen = set()
+            for dep in deps_of.get(nid, []):
+                if dep and dep["type"] in ("secret", "configmap") and dep["id"] not in seen:
+                    seen.add(dep["id"])
+                    ref = _safe_name(dep["name"])
+                    if dep["type"] == "secret":
+                        env_from.append({"secretRef": {"name": ref}})
+                    else:
+                        env_from.append({"configMapRef": {"name": ref}})
+            for e in edges:
+                if e["to"] == nid:
+                    src = nodes.get(e["from"])
+                    if src and src["type"] in ("secret", "configmap") and src["id"] not in seen:
+                        seen.add(src["id"])
+                        ref = _safe_name(src["name"])
+                        if src["type"] == "secret":
+                            env_from.append({"secretRef": {"name": ref}})
+                        else:
+                            env_from.append({"configMapRef": {"name": ref}})
+
+        objects.append(_deployment_obj(base, ns, img, port, env, t, node, mounted_pvc, mount_path, env_from))
         # NOT: otomatik internal service KALDIRILDI — kullanıcı kendi Service'ini eklesin (öğrenme)
 
     return objects
 
 
-def _deployment_obj(name, ns, image, port, env, ntype, node, mounted_pvc=None, mount_path=None):
+def _deployment_obj(name, ns, image, port, env, ntype, node, mounted_pvc=None, mount_path=None, env_from=None):
     """Bir Deployment — güvenli defaultlarla (non-root, token yok).
     mounted_pvc verilirse o PVC mount_path'e bağlanır."""
     # Güvenlik: privilege escalation kapalı.
@@ -137,6 +182,9 @@ def _deployment_obj(name, ns, image, port, env, ntype, node, mounted_pvc=None, m
         "env": [{"name": k, "value": str(v)} for k, v in env.items()],
         "securityContext": sec,
     }
+    # Secret/ConfigMap bağlıysa envFrom ile tüm anahtarları env yap
+    if env_from:
+        container["envFrom"] = env_from
     # App türü ise: basit bir "çalışıyorum" komutu (kullanıcı kodu yok, demo)
     if ntype == "app":
         paths = node.get("paths", ["/"])

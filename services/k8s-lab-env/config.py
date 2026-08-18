@@ -34,6 +34,45 @@ COMPONENT_IMAGES = {
     "app:custom":  "nginx:alpine",   # 'custom' şimdilik demo placeholder (güvenli)
 }
 
+# ── GÜVENLİ IMAGE WHITELIST'İ ──
+# Kullanıcı serbest image YAZAMAZ — sadece bu onaylı listeden seçer.
+# Her seçenek resmi/güvenilir registry'den, sabit tag'li (latest yok — reproducibility).
+IMAGE_WHITELIST = {
+    "redis": [
+        "redis:7-alpine", "redis:7.2-alpine", "redis:6-alpine",
+    ],
+    "postgres": [
+        "postgres:16-alpine", "postgres:15-alpine", "postgres:14-alpine",
+    ],
+    "rabbitmq": [
+        "rabbitmq:3-management-alpine", "rabbitmq:3.13-management-alpine",
+    ],
+    "nginx": [
+        "nginx:alpine", "nginx:1.27-alpine", "nginx:1.26-alpine",
+    ],
+    "mysql": [
+        "mysql:8.4", "mysql:8.0",
+    ],
+    "mongodb": [
+        "mongo:7", "mongo:6",
+    ],
+    # App runtime'ları (kullanıcı kodu değil, çalışma ortamı)
+    "app": [
+        "python:3.12-slim", "python:3.11-slim",
+        "node:20-alpine", "node:22-alpine",
+        "golang:1.23-alpine", "eclipse-temurin:21-jre",
+        "nginx:alpine",
+    ],
+}
+
+def image_options(node_type: str) -> list:
+    """Bir bileşen için seçilebilir güvenli imaj listesi."""
+    return IMAGE_WHITELIST.get(node_type, [])
+
+def is_image_allowed(node_type: str, image: str) -> bool:
+    """Verilen imaj bu bileşen için whitelist'te mi?"""
+    return image in IMAGE_WHITELIST.get(node_type, [])
+
 # ── Bileşenlerin varsayılan portları ──
 COMPONENT_PORTS = {
     "redis": 6379, "postgres": 5432, "rabbitmq": 5672, "nginx": 80,
@@ -66,8 +105,16 @@ WORKSPACE_TEMPLATE = os.getenv("WORKSPACE_TEMPLATE", "workspace-template.yaml")
 
 
 def resolve_image(node: dict) -> str:
-    """Node'un güvenli imajını döndür. Whitelist dışıysa None (reddet)."""
+    """Node'un güvenli imajını döndür.
+    Kullanıcı 'image' alanında bir imaj seçtiyse VE whitelist'teyse onu kullan.
+    Aksi halde varsayılan sabit imaj. Whitelist dışı imaj ASLA kullanılmaz."""
     t = node.get("type")
+    chosen = node.get("image", "")
+    # Kullanıcının seçtiği imaj whitelist'te mi? (App için de diğerleri için de)
+    wl_key = "app" if t == "app" else t
+    if chosen and is_image_allowed(wl_key, chosen):
+        return chosen
+    # Varsayılana düş
     if t == "app":
         kind = node.get("kind", "flask")
         return COMPONENT_IMAGES.get(f"app:{kind}")
@@ -83,8 +130,9 @@ def validate_graph(graph: dict) -> tuple:
     if not nodes:
         return False, "Boş mimari — en az bir bileşen ekleyin."
 
-    # 8 pod kuralı (service ve pvc node'ları pod değil, sayılmaz)
-    pod_nodes = [n for n in nodes if n.get("type") not in ("service", "pvc")]
+    # 8 pod kuralı (service, pvc, secret, configmap pod değil, sayılmaz)
+    NON_POD = ("service", "pvc", "secret", "configmap")
+    pod_nodes = [n for n in nodes if n.get("type") not in NON_POD]
     if len(pod_nodes) > MAX_PODS_PER_USER:
         return False, f"En fazla {MAX_PODS_PER_USER} pod kurabilirsiniz (şu an {len(pod_nodes)})."
 
@@ -93,10 +141,10 @@ def validate_graph(graph: dict) -> tuple:
     if len(pvc_nodes) > MAX_PVC_PER_USER:
         return False, f"En fazla {MAX_PVC_PER_USER} kalıcı disk (PVC) oluşturabilirsiniz."
 
-    # Her node whitelist'te mi? (service/pvc node'u pod değil, imaj gerekmez)
+    # Her node whitelist'te mi? (pod olmayan node'lar imaj gerektirmez)
     for n in nodes:
-        if n.get("type") in ("service", "pvc"):
-            continue  # service ve pvc pod değil
+        if n.get("type") in NON_POD:
+            continue  # service/pvc/secret/configmap pod değil
         img = resolve_image(n)
         if not img:
             return False, f"Bilinmeyen bileşen türü: {n.get('type')} — güvenlik için reddedildi."
