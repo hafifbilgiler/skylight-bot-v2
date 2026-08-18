@@ -144,6 +144,25 @@ def status(token: Optional[str] = Header(None, alias="X-Token")):
     return k8s_ops.get_status(uid)
 
 
+class PodLogsReq(BaseModel):
+    pod: str
+    tail: int = 60
+
+@app.post("/lab/pod_logs")
+def pod_logs(req: PodLogsReq, token: Optional[str] = Header(None, alias="X-Token")):
+    """Bir pod'un (deployment adıyla) son loglarını döndür."""
+    uid = resolve_user(token)
+    try:
+        tail = max(1, min(200, int(req.tail)))
+    except Exception:
+        tail = 60
+    try:
+        logs = k8s_ops.get_pod_logs(uid, req.pod, tail=tail)
+        return {"logs": logs or ""}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.post("/lab/destroy")
 def destroy(token: Optional[str] = Header(None, alias="X-Token")):
     uid = resolve_user(token)
@@ -204,7 +223,8 @@ from fastapi.responses import StreamingResponse
 
 @app.post("/lab/mentor_stream")
 def mentor_stream(req: MentorReq, token: Optional[str] = Header(None, alias="X-Token")):
-    """Streaming sohbet — cevap parça parça akar. Soru=stream, kurma=[[BUILD]]{json}."""
+    """Streaming sohbet — cevap parça parça akar. Soru=stream, kurma=[[BUILD]]{json},
+    durum=liste, log=[[LOGS]]. LOGS işaretini yakalayıp gerçek pod logu döndürür."""
     uid = resolve_user(token)
     status = None
     try:
@@ -213,6 +233,34 @@ def mentor_stream(req: MentorReq, token: Optional[str] = Header(None, alias="X-T
         pass
     def gen():
         for chunk in _mentor.chat_stream(req.instruction, req.graph, status):
+            # LOGS işareti: kullanıcının kastettiği pod'un logunu getir
+            if chunk.startswith("[[LOGS]]"):
+                asked = chunk[len("[[LOGS]]"):].lower()
+                pods = (status or {}).get("pods", [])
+                # Kullanıcı mesajında pod adı geçiyor mu? Yoksa sorunlu olanı seç
+                target = None
+                for p in pods:
+                    pname = (p.get("name") or "").lower()
+                    # "redis logu" → redis pod'u bul
+                    short = pname.split("-")[0]
+                    if short and short in asked:
+                        target = p.get("name"); break
+                if not target:
+                    # sorunlu (çöken) pod'u seç
+                    for p in pods:
+                        if p.get("phase") != "Running" or not p.get("ready"):
+                            target = p.get("name"); break
+                if not target and pods:
+                    target = pods[0].get("name")
+                if not target:
+                    yield "Log gösterilecek pod yok. Önce bir mimari çalıştır."
+                    return
+                try:
+                    logs = k8s_ops.get_pod_logs(uid, target, tail=40)
+                except Exception as e:
+                    logs = f"(log alınamadı: {e})"
+                yield f"📋 {target} son loglar:\n\n{logs or '(log boş)'}"
+                return
             yield chunk
     return StreamingResponse(gen(), media_type="text/plain; charset=utf-8")
 

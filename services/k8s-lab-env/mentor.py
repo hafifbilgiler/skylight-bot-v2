@@ -42,6 +42,32 @@ def _llm(messages, max_tokens=1200, temperature=0.3):
         return {"error": f"LLM hatası: {e}"}
 
 
+def _format_status(status):
+    """Pod durumlarını kullanıcı dostu bir listeye çevir (kubectl get pods gibi)."""
+    pods = (status or {}).get("pods", [])
+    if not pods:
+        return "Şu an çalışan pod yok. Bir mimari kurup ⚡ Çalıştır'a bas."
+    lines = ["Workspace'indeki pod durumları:\n"]
+    for p in pods:
+        name = p.get("name", "?")
+        phase = p.get("phase", "?")
+        ready = p.get("ready")
+        # Duruma göre simge
+        if phase == "Running" and ready:
+            icon = "🟢"
+        elif phase == "Running" and not ready:
+            icon = "🟡"
+        elif phase in ("Pending", "ContainerCreating"):
+            icon = "🔵"
+        else:
+            icon = "🔴"
+        state = phase + (" · hazır" if ready else " · hazır değil")
+        lines.append(f"{icon} {name} — {state}")
+    running = sum(1 for p in pods if p.get("phase") == "Running" and p.get("ready"))
+    lines.append(f"\nToplam {len(pods)} pod, {running} tanesi sağlıklı çalışıyor.")
+    return "\n".join(lines)
+
+
 def _summarize_workspace(graph, status):
     """Canvas + cluster durumunu LLM'e verilecek özet metne çevir."""
     nodes = graph.get("nodes", [])
@@ -179,22 +205,32 @@ def chat_stream(message, graph, status=None):
     # 1) Niyet belirle (kısa, streaming değil)
     intent_sys = (
         "Kullanıcının mesajını sınıflandır. SADECE tek kelime döndür:\n"
-        "CLEAR = her şeyi silmek/temizlemek istiyorsa (örn: 'hepsini sil', 'temizle', 'her şeyi kaldır', 'canvası boşalt')\n"
+        "CLEAR = her şeyi silmek/temizlemek istiyorsa (örn: 'hepsini sil', 'temizle', 'canvası boşalt')\n"
         "BUILD = yeni bileşen kurmak/eklemek istiyorsa (örn: 'redis kur', 'app ekle')\n"
-        "ASK = soru soruyorsa veya bilgi istiyorsa\n"
-        "Sadece CLEAR, BUILD veya ASK yaz."
+        "STATUS = pod/durum listelemek istiyorsa (örn: 'podları listele', 'durum ne', 'neler çalışıyor', 'pod var mı')\n"
+        "LOGS = bir pod'un loglarını/hatalarını görmek istiyorsa (örn: 'logları göster', 'redis logu', 'neden çöktü', 'hata ne')\n"
+        "ASK = genel soru soruyorsa veya bilgi istiyorsa\n"
+        "Sadece CLEAR, BUILD, STATUS, LOGS veya ASK yaz."
     )
     intent_res = _llm([{"role": "system", "content": intent_sys},
                        {"role": "user", "content": message}], max_tokens=10, temperature=0)
     intent = (intent_res.get("text", "ASK") if "error" not in intent_res else "ASK").strip().upper()
 
     if "CLEAR" in intent:
-        # Her şeyi sil işareti — frontend canvas'ı boşaltıp deploy'u siler
         yield "[[CLEAR]]"
         return
 
+    if "STATUS" in intent:
+        # Pod durumlarını listele (canlı cluster durumu)
+        yield _format_status(status)
+        return
+
+    if "LOGS" in intent:
+        # Kullanıcı hangi pod'un logunu istiyor? Mesajdan çıkar, yoksa sorunlu olanı göster
+        yield "[[LOGS]]" + (message or "")
+        return
+
     if "BUILD" in intent:
-        # Kurma: JSON üret (stream değil), özel işaretle gönder
         b = build(message, graph)
         if "error" in b:
             yield "[HATA] " + b["error"]

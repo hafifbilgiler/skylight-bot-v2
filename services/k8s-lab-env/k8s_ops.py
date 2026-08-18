@@ -356,12 +356,24 @@ def destroy_workspace(user_id: str) -> dict:
 
 
 def get_pod_logs(user_id: str, pod_name: str, tail: int = 30) -> str:
-    """Bir pod'un son log satırlarını döndür (mentor analizi için)."""
+    """Bir pod'un son log satırlarını döndür.
+    pod_name tam pod adı VEYA deployment/bileşen adı olabilir (app label ile eşleştirir)."""
     k = _load_k8s()
     ns = ns_name(user_id)
     _guard_ns(ns)
     import re as _re
     safe = _re.sub(r"[^a-z0-9-]", "", (pod_name or "").lower())
+    # Önce app label ile pod bul (deployment adı = app label)
+    try:
+        pods = k["core"].list_namespaced_pod(ns, label_selector=f"app={safe}").items
+        if pods:
+            # Çalışan/en yeni pod'u seç
+            pods.sort(key=lambda p: p.metadata.creation_timestamp or 0, reverse=True)
+            real = pods[0].metadata.name
+            return k["core"].read_namespaced_pod_log(real, ns, tail_lines=tail)
+    except Exception:
+        pass
+    # Label ile bulunamadıysa: tam ad olarak dene
     try:
         return k["core"].read_namespaced_pod_log(safe, ns, tail_lines=tail)
     except Exception as e:
