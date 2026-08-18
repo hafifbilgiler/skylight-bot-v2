@@ -200,16 +200,31 @@ def _deployment_obj(name, ns, image, port, env, ntype, node, mounted_pvc=None, m
     # Secret/ConfigMap bağlıysa envFrom ile tüm anahtarları env yap
     if env_from:
         container["envFrom"] = env_from
-    # App türü ise: basit bir "çalışıyorum" komutu (kullanıcı kodu yok, demo)
+    # App türü ise: kaynak limitleri + probe + demo komut
     if ntype == "app":
         paths = node.get("paths", ["/"])
         container["command"] = ["sh", "-c",
             f"echo 'App {name} :{port} hazir - pathler: {' '.join(paths)}'; "
             f"while true; do sleep 3600; done"]
-        # App'ler non-root çalışsın (bilinen user)
         sec["runAsNonRoot"] = True
         sec["runAsUser"] = 1000
-    # Redis/Postgres/RabbitMQ/Nginx: kendi imaj user'ına geçer (setuid/setgid ile)
+        # Kaynak istekleri/limitleri (kullanıcının girdiği, güvenli tavanlarla)
+        cpu_req = _clamp_cpu(node.get("cpuReq", "100m"), 500)
+        cpu_lim = _clamp_cpu(node.get("cpuLim", "500m"), 1000)
+        mem_req = _clamp_mem(node.get("memReq", "128Mi"), 512)
+        mem_lim = _clamp_mem(node.get("memLim", "256Mi"), 1024)
+        container["resources"] = {
+            "requests": {"cpu": cpu_req, "memory": mem_req},
+            "limits": {"cpu": cpu_lim, "memory": mem_lim},
+        }
+        # Sağlık kontrolü (probe path verilmişse)
+        probe_path = (node.get("probePath") or "").strip()
+        if probe_path:
+            probe_port = int(node.get("probePort") or port)
+            httpget = {"httpGet": {"path": probe_path, "port": probe_port},
+                       "initialDelaySeconds": 5, "periodSeconds": 10}
+            container["readinessProbe"] = dict(httpget)
+            container["livenessProbe"] = dict(httpget)
 
     pod_spec = {
         "automountServiceAccountToken": False,  # POD TOKEN'SIZ (sızma engeli)
@@ -240,12 +255,20 @@ def _deployment_obj(name, ns, image, port, env, ntype, node, mounted_pvc=None, m
     if volumes:
         pod_spec["volumes"] = volumes
 
+    # Replika sayısı (app için kullanıcı belirler, 1-5 arası)
+    replicas = 1
+    if ntype == "app":
+        try:
+            replicas = max(1, min(5, int(node.get("replicas", 1))))
+        except Exception:
+            replicas = 1
+
     return {
         "apiVersion": "apps/v1", "kind": "Deployment",
         "metadata": {"name": name, "namespace": ns,
                      "labels": {"onebune.lab/node": name, "app": name}},
         "spec": {
-            "replicas": 1,
+            "replicas": replicas,
             "selector": {"matchLabels": {"app": name}},
             "template": {
                 "metadata": {"labels": {"app": name}},
@@ -253,6 +276,33 @@ def _deployment_obj(name, ns, image, port, env, ntype, node, mounted_pvc=None, m
             },
         },
     }
+
+
+def _clamp_cpu(val, max_milli):
+    """CPU değerini güvenli tavana sınırla (milicore). '500m' veya '1' kabul eder."""
+    try:
+        s = str(val).strip()
+        milli = int(s[:-1]) if s.endswith("m") else int(float(s) * 1000)
+        milli = max(10, min(max_milli, milli))
+        return f"{milli}m"
+    except Exception:
+        return "100m"
+
+
+def _clamp_mem(val, max_mi):
+    """Bellek değerini güvenli tavana sınırla (Mi). '256Mi' veya '1Gi' kabul eder."""
+    try:
+        s = str(val).strip()
+        if s.endswith("Gi"):
+            mi = int(float(s[:-2]) * 1024)
+        elif s.endswith("Mi"):
+            mi = int(s[:-2])
+        else:
+            mi = int(s)
+        mi = max(16, min(max_mi, mi))
+        return f"{mi}Mi"
+    except Exception:
+        return "128Mi"
 
 
 def _pvc_obj(name, ns, node):
