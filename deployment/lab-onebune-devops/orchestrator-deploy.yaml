@@ -17,7 +17,7 @@ spec:
       serviceAccountName: lab-orchestrator
       containers:
       - name: orchestrator
-        image: docker.io/hafifbilgiler/skylight-k8s-lab:1.1
+        image: docker.io/hafifbilgiler/skylight-k8s-lab:3.3
         imagePullPolicy: Always
         ports:
         - containerPort: 8000
@@ -29,6 +29,31 @@ spec:
             secretKeyRef:
               name: gateway-secret
               key: jwt-secret
+        # ── AI Mentor (DeepInfra) ──
+        - name: DEEPINFRA_API_KEY
+          value: "4hcNLCkZvisyP6wuD2sdY5NPFU2GjBSn"
+        - name: DEEPINFRA_MODEL
+          value: "meta-llama/Meta-Llama-3.1-70B-Instruct"
+        # ── Premium kontrolü için DB (gateway ile aynı PostgreSQL) ──
+        - name: DB_HOST
+          value: "postgres"
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: pg-secret
+              key: dbname
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: pg-secret
+              key: username
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: pg-secret
+              key: password
         resources:
           requests: {cpu: "100m", memory: "128Mi"}
           limits: {cpu: "500m", memory: "512Mi"}
@@ -44,5 +69,5 @@ spec:
   ports:
   - port: 8000
     targetPort: 8000
-    nodePort: 30302          # dışarıdan erişim (finans 30299 gibi)
-  type: NodePort             # ClusterIP → NodePort (dış erişim)
+    nodePort: 30302
+  type: NodePort
