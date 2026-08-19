@@ -149,7 +149,8 @@ class YamlReq(BaseModel):
 
 @app.post("/lab/yaml")
 def get_yaml(req: YamlReq, token: Optional[str] = Header(None, alias="X-Token")):
-    """Canvas'tan üretilen K8s manifest'ini YAML olarak döndür (kubectl çıktısı gibi)."""
+    """Canvas'tan üretilen K8s manifest'ini kaynak kaynak döndür.
+    Hem birleşik 'yaml' (hepsi) hem de 'resources' (her biri ayrı) verir."""
     uid = resolve_user(token)
     import yaml as _yaml
     import translator as _tr
@@ -158,19 +159,34 @@ def get_yaml(req: YamlReq, token: Optional[str] = Header(None, alias="X-Token"))
     except Exception as e:
         return {"error": f"Manifest üretilemedi: {e}"}
     if not objects:
-        return {"yaml": "# Henüz bileşen yok — ekrana bir şeyler sürükle."}
-    # Her objeyi ayrı YAML dokümanı olarak birleştir (--- ile)
-    docs = []
-    # Sıralama: ConfigMap/Secret önce, sonra PVC, Deployment, Service (mantıklı okuma sırası)
+        return {"yaml": "# Henüz bileşen yok — ekrana bir şeyler sürükle.", "resources": []}
+
+    # Okuma sırası: ConfigMap/Secret → PVC → Deployment → Service
     order = {"Secret": 0, "ConfigMap": 1, "PersistentVolumeClaim": 2,
              "Deployment": 3, "Service": 4}
     objects_sorted = sorted(objects, key=lambda o: order.get(o.get("kind", ""), 9))
+
+    # Kısa kind etiketi (kubectl kısaltmaları)
+    short = {"Deployment": "deploy", "Service": "svc", "Secret": "secret",
+             "ConfigMap": "cm", "PersistentVolumeClaim": "pvc", "Pod": "pod"}
+
+    resources = []
+    docs = []
     for obj in objects_sorted:
+        kind = obj.get("kind", "?")
+        name = (obj.get("metadata") or {}).get("name", "?")
         try:
-            docs.append(_yaml.dump(obj, default_flow_style=False, allow_unicode=True, sort_keys=False))
+            y = _yaml.dump(obj, default_flow_style=False, allow_unicode=True, sort_keys=False)
         except Exception:
             continue
-    return {"yaml": "---\n".join(docs)}
+        resources.append({
+            "kind": kind,
+            "shortKind": short.get(kind, kind.lower()),
+            "name": name,
+            "yaml": y,
+        })
+        docs.append(y)
+    return {"yaml": "---\n".join(docs), "resources": resources}
 
 
 class PodLogsReq(BaseModel):
