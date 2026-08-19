@@ -199,35 +199,99 @@ def _llm_stream(messages, max_tokens=1200, temperature=0.3):
 
 
 def chat_stream(message, graph, status=None):
-    """Streaming sohbet. Niyeti belirler:
-    - BUILD ise: canvas JSON'unu tek parça özel işaretle yield eder ([[BUILD]]{...})
-    - ASK ise: cevabı parça parça (streaming) yield eder."""
-    # 1) Niyet belirle (kısa, streaming değil)
+    """Konuşkan, akıllı mentor. Niyeti VE hedefin net olup olmadığını değerlendirir.
+    Belirsizse (birden çok pod var, ne silineceği belli değil) kullanıcıya SORAR.
+    Net ise aksiyonu alır. İnsanla konuşur gibi doğal."""
+    # Mevcut mimariyi çıkar (LLM bunu görüp akıllı karar versin)
+    nodes = graph.get("nodes", [])
+    pods = (status or {}).get("pods", [])
+    pod_names = [p.get("name", "") for p in pods]
+    node_list = [f"{n.get('type')}:{n.get('name')}" for n in nodes]
+    running = [p.get("name") for p in pods if p.get("status") == "running"]
+
+    # Bağlam metni — LLM'in "ne var" bilmesi için
+    ctx = f"Canvas'taki bileşenler: {', '.join(node_list) if node_list else 'boş'}\n"
+    ctx += f"Çalışan pod'lar: {', '.join(running) if running else 'yok'}\n"
+    ctx += f"Toplam {len(nodes)} bileşen, {len(running)} çalışan pod."
+
+    # 1) Niyet + hedef netliği belirle (JSON döndürür)
     intent_sys = (
-        "Kullanıcının mesajını sınıflandır. SADECE tek kelime döndür:\n"
-        "CLEAR = her şeyi silmek/temizlemek istiyorsa (örn: 'hepsini sil', 'temizle', 'canvası boşalt')\n"
-        "BUILD = yeni bileşen kurmak/eklemek istiyorsa (örn: 'redis kur', 'app ekle')\n"
-        "STATUS = pod/durum listelemek istiyorsa (örn: 'podları listele', 'durum ne', 'neler çalışıyor', 'pod var mı')\n"
-        "LOGS = bir pod'un loglarını/hatalarını görmek istiyorsa (örn: 'logları göster', 'redis logu', 'neden çöktü', 'hata ne')\n"
-        "ASK = genel soru soruyorsa veya bilgi istiyorsa\n"
-        "Sadece CLEAR, BUILD, STATUS, LOGS veya ASK yaz."
+        "Sen bir Kubernetes DevOps mentörüsün. Kullanıcının mesajını analiz et ve JSON döndür.\n\n"
+        "MEVCUT DURUM:\n" + ctx + "\n\n"
+        "Kullanıcının ne yapmak istediğini belirle. Şu niyetlerden biri:\n"
+        "- CLEAR: her şeyi silmek (tüm mimariyi/canvası temizlemek)\n"
+        "- DELETE_ONE: TEK bir bileşeni silmek (örn 'redis'i sil')\n"
+        "- BUILD: yeni bileşen kurmak/eklemek\n"
+        "- STATUS: pod/durum listelemek\n"
+        "- LOGS: bir pod'un logunu görmek\n"
+        "- ASK: soru sormak / bilgi istemek\n"
+        "- CLARIFY: niyet belli ama HEDEF belirsiz (soru sorman lazım)\n\n"
+        "ÖNEMLİ KURALLAR:\n"
+        "1. Kullanıcı 'sil' derse ama NEYİ sileceği belli değilse VE birden çok bileşen varsa → CLARIFY\n"
+        "2. Kullanıcı 'hepsini sil'/'temizle'/'her şeyi kaldır' derse → CLEAR\n"
+        "3. Kullanıcı 'redis'i sil' gibi net bileşen söylerse → DELETE_ONE (target=redis)\n"
+        "4. Kullanıcı 'pod' veya 'log' der ama hangi pod belli değilse VE birden çok pod varsa → CLARIFY\n"
+        "5. Tek pod/bileşen varsa hedef otomatik nettir, CLARIFY'a gerek yok\n\n"
+        "JSON formatı (SADECE bu, başka metin yok):\n"
+        '{\"intent\": \"...\", \"target\": \"bileşen adı veya boş\", \"question\": \"kullanıcıya sorulacak soru (sadece CLARIFY ise)\"}\n\n'
+        "Örnekler:\n"
+        "'redis kur' → {\"intent\":\"BUILD\",\"target\":\"\",\"question\":\"\"}\n"
+        "'sil' (3 bileşen var) → {\"intent\":\"CLARIFY\",\"target\":\"\",\"question\":\"Neyi silmek istersin? Şu an redis, postgres ve app var. Hepsini mi yoksa birini mi?\"}\n"
+        "'redis'i sil' → {\"intent\":\"DELETE_ONE\",\"target\":\"redis\",\"question\":\"\"}\n"
+        "'hepsini sil' → {\"intent\":\"CLEAR\",\"target\":\"\",\"question\":\"\"}\n"
+        "'logları göster' (2 pod var) → {\"intent\":\"CLARIFY\",\"target\":\"\",\"question\":\"Hangi pod'un loglarını görmek istersin? redis mi app mi?\"}\n"
+        "'redis logu' → {\"intent\":\"LOGS\",\"target\":\"redis\",\"question\":\"\"}\n"
     )
     intent_res = _llm([{"role": "system", "content": intent_sys},
-                       {"role": "user", "content": message}], max_tokens=10, temperature=0)
-    intent = (intent_res.get("text", "ASK") if "error" not in intent_res else "ASK").strip().upper()
+                       {"role": "user", "content": message}], max_tokens=200, temperature=0)
 
+    # JSON parse et
+    parsed = {}
+    if "error" not in intent_res:
+        raw = (intent_res.get("text") or "").strip()
+        raw = raw.replace("```json", "").replace("```", "").strip()
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            # JSON parse edilemezse eski usul kelime ara
+            up = raw.upper()
+            if "CLEAR" in up: parsed = {"intent": "CLEAR"}
+            elif "DELETE_ONE" in up: parsed = {"intent": "DELETE_ONE"}
+            elif "BUILD" in up: parsed = {"intent": "BUILD"}
+            elif "STATUS" in up: parsed = {"intent": "STATUS"}
+            elif "LOGS" in up: parsed = {"intent": "LOGS"}
+            elif "CLARIFY" in up: parsed = {"intent": "CLARIFY", "question": "Ne yapmak istediğini biraz daha açar mısın?"}
+            else: parsed = {"intent": "ASK"}
+
+    intent = (parsed.get("intent") or "ASK").upper()
+    target = (parsed.get("target") or "").strip()
+    question = (parsed.get("question") or "").strip()
+
+    # CLARIFY: hedef belirsiz, kullanıcıya sor (aksiyon ALMA)
+    if "CLARIFY" in intent:
+        yield question or "Tam olarak ne yapmak istediğini açar mısın?"
+        return
+
+    # CLEAR: her şeyi sil
     if "CLEAR" in intent:
         yield "[[CLEAR]]"
         return
 
+    # DELETE_ONE: tek bileşen sil (hedef ile)
+    if "DELETE_ONE" in intent:
+        if target:
+            yield "[[DELETE]]" + target
+        else:
+            yield "Hangi bileşeni silmek istediğini anlayamadım. Adını yazar mısın?"
+        return
+
     if "STATUS" in intent:
-        # Pod durumlarını listele (canlı cluster durumu)
         yield _format_status(status)
         return
 
     if "LOGS" in intent:
-        # Kullanıcı hangi pod'un logunu istiyor? Mesajdan çıkar, yoksa sorunlu olanı göster
-        yield "[[LOGS]]" + (message or "")
+        # Hedef varsa onu, yoksa mesajın tamamını gönder (main.py çözer)
+        yield "[[LOGS]]" + (target or message or "")
         return
 
     if "BUILD" in intent:
@@ -238,13 +302,13 @@ def chat_stream(message, graph, status=None):
             yield "[[BUILD]]" + json.dumps(b["canvas"], ensure_ascii=False)
         return
 
-    # Soru: workspace bağlamıyla streaming cevap
+    # ASK: workspace bağlamıyla streaming cevap
     summary = _summarize_workspace(graph, status)
     system = (
         "Sen bir Kubernetes DevOps mentörüsün. Kullanıcı görsel bir K8s laboratuvarında "
         "bileşenler kurmuş. Onun KENDİ mimarisi hakkındaki sorularını yanıtla — genel değil, "
-        "aşağıdaki gerçek duruma göre. Türkçe, kısa, öğretici ol. Markdown başlık kullanma. "
-        "Bir şey mimaride yoksa 'şu an yok' de.\n\n" + PALETTE_INFO
+        "aşağıdaki gerçek duruma göre. Türkçe, kısa, samimi, öğretici ol — bir arkadaşınla "
+        "konuşur gibi doğal. Markdown başlık kullanma. Bir şey mimaride yoksa 'şu an yok' de.\n\n" + PALETTE_INFO
     )
     user = f"KULLANICININ MEVCUT MİMARİSİ:\n{summary}\n\nSORU: {message}"
     for chunk in _llm_stream([{"role": "system", "content": system},
