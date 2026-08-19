@@ -25,6 +25,8 @@ COMPONENT_IMAGES = {
     "postgres": "postgres:16-alpine",
     "rabbitmq": "rabbitmq:3-management-alpine",
     "nginx":    "nginx:alpine",
+    "mysql":    "mysql:8.0",
+    "mongodb":  "mongo:7",
     # app türleri — sabit taban imajlar (kullanıcı kodu değil, hazır runtime)
     "app:flask":   "python:3.12-slim",
     "app:fastapi": "python:3.12-slim",
