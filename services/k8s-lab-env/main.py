@@ -144,6 +144,35 @@ def status(token: Optional[str] = Header(None, alias="X-Token")):
     return k8s_ops.get_status(uid)
 
 
+class YamlReq(BaseModel):
+    graph: dict = {}
+
+@app.post("/lab/yaml")
+def get_yaml(req: YamlReq, token: Optional[str] = Header(None, alias="X-Token")):
+    """Canvas'tan üretilen K8s manifest'ini YAML olarak döndür (kubectl çıktısı gibi)."""
+    uid = resolve_user(token)
+    import yaml as _yaml
+    import translator as _tr
+    try:
+        objects = _tr.build_manifests(req.graph, uid)
+    except Exception as e:
+        return {"error": f"Manifest üretilemedi: {e}"}
+    if not objects:
+        return {"yaml": "# Henüz bileşen yok — ekrana bir şeyler sürükle."}
+    # Her objeyi ayrı YAML dokümanı olarak birleştir (--- ile)
+    docs = []
+    # Sıralama: ConfigMap/Secret önce, sonra PVC, Deployment, Service (mantıklı okuma sırası)
+    order = {"Secret": 0, "ConfigMap": 1, "PersistentVolumeClaim": 2,
+             "Deployment": 3, "Service": 4}
+    objects_sorted = sorted(objects, key=lambda o: order.get(o.get("kind", ""), 9))
+    for obj in objects_sorted:
+        try:
+            docs.append(_yaml.dump(obj, default_flow_style=False, allow_unicode=True, sort_keys=False))
+        except Exception:
+            continue
+    return {"yaml": "---\n".join(docs)}
+
+
 class PodLogsReq(BaseModel):
     pod: str = ""
     tail: int = 60
