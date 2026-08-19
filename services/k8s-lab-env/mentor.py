@@ -198,14 +198,14 @@ def _llm_stream(messages, max_tokens=1200, temperature=0.3):
         yield f"[HATA] LLM akış hatası: {e}"
 
 
-def chat_stream(message, graph, status=None):
+def chat_stream(message, graph, status=None, history=None):
     """Konuşkan, akıllı mentor. Niyeti VE hedefin net olup olmadığını değerlendirir.
-    Belirsizse (birden çok pod var, ne silineceği belli değil) kullanıcıya SORAR.
-    Net ise aksiyonu alır. İnsanla konuşur gibi doğal."""
+    Konuşma geçmişini (history) kullanır — 'yes', 'onun', 'evet' gibi kısa yanıtlar
+    önceki mesaja bağlanır. Belirsizse SORAR, net ise aksiyonu alır."""
+    history = history or []
     # Mevcut mimariyi çıkar (LLM bunu görüp akıllı karar versin)
     nodes = graph.get("nodes", [])
     pods = (status or {}).get("pods", [])
-    pod_names = [p.get("name", "") for p in pods]
     node_list = [f"{n.get('type')}:{n.get('name')}" for n in nodes]
     running = [p.get("name") for p in pods if p.get("status") == "running"]
 
@@ -214,11 +214,22 @@ def chat_stream(message, graph, status=None):
     ctx += f"Çalışan pod'lar: {', '.join(running) if running else 'yok'}\n"
     ctx += f"Toplam {len(nodes)} bileşen, {len(running)} çalışan pod."
 
-    # 1) Niyet + hedef netliği belirle (JSON döndürür)
+    # Son konuşmayı metin olarak hazırla (niyet analizi bunu görecek)
+    hist_text = ""
+    if history:
+        recent = history[-6:]
+        lines = []
+        for h in recent:
+            role = "Kullanıcı" if h.get("role") == "user" else "Mentor"
+            lines.append(f"{role}: {h.get('content','')}")
+        hist_text = "\n".join(lines)
+
+    # 1) Niyet + hedef netliği belirle (JSON döndürür) — GEÇMİŞİ dikkate alarak
     intent_sys = (
-        "Sen bir Kubernetes DevOps mentörüsün. Kullanıcının mesajını analiz et ve JSON döndür.\n\n"
+        "Sen bir Kubernetes DevOps mentörüsün. Kullanıcının SON mesajını analiz et ve JSON döndür.\n\n"
         "MEVCUT DURUM:\n" + ctx + "\n\n"
-        "Kullanıcının ne yapmak istediğini belirle. Şu niyetlerden biri:\n"
+        + ("SON KONUŞMA (bağlam için — kısa yanıtları buna göre yorumla):\n" + hist_text + "\n\n" if hist_text else "")
+        + "Kullanıcının ne yapmak istediğini belirle. Şu niyetlerden biri:\n"
         "- CLEAR: her şeyi silmek (tüm mimariyi/canvası temizlemek)\n"
         "- DELETE_ONE: TEK bir bileşeni silmek (örn 'redis'i sil')\n"
         "- BUILD: yeni bileşen kurmak/eklemek\n"
@@ -226,21 +237,27 @@ def chat_stream(message, graph, status=None):
         "- LOGS: bir pod'un logunu görmek\n"
         "- ASK: soru sormak / bilgi istemek\n"
         "- CLARIFY: niyet belli ama HEDEF belirsiz (soru sorman lazım)\n\n"
-        "ÖNEMLİ KURALLAR:\n"
-        "1. Kullanıcı 'sil' derse ama NEYİ sileceği belli değilse VE birden çok bileşen varsa → CLARIFY\n"
-        "2. Kullanıcı 'hepsini sil'/'temizle'/'her şeyi kaldır' derse → CLEAR\n"
-        "3. Kullanıcı 'redis'i sil' gibi net bileşen söylerse → DELETE_ONE (target=redis)\n"
-        "4. Kullanıcı 'pod' veya 'log' der ama hangi pod belli değilse VE birden çok pod varsa → CLARIFY\n"
-        "5. Tek pod/bileşen varsa hedef otomatik nettir, CLARIFY'a gerek yok\n\n"
+        "ÇOK ÖNEMLİ — GEÇMİŞİ KULLAN:\n"
+        "* Eğer Mentor az önce bir soru sorduysa (örn 'nginx'in loglarını mı?') ve kullanıcı 'evet/yes/olur/tamam' dediyse "
+        "→ o soruyu ONAYLAMIŞ demektir. Önceki niyeti uygula (bu örnekte LOGS, target=nginx).\n"
+        "* 'onun', 'bunun', 'şunun' gibi ifadeler geçmişte bahsedilen bileşene işaret eder.\n"
+        "* Kullanıcı 'X'in loglarını istiyorum' derse → LOGS, target=X.\n\n"
+        "DİĞER KURALLAR:\n"
+        "1. 'sil' ama NEYİ belirsiz VE birden çok bileşen → CLARIFY\n"
+        "2. 'hepsini sil'/'temizle'/'her şeyi kaldır' → CLEAR\n"
+        "3. 'redis'i sil' gibi net bileşen → DELETE_ONE (target=redis)\n"
+        "4. 'pod'/'log' ama hangisi belirsiz VE birden çok pod → CLARIFY\n"
+        "5. Tek pod/bileşen varsa hedef otomatik nettir → CLARIFY'a gerek yok, direkt uygula\n"
+        "6. Kullanıcı sadece bir bileşen ADI yazdıysa (örn 'nginx') ve bağlamdan ne istediği belliyse ona göre davran; "
+        "belirsizse ASK ile ne yapmak istediğini sor (silmek mi log mu?).\n\n"
         "JSON formatı (SADECE bu, başka metin yok):\n"
         '{\"intent\": \"...\", \"target\": \"bileşen adı veya boş\", \"question\": \"kullanıcıya sorulacak soru (sadece CLARIFY ise)\"}\n\n'
         "Örnekler:\n"
         "'redis kur' → {\"intent\":\"BUILD\",\"target\":\"\",\"question\":\"\"}\n"
-        "'sil' (3 bileşen var) → {\"intent\":\"CLARIFY\",\"target\":\"\",\"question\":\"Neyi silmek istersin? Şu an redis, postgres ve app var. Hepsini mi yoksa birini mi?\"}\n"
-        "'redis'i sil' → {\"intent\":\"DELETE_ONE\",\"target\":\"redis\",\"question\":\"\"}\n"
+        "Mentor: 'nginx loglarını mı?' + Kullanıcı: 'evet' → {\"intent\":\"LOGS\",\"target\":\"nginx\",\"question\":\"\"}\n"
+        "'onun loglarını görmek istiyorum' (geçmişte nginx var) → {\"intent\":\"LOGS\",\"target\":\"nginx\",\"question\":\"\"}\n"
         "'hepsini sil' → {\"intent\":\"CLEAR\",\"target\":\"\",\"question\":\"\"}\n"
-        "'logları göster' (2 pod var) → {\"intent\":\"CLARIFY\",\"target\":\"\",\"question\":\"Hangi pod'un loglarını görmek istersin? redis mi app mi?\"}\n"
-        "'redis logu' → {\"intent\":\"LOGS\",\"target\":\"redis\",\"question\":\"\"}\n"
+        "'redis'i sil' → {\"intent\":\"DELETE_ONE\",\"target\":\"redis\",\"question\":\"\"}\n"
     )
     intent_res = _llm([{"role": "system", "content": intent_sys},
                        {"role": "user", "content": message}], max_tokens=200, temperature=0)
@@ -302,17 +319,24 @@ def chat_stream(message, graph, status=None):
             yield "[[BUILD]]" + json.dumps(b["canvas"], ensure_ascii=False)
         return
 
-    # ASK: workspace bağlamıyla streaming cevap
+    # ASK: workspace bağlamıyla streaming cevap (GEÇMİŞ dahil)
     summary = _summarize_workspace(graph, status)
     system = (
         "Sen bir Kubernetes DevOps mentörüsün. Kullanıcı görsel bir K8s laboratuvarında "
         "bileşenler kurmuş. Onun KENDİ mimarisi hakkındaki sorularını yanıtla — genel değil, "
         "aşağıdaki gerçek duruma göre. Türkçe, kısa, samimi, öğretici ol — bir arkadaşınla "
-        "konuşur gibi doğal. Markdown başlık kullanma. Bir şey mimaride yoksa 'şu an yok' de.\n\n" + PALETTE_INFO
+        "konuşur gibi doğal. Markdown başlık kullanma. Bir şey mimaride yoksa 'şu an yok' de. "
+        "Konuşma geçmişini dikkate al — kullanıcı önceki mesajlara atıfta bulunabilir.\n\n" + PALETTE_INFO
     )
-    user = f"KULLANICININ MEVCUT MİMARİSİ:\n{summary}\n\nSORU: {message}"
-    for chunk in _llm_stream([{"role": "system", "content": system},
-                              {"role": "user", "content": user}]):
+    # Mesajları hazırla: system + geçmiş + mevcut mimari + soru
+    msgs = [{"role": "system", "content": system}]
+    for h in history[-6:]:
+        r = h.get("role")
+        if r in ("user", "assistant"):
+            msgs.append({"role": r, "content": str(h.get("content", ""))[:500]})
+    msgs.append({"role": "user",
+                 "content": f"KULLANICININ MEVCUT MİMARİSİ:\n{summary}\n\nSORU: {message}"})
+    for chunk in _llm_stream(msgs):
         yield chunk
 
 

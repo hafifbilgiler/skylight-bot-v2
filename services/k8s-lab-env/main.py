@@ -191,6 +191,7 @@ import mentor as _mentor
 class MentorReq(BaseModel):
     graph: dict = {}
     instruction: str = ""
+    history: list = []   # [{role, content}] — konuşma geçmişi (bağlam için)
 
 @app.post("/lab/mentor_analyze")
 def mentor_analyze(req: MentorReq, token: Optional[str] = Header(None, alias="X-Token")):
@@ -238,7 +239,7 @@ def mentor_stream(req: MentorReq, token: Optional[str] = Header(None, alias="X-T
     except Exception:
         pass
     def gen():
-        for chunk in _mentor.chat_stream(req.instruction, req.graph, status):
+        for chunk in _mentor.chat_stream(req.instruction, req.graph, status, req.history):
             # LOGS işareti: kullanıcının kastettiği pod'un logunu getir
             if chunk.startswith("[[LOGS]]"):
                 asked = chunk[len("[[LOGS]]"):].lower()
