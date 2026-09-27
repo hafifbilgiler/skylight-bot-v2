@@ -712,3 +712,214 @@ Kurallar:
         }
     except Exception as e:
         raise HTTPException(503, f"Kamera hatası: {str(e)}")
+
+
+# ══════════════════════════════════════════════════════════════
+# ── Google Play Abonelik Doğrulama ────────────────────────────
+# Uygulama satın alma token'ını gönderir → Google Play Developer API'ye
+# sorulur → gerçekse namaz_app_subscriptions tablosuna yazılır.
+# Servis hesabı: GOOGLE_APPLICATION_CREDENTIALS (/secrets/key.json)
+# Play Console'da bu hesaba "Finansal verileri görüntüleme" +
+# "Siparişleri ve abonelikleri yönetme" izni verilmiş olmalı.
+# ══════════════════════════════════════════════════════════════
+import re as _re
+import urllib.parse as _urlparse
+from datetime import timezone as _tz
+from fastapi import Header
+
+PLAY_PACKAGE_NAME = os.getenv("PLAY_PACKAGE_NAME", "com.onebune.namazvakitleri")
+PLAY_CREDENTIALS  = os.getenv("PLAY_CREDENTIALS_FILE",
+                              os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "/secrets/key.json"))
+PLAY_PRODUCTS = {
+    "namaz_premium_monthly": "monthly",
+    "namaz_premium_yearly":  "yearly",
+}
+PLAY_ACTIVE_STATES = {
+    "SUBSCRIPTION_STATE_ACTIVE",
+    "SUBSCRIPTION_STATE_IN_GRACE_PERIOD",
+    "SUBSCRIPTION_STATE_CANCELED",   # iptal edildi ama dönem sonuna kadar geçerli
+}
+_play_creds = None
+
+
+def _play_access_token() -> str:
+    global _play_creds
+    from google.oauth2 import service_account
+    from google.auth.transport.requests import Request as _GRequest
+    if _play_creds is None:
+        _play_creds = service_account.Credentials.from_service_account_file(
+            PLAY_CREDENTIALS, scopes=["https://www.googleapis.com/auth/androidpublisher"])
+    if not _play_creds.valid:
+        _play_creds.refresh(_GRequest())
+    return _play_creds.token
+
+
+def _play_get_subscription(purchase_token: str) -> dict:
+    import requests
+    url = ("https://androidpublisher.googleapis.com/androidpublisher/v3/applications/"
+           f"{PLAY_PACKAGE_NAME}/purchases/subscriptionsv2/tokens/"
+           f"{_urlparse.quote(purchase_token, safe='')}")
+    r = requests.get(url, headers={"Authorization": f"Bearer {_play_access_token()}"}, timeout=15)
+    if r.status_code in (400, 404, 410):
+        print(f"[PLAY] Geçersiz token ({r.status_code}): {r.text[:300]}")
+        raise HTTPException(400, "Geçersiz satın alma")
+    if r.status_code in (401, 403):
+        print(f"[PLAY] Yetki hatası ({r.status_code}): {r.text[:300]}")
+        raise HTTPException(503, "Satın alma şu an doğrulanamıyor")
+    r.raise_for_status()
+    return r.json()
+
+
+def _play_parse_time(value: str):
+    if not value:
+        return None
+    # "2026-10-28T20:15:30.123456789Z" → mikro saniye fazlasını at
+    value = _re.sub(r"\.(\d{6})\d+", r".\1", value.replace("Z", "+00:00"))
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _play_parse_subscription(data: dict) -> dict:
+    state = data.get("subscriptionState", "")
+    items = data.get("lineItems") or []
+    product_id, expiry = "", None
+    for item in items:
+        t = _play_parse_time(item.get("expiryTime", ""))
+        if t and (expiry is None or t > expiry):
+            expiry = t
+            product_id = item.get("productId", "")
+    now = datetime.now(_tz.utc)
+    is_active = state in PLAY_ACTIVE_STATES and expiry is not None and expiry > now
+    return {
+        "state": state,
+        "product_id": product_id,
+        "expiry": expiry,
+        "is_active": is_active,
+        "is_test": "testPurchase" in data,
+    }
+
+
+def _play_email_from_auth(authorization: Optional[str]) -> str:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Giriş gerekli")
+    payload = verify_token(authorization[7:])
+    if payload.get("scope") != "namaz_app" or not payload.get("sub"):
+        raise HTTPException(401, "Geçersiz token")
+    return payload["sub"]
+
+
+async def _play_user_id(email: str) -> int:
+    async with main_db_pool.acquire() as conn:
+        user_id = await conn.fetchval("SELECT id FROM namaz_app_users WHERE email=$1", email)
+    if not user_id:
+        raise HTTPException(404, "Kullanıcı bulunamadı")
+    return user_id
+
+
+async def _play_save(user_id: int, purchase_token: str, info: dict):
+    period = PLAY_PRODUCTS.get(info["product_id"], "monthly")
+    meta = json.dumps({
+        "source": "google_play",
+        "purchase_token": purchase_token,
+        "product_id": info["product_id"],
+        "state": info["state"],
+        "test": info["is_test"],
+    })
+    short_token = purchase_token[:255]
+
+    async with main_db_pool.acquire() as conn:
+        async with conn.transaction():
+            # Aynı satın alma başka bir hesapta aktif mi? (hesap paylaşımını engeller)
+            other = await conn.fetchval("""
+                SELECT user_id FROM namaz_app_subscriptions
+                WHERE metadata->>'purchase_token' = $1 AND user_id <> $2
+                  AND status IN ('active','trialing')
+                LIMIT 1
+            """, purchase_token, user_id)
+            if other:
+                raise HTTPException(409, "Bu satın alma başka bir hesaba bağlı")
+
+            existing = await conn.fetchrow("""
+                SELECT id, plan_id FROM namaz_app_subscriptions
+                WHERE user_id = $1 AND status IN ('active','trialing')
+                LIMIT 1
+            """, user_id)
+
+            if info["is_active"]:
+                if existing and existing["plan_id"] == "lifetime":
+                    return  # ömür boyu / test hesabına dokunma
+                if existing:
+                    await conn.execute("""
+                        UPDATE namaz_app_subscriptions
+                        SET plan_id='premium', billing_period=$2, current_period_end=$3,
+                            google_play_token=$4, metadata=$5::jsonb
+                        WHERE id=$1
+                    """, existing["id"], period, info["expiry"], short_token, meta)
+                else:
+                    await conn.execute("""
+                        INSERT INTO namaz_app_subscriptions
+                            (user_id, plan_id, status, billing_period,
+                             current_period_start, current_period_end, google_play_token, metadata)
+                        VALUES ($1, 'premium', 'active', $2, NOW(), $3, $4, $5::jsonb)
+                    """, user_id, period, info["expiry"], short_token, meta)
+            else:
+                # Süresi dolmuş / iade edilmiş → premium kapat
+                await conn.execute("""
+                    UPDATE namaz_app_subscriptions
+                    SET status='expired', metadata=$2::jsonb
+                    WHERE user_id=$1 AND status IN ('active','trialing')
+                      AND metadata->>'purchase_token' = $3
+                """, user_id, meta, purchase_token)
+
+
+async def _play_verify_and_save(user_id: int, purchase_token: str, expected_product: str = "") -> dict:
+    data = await asyncio.to_thread(_play_get_subscription, purchase_token)
+    info = _play_parse_subscription(data)
+    if info["product_id"] not in PLAY_PRODUCTS:
+        raise HTTPException(400, "Bilinmeyen ürün")
+    if expected_product and expected_product != info["product_id"]:
+        raise HTTPException(400, "Ürün uyuşmuyor")
+    await _play_save(user_id, purchase_token, info)
+    print(f"[PLAY] user={user_id} product={info['product_id']} state={info['state']} "
+          f"active={info['is_active']} test={info['is_test']}")
+    return {
+        "is_premium": info["is_active"],
+        "product_id": info["product_id"],
+        "state": info["state"],
+        "expiry": info["expiry"].isoformat() if info["expiry"] else None,
+    }
+
+
+class PlayVerifyRequest(BaseModel):
+    purchase_token: str
+    product_id: str = ""
+
+
+@app.post("/subscription/verify")
+async def play_subscription_verify(req: PlayVerifyRequest, authorization: Optional[str] = Header(None)):
+    """Satın alma sonrası (ve uygulama açılışında) çağrılır."""
+    email = _play_email_from_auth(authorization)
+    if len(req.purchase_token) < 10:
+        raise HTTPException(400, "Geçersiz satın alma")
+    user_id = await _play_user_id(email)
+    return await _play_verify_and_save(user_id, req.purchase_token, req.product_id)
+
+
+@app.post("/subscription/sync")
+async def play_subscription_sync(authorization: Optional[str] = Header(None)):
+    """Kayıtlı Google Play aboneliğini Google'a tekrar sorar (yenileme / iptal / iade)."""
+    email = _play_email_from_auth(authorization)
+    user_id = await _play_user_id(email)
+    async with main_db_pool.acquire() as conn:
+        token = await conn.fetchval("""
+            SELECT metadata->>'purchase_token' FROM namaz_app_subscriptions
+            WHERE user_id=$1 AND metadata->>'source'='google_play'
+            ORDER BY updated_at DESC LIMIT 1
+        """, user_id)
+    if not token:
+        return {"synced": False, "is_premium": None}
+    result = await _play_verify_and_save(user_id, token)
+    result["synced"] = True
+    return result
