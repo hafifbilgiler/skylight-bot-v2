@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
       - name: community-chat
-        image: docker.io/hafifbilgiler/community-chat:2.8
+        image: docker.io/hafifbilgiler/community-chat:2.9
         ports:
         - containerPort: 8001
         env:
@@ -61,6 +61,11 @@ spec:
               key: gemini-model
         - name: GOOGLE_APPLICATION_CREDENTIALS
           value: /secrets/key.json
+        - name: GOOGLE_PLACES_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: places-api
+              key: GOOGLE_PLACES_API_KEY
         resources:
           requests:
             memory: "256Mi"

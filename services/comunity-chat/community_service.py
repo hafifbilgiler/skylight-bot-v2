@@ -1013,6 +1013,45 @@ def _nominatim_fetch(lat: float, lng: float, radius: int) -> Optional[dict]:
         return None
 
 
+GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "")
+
+
+def _places_fetch(lat: float, lng: float, radius: int) -> Optional[dict]:
+    """Google Places API (New) Nearby Search — type=mosque. Anahtar yoksa atlanır."""
+    if not GOOGLE_PLACES_API_KEY:
+        return None
+    import requests
+    body = {
+        "includedTypes": ["mosque"],
+        "maxResultCount": 20,
+        "rankPreference": "DISTANCE",
+        "languageCode": "tr",
+        "locationRestriction": {"circle": {"center": {"latitude": lat, "longitude": lng},
+                                           "radius": float(min(radius, 50000))}},
+    }
+    try:
+        r = requests.post("https://places.googleapis.com/v1/places:searchNearby", json=body,
+                          headers={"X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+                                   "X-Goog-FieldMask": "places.id,places.displayName,places.location"},
+                          timeout=(4, 10))
+        if r.status_code != 200:
+            print(f"[MOSQUE] places → HTTP {r.status_code}: {r.text[:200]}")
+            return None
+        elements = []
+        for p in r.json().get("places", []):
+            loc = p.get("location") or {}
+            if "latitude" not in loc:
+                continue
+            name = (p.get("displayName") or {}).get("text") or "Cami"
+            elements.append({"type": "node", "lat": loc["latitude"], "lon": loc["longitude"],
+                             "tags": {"name": name}, "place_id": p.get("id", "")})
+        print(f"[MOSQUE] places → {len(elements)} cami")
+        return {"elements": elements}
+    except Exception as e:
+        print(f"[MOSQUE] places → {e}")
+        return None
+
+
 @app.get("/mosques")
 async def nearby_mosques(lat: float, lng: float, radius: int = 3000):
     if not (-90 <= lat <= 90 and -180 <= lng <= 180):
@@ -1028,7 +1067,9 @@ async def nearby_mosques(lat: float, lng: float, radius: int = 3000):
     except Exception:
         pass
 
-    result = await asyncio.to_thread(_overpass_fetch, lat, lng, radius)
+    result = await asyncio.to_thread(_places_fetch, lat, lng, radius)
+    if result is None or not result["elements"]:
+        result = await asyncio.to_thread(_overpass_fetch, lat, lng, radius)
     if result is not None:
         try:
             payload = json.dumps(result)
