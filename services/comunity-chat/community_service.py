@@ -923,3 +923,84 @@ async def play_subscription_sync(authorization: Optional[str] = Header(None)):
     result = await _play_verify_and_save(user_id, token)
     result["synced"] = True
     return result
+
+
+# ══════════════════════════════════════════════════════════════
+# ── Yakındaki Camiler (Overpass proxy + Redis önbellek) ───────
+# Uygulama camileri doğrudan Overpass'tan çekiyordu; bu sunucular
+# sık sık 429/5xx veriyor. Sunucu tarafında:
+#   - ~1 km'lik ızgaraya göre 7 gün önbellek (camiler yer değiştirmez)
+#   - tüm Overpass sunucuları hata verirse son başarılı sonuç (stale)
+# Yanıt Overpass ile aynı biçimde: {"elements": [...]}
+# ══════════════════════════════════════════════════════════════
+OVERPASS_MIRRORS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+]
+OVERPASS_UA = "DuaNamazApp/1.2 (info@duavenamaz.com)"
+MOSQUE_CACHE_TTL = 7 * 24 * 3600
+
+
+def _overpass_fetch(lat: float, lng: float, radius: int) -> Optional[dict]:
+    import requests
+    query = f"""
+[out:json][timeout:25];
+(
+  node["amenity"="place_of_worship"]["religion"="muslim"](around:{radius},{lat},{lng});
+  way["amenity"="place_of_worship"]["religion"="muslim"](around:{radius},{lat},{lng});
+);
+out center 30;
+"""
+    for mirror in OVERPASS_MIRRORS:
+        try:
+            r = requests.post(mirror, data={"data": query},
+                              headers={"User-Agent": OVERPASS_UA}, timeout=30)
+            if r.status_code != 200:
+                print(f"[MOSQUE] {mirror} → HTTP {r.status_code}")
+                continue
+            data = r.json()
+            if isinstance(data.get("elements"), list):
+                return {"elements": data["elements"]}
+        except Exception as e:
+            print(f"[MOSQUE] {mirror} → {e}")
+    return None
+
+
+@app.get("/mosques")
+async def nearby_mosques(lat: float, lng: float, radius: int = 3000):
+    if not (-90 <= lat <= 90 and -180 <= lng <= 180):
+        raise HTTPException(400, "Geçersiz konum")
+    radius = max(500, min(radius, 10000))
+    cell = f"{round(lat, 2)}:{round(lng, 2)}:{radius}"
+    key, stale_key = f"mosq:{cell}", f"mosq_stale:{cell}"
+
+    try:
+        cached = await redis_client.get(key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    result = await asyncio.to_thread(_overpass_fetch, lat, lng, radius)
+    if result is not None:
+        try:
+            payload = json.dumps(result)
+            # Boş sonucu kısa süre tut, dolu sonucu 7 gün
+            ttl = MOSQUE_CACHE_TTL if result["elements"] else 3600
+            await redis_client.setex(key, ttl, payload)
+            if result["elements"]:
+                await redis_client.set(stale_key, payload)
+        except Exception:
+            pass
+        return result
+
+    # Tüm sunucular hata verdi → eski sonuç varsa onu dön
+    try:
+        stale = await redis_client.get(stale_key)
+        if stale:
+            return json.loads(stale)
+    except Exception:
+        pass
+    raise HTTPException(503, "Cami verisi şu an alınamıyor")
