@@ -1016,9 +1016,32 @@ def _nominatim_fetch(lat: float, lng: float, radius: int) -> Optional[dict]:
 GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "")
 
 
+_places_creds = None
+
+
+def _places_auth_headers() -> dict:
+    """Önce Vertex AI ile aynı servis hesabı (OAuth), yoksa API anahtarı."""
+    global _places_creds
+    try:
+        import google.auth
+        from google.auth.transport.requests import Request as _GReq
+        if _places_creds is None:
+            _places_creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        if not _places_creds.valid:
+            _places_creds.refresh(_GReq())
+        return {"Authorization": f"Bearer {_places_creds.token}",
+                "X-Goog-User-Project": GEMINI_PROJECT}
+    except Exception as e:
+        print(f"[MOSQUE] places servis hesabı → {e}")
+    if GOOGLE_PLACES_API_KEY:
+        return {"X-Goog-Api-Key": GOOGLE_PLACES_API_KEY}
+    return {}
+
+
 def _places_fetch(lat: float, lng: float, radius: int) -> Optional[dict]:
-    """Google Places API (New) Nearby Search — type=mosque. Anahtar yoksa atlanır."""
-    if not GOOGLE_PLACES_API_KEY:
+    """Google Places API (New) Nearby Search — type=mosque."""
+    auth = _places_auth_headers()
+    if not auth:
         return None
     import requests
     body = {
@@ -1031,7 +1054,7 @@ def _places_fetch(lat: float, lng: float, radius: int) -> Optional[dict]:
     }
     try:
         r = requests.post("https://places.googleapis.com/v1/places:searchNearby", json=body,
-                          headers={"X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+                          headers={**auth,
                                    "X-Goog-FieldMask": "places.id,places.displayName,places.location"},
                           timeout=(4, 10))
         if r.status_code != 200:
