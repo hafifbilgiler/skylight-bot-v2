@@ -965,7 +965,39 @@ out center 30;
                 return {"elements": data["elements"]}
         except Exception as e:
             print(f"[MOSQUE] {mirror} → {e}")
-    return None
+    return _nominatim_fetch(lat, lng, radius)
+
+
+def _nominatim_fetch(lat: float, lng: float, radius: int) -> Optional[dict]:
+    """Overpass çökükse yedek: OSM Nominatim (ayrı altyapı, anahtar gerekmez).
+    Kullanım kuralı: User-Agent zorunlu, saniyede en fazla 1 istek → önbellek bunu sağlıyor."""
+    import math
+    import requests
+    dlat = radius / 111000.0
+    dlng = radius / (111000.0 * max(math.cos(math.radians(lat)), 0.01))
+    params = {
+        "q": "mosque", "format": "jsonv2", "limit": 30, "bounded": 1,
+        "viewbox": f"{lng - dlng},{lat + dlat},{lng + dlng},{lat - dlat}",
+    }
+    try:
+        r = requests.get("https://nominatim.openstreetmap.org/search", params=params,
+                         headers={"User-Agent": OVERPASS_UA, "Accept-Language": "tr"}, timeout=20)
+        if r.status_code != 200:
+            print(f"[MOSQUE] nominatim → HTTP {r.status_code}")
+            return None
+        elements = []
+        for p in r.json():
+            try:
+                name = (p.get("name") or "").strip() or (p.get("display_name") or "Cami").split(",")[0]
+                elements.append({"type": "node", "lat": float(p["lat"]), "lon": float(p["lon"]),
+                                 "tags": {"name": name}})
+            except Exception:
+                continue
+        print(f"[MOSQUE] nominatim → {len(elements)} cami")
+        return {"elements": elements}
+    except Exception as e:
+        print(f"[MOSQUE] nominatim → {e}")
+        return None
 
 
 @app.get("/mosques")
