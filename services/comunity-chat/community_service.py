@@ -943,8 +943,14 @@ OVERPASS_UA = "DuaNamazApp/1.2 (info@duavenamaz.com)"
 MOSQUE_CACHE_TTL = 7 * 24 * 3600
 
 
+_overpass_down_until = 0.0   # tüm sunucular çökünce 10 dk doğrudan Nominatim'e geç
+
+
 def _overpass_fetch(lat: float, lng: float, radius: int) -> Optional[dict]:
+    global _overpass_down_until
     import requests
+    if time.time() < _overpass_down_until:
+        return _nominatim_fetch(lat, lng, radius)
     query = f"""
 [out:json][timeout:25];
 (
@@ -953,10 +959,15 @@ def _overpass_fetch(lat: float, lng: float, radius: int) -> Optional[dict]:
 );
 out center 30;
 """
+    started = time.time()
     for mirror in OVERPASS_MIRRORS:
+        # Uygulama ~35 sn bekliyor → Overpass için en fazla ~15 sn harca, sonra Nominatim
+        if time.time() - started > 15:
+            print("[MOSQUE] Overpass süre sınırı doldu → Nominatim")
+            break
         try:
             r = requests.post(mirror, data={"data": query},
-                              headers={"User-Agent": OVERPASS_UA}, timeout=30)
+                              headers={"User-Agent": OVERPASS_UA}, timeout=(4, 8))
             if r.status_code != 200:
                 print(f"[MOSQUE] {mirror} → HTTP {r.status_code}")
                 continue
@@ -965,6 +976,8 @@ out center 30;
                 return {"elements": data["elements"]}
         except Exception as e:
             print(f"[MOSQUE] {mirror} → {e}")
+    _overpass_down_until = time.time() + 600
+    print("[MOSQUE] Overpass çökük → 10 dk Nominatim kullanılacak")
     return _nominatim_fetch(lat, lng, radius)
 
 
