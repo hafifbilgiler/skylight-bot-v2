@@ -1020,8 +1020,10 @@ _places_creds = None
 
 
 def _places_auth_headers() -> dict:
-    """Önce Vertex AI ile aynı servis hesabı (OAuth), yoksa API anahtarı."""
+    """Önce API anahtarı (Places'ın açık olduğu projeden), yoksa servis hesabı (OAuth)."""
     global _places_creds
+    if GOOGLE_PLACES_API_KEY:
+        return {"X-Goog-Api-Key": GOOGLE_PLACES_API_KEY}
     try:
         import google.auth
         from google.auth.transport.requests import Request as _GReq
@@ -1081,7 +1083,8 @@ async def nearby_mosques(lat: float, lng: float, radius: int = 3000):
         raise HTTPException(400, "Geçersiz konum")
     radius = max(500, min(radius, 10000))
     cell = f"{round(lat, 2)}:{round(lng, 2)}:{radius}"
-    key, stale_key = f"mosq:{cell}", f"mosq_stale:{cell}"
+    # v2: Google Places'a geçildi → eski (az sonuçlu Nominatim) önbellek kullanılmasın
+    key, stale_key = f"mosq2:{cell}", f"mosq2_stale:{cell}"
 
     try:
         cached = await redis_client.get(key)
