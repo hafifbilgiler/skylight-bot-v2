@@ -1116,3 +1116,111 @@ async def nearby_mosques(lat: float, lng: float, radius: int = 3000):
     except Exception:
         pass
     raise HTTPException(503, "Cami verisi şu an alınamıyor")
+
+
+# ══════════════════════════════════════════════════════════════
+# 3.2 — AI UÇLARI KORUMASI (giriş + premium + istek sınırı)
+# Uygulama zaten "Authorization: Bearer <jwt>" gönderiyor; burada
+# sunucu tarafında doğrulanıyor. Mevcut endpoint kodlarına dokunulmadı,
+# kontrol bir HTTP middleware ile yapılıyor.
+# ══════════════════════════════════════════════════════════════
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
+AI_PROTECTED_PATHS = {
+    "/quiz", "/quiz/batch", "/ruya-tabiri", "/dua-uret",
+    "/manevi-koc", "/arapca-kamera",
+}
+AI_DAILY_LIMIT   = int(os.getenv("AI_DAILY_LIMIT", "200"))    # kullanıcı başına günlük
+AI_MINUTE_LIMIT  = int(os.getenv("AI_MINUTE_LIMIT", "15"))    # kullanıcı başına dakikalık
+AI_PREMIUM_TTL   = 300                                        # premium sonucu 5 dk önbellek
+
+if SECRET_KEY == "onebune-secret":
+    print("UYARI: JWT_SECRET ortam değişkeni yok, varsayılan anahtar kullanılıyor!", flush=True)
+
+
+def _ai_norm_path(path: str) -> str:
+    # nginx /community önekini silmese bile eşleşsin
+    if path.startswith("/community/"):
+        path = path[len("/community"):]
+    return path.rstrip("/") or "/"
+
+
+async def _ai_is_premium(email: str) -> Optional[int]:
+    """Premium ise user_id döner, değilse None. Sonuç Redis'te 5 dk tutulur."""
+    cache_key = f"aiprem:{email}"
+    try:
+        cached = await redis_client.get(cache_key)
+        if cached is not None:
+            return int(cached) if cached != "0" else None
+    except Exception:
+        pass
+
+    user_id = None
+    async with main_db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, is_premium FROM namaz_app_users WHERE email=$1", email)
+        if row:
+            if row["is_premium"]:
+                user_id = row["id"]
+            else:
+                sub = await conn.fetchrow(
+                    "SELECT id FROM namaz_app_subscriptions WHERE user_id=$1 AND status='active' "
+                    "AND (current_period_end IS NULL OR current_period_end > NOW())",
+                    row["id"])
+                if sub:
+                    user_id = row["id"]
+    try:
+        await redis_client.set(cache_key, str(user_id or 0), ex=AI_PREMIUM_TTL)
+    except Exception:
+        pass
+    return user_id
+
+
+async def _ai_rate_ok(user_id: int) -> Optional[str]:
+    """Sınır aşıldıysa hata mesajı döner, yoksa None."""
+    try:
+        day = datetime.utcnow().strftime("%Y%m%d")
+        minute = int(time.time() // 60)
+        dkey = f"airl:d:{user_id}:{day}"
+        mkey = f"airl:m:{user_id}:{minute}"
+        pipe = redis_client.pipeline()
+        pipe.incr(dkey); pipe.expire(dkey, 90000)
+        pipe.incr(mkey); pipe.expire(mkey, 120)
+        dcount, _, mcount, _ = await pipe.execute()
+        if mcount > AI_MINUTE_LIMIT:
+            return "Çok hızlı istek gönderiyorsunuz, lütfen biraz bekleyin."
+        if dcount > AI_DAILY_LIMIT:
+            return "Günlük kullanım sınırına ulaştınız, yarın tekrar deneyin."
+    except Exception:
+        pass   # Redis sorunu olursa kullanıcıyı engelleme
+    return None
+
+
+@app.middleware("http")
+async def ai_guard(request: Request, call_next):
+    path = _ai_norm_path(request.url.path)
+    if request.method == "POST" and path in AI_PROTECTED_PATHS:
+        auth = request.headers.get("authorization", "")
+        if not auth.startswith("Bearer "):
+            return JSONResponse({"detail": "Giriş gerekli"}, status_code=401)
+        try:
+            payload = jwt.decode(auth[7:], SECRET_KEY, algorithms=["HS256"])
+        except JWTError:
+            return JSONResponse({"detail": "Oturum süresi doldu, tekrar giriş yapın"}, status_code=401)
+        email = payload.get("sub")
+        if not email or payload.get("scope", "namaz_app") != "namaz_app":
+            return JSONResponse({"detail": "Geçersiz oturum"}, status_code=401)
+
+        try:
+            user_id = await _ai_is_premium(email)
+        except Exception as e:
+            print(f"ai_guard premium kontrol hatası: {e}", flush=True)
+            return JSONResponse({"detail": "Geçici bir sorun oluştu, tekrar deneyin"}, status_code=503)
+        if not user_id:
+            return JSONResponse({"detail": "Bu özellik Premium üyelere özeldir"}, status_code=403)
+
+        limit_msg = await _ai_rate_ok(user_id)
+        if limit_msg:
+            return JSONResponse({"detail": limit_msg}, status_code=429)
+    return await call_next(request)
