@@ -1224,3 +1224,291 @@ async def ai_guard(request: Request, call_next):
         if limit_msg:
             return JSONResponse({"detail": limit_msg}, status_code=429)
     return await call_next(request)
+
+
+# ══════════════════════════════════════════════════════════════
+# 3.3 — GEZGİN MODU (Google Places API New)
+# Dünya genelinde helal restoran / cami-mescit / helal market / kafe.
+#   GET /gezgin/places?lat=&lng=&kategori=restoran|cami|market|kafe&radius=
+#   GET /gezgin/place/{place_id}      → detay + yorumlar
+#   GET /gezgin/photo?name=places/../photos/..&w=400 → {"url": ...}
+# Giriş gerekli (ücretsiz kullanıcılar da kullanabilir), kullanıcı başına
+# istek sınırı var. Google içerikleri sadece kısa süre önbellekte tutulur.
+# ══════════════════════════════════════════════════════════════
+import math as _math
+import re as _gz_re
+
+GEZGIN_CACHE_TTL   = int(os.getenv("GEZGIN_CACHE_TTL", "3600"))   # 1 saat
+GEZGIN_DAILY_LIMIT = int(os.getenv("GEZGIN_DAILY_LIMIT", "300"))
+GEZGIN_MIN_LIMIT   = int(os.getenv("GEZGIN_MIN_LIMIT", "30"))
+
+GEZGIN_KATEGORILER = {
+    # kategori: (arama tipi, değer)
+    "restoran": ("text",   "halal restaurant"),
+    "cami":     ("nearby", "mosque"),
+    "market":   ("text",   "halal market"),
+    "kafe":     ("text",   "halal cafe"),
+}
+
+_GEZGIN_LIST_FIELDS = ",".join([
+    "places.id", "places.displayName", "places.formattedAddress", "places.location",
+    "places.rating", "places.userRatingCount", "places.currentOpeningHours.openNow",
+    "places.photos", "places.googleMapsUri", "places.priceLevel",
+    "places.primaryTypeDisplayName",
+])
+_GEZGIN_DETAIL_FIELDS = ",".join([
+    "id", "displayName", "formattedAddress", "location", "rating", "userRatingCount",
+    "currentOpeningHours.openNow", "regularOpeningHours.weekdayDescriptions",
+    "nationalPhoneNumber", "internationalPhoneNumber", "websiteUri", "googleMapsUri",
+    "photos", "reviews", "editorialSummary", "priceLevel", "primaryTypeDisplayName",
+])
+_PRICE_LEVEL = {"PRICE_LEVEL_FREE": 0, "PRICE_LEVEL_INEXPENSIVE": 1, "PRICE_LEVEL_MODERATE": 2,
+                "PRICE_LEVEL_EXPENSIVE": 3, "PRICE_LEVEL_VERY_EXPENSIVE": 4}
+
+
+def _gz_distance_m(lat1, lng1, lat2, lng2) -> int:
+    r = 6371000.0
+    p1, p2 = _math.radians(lat1), _math.radians(lat2)
+    dp, dl = _math.radians(lat2 - lat1), _math.radians(lng2 - lng1)
+    a = _math.sin(dp / 2) ** 2 + _math.cos(p1) * _math.cos(p2) * _math.sin(dl / 2) ** 2
+    return int(2 * r * _math.asin(_math.sqrt(a)))
+
+
+def _gz_first_photo(p: dict) -> dict:
+    photos = p.get("photos") or []
+    if not photos:
+        return {"photo": None, "photoAttribution": None}
+    ph = photos[0]
+    attrs = ph.get("authorAttributions") or []
+    return {"photo": ph.get("name"),
+            "photoAttribution": attrs[0].get("displayName") if attrs else None}
+
+
+def _gz_norm_place(p: dict, lat: float, lng: float) -> Optional[dict]:
+    loc = p.get("location") or {}
+    if "latitude" not in loc:
+        return None
+    return {
+        "id": p.get("id", ""),
+        "name": (p.get("displayName") or {}).get("text") or "",
+        "address": p.get("formattedAddress", ""),
+        "lat": loc["latitude"], "lng": loc["longitude"],
+        "distance": _gz_distance_m(lat, lng, loc["latitude"], loc["longitude"]),
+        "rating": p.get("rating"),
+        "ratingCount": p.get("userRatingCount", 0),
+        "openNow": (p.get("currentOpeningHours") or {}).get("openNow"),
+        "priceLevel": _PRICE_LEVEL.get(p.get("priceLevel", ""), None),
+        "type": (p.get("primaryTypeDisplayName") or {}).get("text"),
+        "mapsUri": p.get("googleMapsUri"),
+        **_gz_first_photo(p),
+    }
+
+
+def _gezgin_fetch(lat: float, lng: float, kategori: str, radius: int) -> Optional[list]:
+    auth = _places_auth_headers()
+    if not auth:
+        return None
+    import requests
+    kind, value = GEZGIN_KATEGORILER[kategori]
+    circle = {"circle": {"center": {"latitude": lat, "longitude": lng}, "radius": float(radius)}}
+    if kind == "nearby":
+        url = "https://places.googleapis.com/v1/places:searchNearby"
+        body = {"includedTypes": [value], "maxResultCount": 20, "rankPreference": "DISTANCE",
+                "languageCode": "tr", "locationRestriction": circle}
+    else:
+        url = "https://places.googleapis.com/v1/places:searchText"
+        body = {"textQuery": value, "pageSize": 20, "languageCode": "tr",
+                "locationBias": circle}
+    try:
+        r = requests.post(url, json=body, timeout=(4, 12),
+                          headers={**auth, "X-Goog-FieldMask": _GEZGIN_LIST_FIELDS})
+        if r.status_code != 200:
+            print(f"[GEZGIN] {kategori} → HTTP {r.status_code}: {r.text[:200]}")
+            return None
+        out = []
+        for p in r.json().get("places", []):
+            n = _gz_norm_place(p, lat, lng)
+            if n and n["distance"] <= radius * 2:   # metin aramasında çok uzakları at
+                out.append(n)
+        out.sort(key=lambda x: x["distance"])
+        print(f"[GEZGIN] {kategori} → {len(out)} yer")
+        return out
+    except Exception as e:
+        print(f"[GEZGIN] {kategori} → {e}")
+        return None
+
+
+def _gezgin_detail_fetch(place_id: str) -> Optional[dict]:
+    auth = _places_auth_headers()
+    if not auth:
+        return None
+    import requests
+    try:
+        r = requests.get(f"https://places.googleapis.com/v1/places/{place_id}",
+                         params={"languageCode": "tr"}, timeout=(4, 12),
+                         headers={**auth, "X-Goog-FieldMask": _GEZGIN_DETAIL_FIELDS})
+        if r.status_code != 200:
+            print(f"[GEZGIN] detay {place_id} → HTTP {r.status_code}: {r.text[:200]}")
+            return None
+        p = r.json()
+        loc = p.get("location") or {}
+        reviews = []
+        for rv in (p.get("reviews") or [])[:5]:
+            author = rv.get("authorAttribution") or {}
+            text = (rv.get("text") or {}).get("text") or (rv.get("originalText") or {}).get("text") or ""
+            reviews.append({
+                "author": author.get("displayName", "Google kullanıcısı"),
+                "authorUri": author.get("uri"),
+                "authorPhoto": author.get("photoUri"),
+                "rating": rv.get("rating"),
+                "text": text,
+                "when": rv.get("relativePublishTimeDescription", ""),
+            })
+        photos = []
+        for ph in (p.get("photos") or [])[:6]:
+            attrs = ph.get("authorAttributions") or []
+            photos.append({"name": ph.get("name"),
+                           "attribution": attrs[0].get("displayName") if attrs else None})
+        return {
+            "id": p.get("id", place_id),
+            "name": (p.get("displayName") or {}).get("text") or "",
+            "address": p.get("formattedAddress", ""),
+            "lat": loc.get("latitude"), "lng": loc.get("longitude"),
+            "rating": p.get("rating"), "ratingCount": p.get("userRatingCount", 0),
+            "openNow": (p.get("currentOpeningHours") or {}).get("openNow"),
+            "hours": (p.get("regularOpeningHours") or {}).get("weekdayDescriptions", []),
+            "phone": p.get("internationalPhoneNumber") or p.get("nationalPhoneNumber"),
+            "website": p.get("websiteUri"),
+            "mapsUri": p.get("googleMapsUri"),
+            "summary": (p.get("editorialSummary") or {}).get("text"),
+            "priceLevel": _PRICE_LEVEL.get(p.get("priceLevel", ""), None),
+            "type": (p.get("primaryTypeDisplayName") or {}).get("text"),
+            "photos": photos,
+            "reviews": reviews,
+        }
+    except Exception as e:
+        print(f"[GEZGIN] detay {place_id} → {e}")
+        return None
+
+
+def _gezgin_photo_fetch(name: str, width: int) -> Optional[str]:
+    auth = _places_auth_headers()
+    if not auth:
+        return None
+    import requests
+    try:
+        r = requests.get(f"https://places.googleapis.com/v1/{name}/media",
+                         params={"maxWidthPx": width, "skipHttpRedirect": "true"},
+                         headers=auth, timeout=(4, 10))
+        if r.status_code != 200:
+            print(f"[GEZGIN] foto → HTTP {r.status_code}: {r.text[:200]}")
+            return None
+        return r.json().get("photoUri")
+    except Exception as e:
+        print(f"[GEZGIN] foto → {e}")
+        return None
+
+
+async def _gezgin_auth(authorization: Optional[str]) -> str:
+    """Giriş yapmış kullanıcı + istek sınırı. Premium gerekmez."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Giriş gerekli")
+    try:
+        payload = jwt.decode(authorization[7:], SECRET_KEY, algorithms=["HS256"])
+    except JWTError:
+        raise HTTPException(401, "Oturum süresi doldu, tekrar giriş yapın")
+    email = payload.get("sub")
+    if not email:
+        raise HTTPException(401, "Geçersiz oturum")
+    try:
+        day = datetime.utcnow().strftime("%Y%m%d")
+        minute = int(time.time() // 60)
+        dkey, mkey = f"gzrl:d:{email}:{day}", f"gzrl:m:{email}:{minute}"
+        pipe = redis_client.pipeline()
+        pipe.incr(dkey); pipe.expire(dkey, 90000)
+        pipe.incr(mkey); pipe.expire(mkey, 120)
+        dcount, _, mcount, _ = await pipe.execute()
+        if mcount > GEZGIN_MIN_LIMIT:
+            raise HTTPException(429, "Çok hızlı istek gönderiyorsunuz, biraz bekleyin")
+        if dcount > GEZGIN_DAILY_LIMIT:
+            raise HTTPException(429, "Günlük arama sınırına ulaştınız")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+    return email
+
+
+@app.get("/gezgin/places")
+async def gezgin_places(lat: float, lng: float, kategori: str = "restoran", radius: int = 5000,
+                        authorization: Optional[str] = Header(None)):
+    await _gezgin_auth(authorization)
+    if not (-90 <= lat <= 90 and -180 <= lng <= 180):
+        raise HTTPException(400, "Geçersiz konum")
+    if kategori not in GEZGIN_KATEGORILER:
+        raise HTTPException(400, "Geçersiz kategori")
+    radius = max(500, min(radius, 30000))
+    key = f"gz:{kategori}:{round(lat, 2)}:{round(lng, 2)}:{radius}"
+    try:
+        cached = await redis_client.get(key)
+        if cached:
+            places = json.loads(cached)
+            for p in places:   # hücre içinde kullanıcının gerçek konumuna göre mesafe
+                p["distance"] = _gz_distance_m(lat, lng, p["lat"], p["lng"])
+            places.sort(key=lambda x: x["distance"])
+            return {"kategori": kategori, "places": places}
+    except Exception:
+        pass
+    places = await asyncio.to_thread(_gezgin_fetch, lat, lng, kategori, radius)
+    if places is None:
+        raise HTTPException(503, "Mekan bilgisi şu an alınamıyor")
+    try:
+        await redis_client.setex(key, GEZGIN_CACHE_TTL if places else 600, json.dumps(places))
+    except Exception:
+        pass
+    return {"kategori": kategori, "places": places}
+
+
+@app.get("/gezgin/place/{place_id}")
+async def gezgin_place_detail(place_id: str, authorization: Optional[str] = Header(None)):
+    await _gezgin_auth(authorization)
+    if not _gz_re.fullmatch(r"[A-Za-z0-9_\-]{10,300}", place_id):
+        raise HTTPException(400, "Geçersiz mekan")
+    key = f"gzd:{place_id}"
+    try:
+        cached = await redis_client.get(key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+    detail = await asyncio.to_thread(_gezgin_detail_fetch, place_id)
+    if detail is None:
+        raise HTTPException(503, "Mekan detayı şu an alınamıyor")
+    try:
+        await redis_client.setex(key, GEZGIN_CACHE_TTL, json.dumps(detail))
+    except Exception:
+        pass
+    return detail
+
+
+@app.get("/gezgin/photo")
+async def gezgin_photo(name: str, w: int = 400, authorization: Optional[str] = Header(None)):
+    await _gezgin_auth(authorization)
+    if not _gz_re.fullmatch(r"places/[A-Za-z0-9_\-]+/photos/[A-Za-z0-9_\-]+", name):
+        raise HTTPException(400, "Geçersiz fotoğraf")
+    w = max(100, min(w, 1200))
+    key = f"gzp:{name}:{w}"
+    try:
+        cached = await redis_client.get(key)
+        if cached:
+            return {"url": cached}
+    except Exception:
+        pass
+    url = await asyncio.to_thread(_gezgin_photo_fetch, name, w)
+    if not url:
+        raise HTTPException(503, "Fotoğraf alınamadı")
+    try:
+        await redis_client.setex(key, 1800, url)
+    except Exception:
+        pass
+    return {"url": url}
