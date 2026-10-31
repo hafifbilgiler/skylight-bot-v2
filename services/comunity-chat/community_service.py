@@ -1512,3 +1512,205 @@ async def gezgin_photo(name: str, w: int = 400, authorization: Optional[str] = H
     except Exception:
         pass
     return {"url": url}
+
+
+# ══════════════════════════════════════════════════════════════
+# 3.4 — GEZGİN: ŞEHİR ARAMA + AI GEZİ REHBERİ
+#   GET  /gezgin/sehir?q=Tokyo   → şehir/yer adayları (giriş gerekli)
+#   POST /gezgin/rehber          → AI gezi planı (PREMIUM, ai_guard korur)
+# ══════════════════════════════════════════════════════════════
+AI_PROTECTED_PATHS.add("/gezgin/rehber")
+REHBER_CACHE_TTL = int(os.getenv("REHBER_CACHE_TTL", "43200"))   # 12 saat
+
+
+def _gezgin_city_fetch(q: str) -> Optional[list]:
+    auth = _places_auth_headers()
+    if not auth:
+        return None
+    import requests
+    try:
+        r = requests.post("https://places.googleapis.com/v1/places:searchText",
+                          json={"textQuery": q, "pageSize": 5, "languageCode": "tr"},
+                          headers={**auth, "X-Goog-FieldMask":
+                                   "places.id,places.displayName,places.formattedAddress,places.location"},
+                          timeout=(4, 10))
+        if r.status_code != 200:
+            print(f"[GEZGIN] şehir → HTTP {r.status_code}: {r.text[:200]}")
+            return None
+        out = []
+        for p in r.json().get("places", []):
+            loc = p.get("location") or {}
+            if "latitude" not in loc:
+                continue
+            out.append({"id": p.get("id", ""),
+                        "name": (p.get("displayName") or {}).get("text") or q,
+                        "address": p.get("formattedAddress", ""),
+                        "lat": loc["latitude"], "lng": loc["longitude"]})
+        return out
+    except Exception as e:
+        print(f"[GEZGIN] şehir → {e}")
+        return None
+
+
+@app.get("/gezgin/sehir")
+async def gezgin_sehir(q: str, authorization: Optional[str] = Header(None)):
+    await _gezgin_auth(authorization)
+    q = q.strip()[:80]
+    if len(q) < 2:
+        raise HTTPException(400, "En az 2 harf yazın")
+    key = f"gzs:{q.lower()}"
+    try:
+        cached = await redis_client.get(key)
+        if cached:
+            return {"sonuclar": json.loads(cached)}
+    except Exception:
+        pass
+    res = await asyncio.to_thread(_gezgin_city_fetch, q)
+    if res is None:
+        raise HTTPException(503, "Arama şu an yapılamıyor")
+    try:
+        await redis_client.setex(key, 86400 if res else 600, json.dumps(res))
+    except Exception:
+        pass
+    return {"sonuclar": res}
+
+
+async def _gezgin_cached_places(lat: float, lng: float, kategori: str, radius: int) -> list:
+    key = f"gz:{kategori}:{round(lat, 2)}:{round(lng, 2)}:{radius}"
+    try:
+        cached = await redis_client.get(key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+    places = await asyncio.to_thread(_gezgin_fetch, lat, lng, kategori, radius) or []
+    try:
+        await redis_client.setex(key, GEZGIN_CACHE_TTL if places else 600, json.dumps(places))
+    except Exception:
+        pass
+    return places
+
+
+def _rehber_prayer_times(lat: float, lng: float) -> Optional[dict]:
+    """Şehrin yerel namaz vakitleri (Aladhan, Diyanet yöntemi = 13)."""
+    import requests
+    try:
+        r = requests.get("https://api.aladhan.com/v1/timings",
+                         params={"latitude": lat, "longitude": lng, "method": 13}, timeout=(4, 8))
+        if r.status_code != 200:
+            return None
+        t = r.json()["data"]["timings"]
+        return {"imsak": t.get("Fajr"), "gunes": t.get("Sunrise"), "ogle": t.get("Dhuhr"),
+                "ikindi": t.get("Asr"), "aksam": t.get("Maghrib"), "yatsi": t.get("Isha")}
+    except Exception as e:
+        print(f"[REHBER] namaz vakti → {e}")
+        return None
+
+
+class RehberRequest(BaseModel):
+    sehir: str
+    lat: float
+    lng: float
+    gun: int = 1
+    ilgiler: list = []
+
+
+REHBER_PROMPT = """Sen Müslüman gezginler için uzman bir seyahat rehberisin.
+Şehir: {sehir}
+Gün sayısı: {gun}
+Kullanıcının ilgi alanları: {ilgiler}
+Bugünün yerel namaz vakitleri: {namaz}
+
+Bu şehirde gerçekten var olan helal restoranlar (R kodlu) ve camiler (C kodlu):
+{mekanlar}
+
+Görev: {gun} günlük gezi planı hazırla.
+Kurallar:
+- Her güne öğle, ikindi, akşam (ve uygunsa yatsı) namazları için bir "namaz" adımı koy; saatleri yukarıdaki vakitlere göre ayarla ve mümkünse listedeki bir camiyi (C kodu) kullan.
+- Yemekler ("yemek" adımı) için SADECE listedeki restoranları (R kodu) kullan. Listede restoran yoksa genel tavsiye ver ve kod koyma.
+- Gezilecek yerler ("gezi" adımı) için şehrin en bilinen, gerçekten var olan turistik yerlerini öner; emin olmadığın yer uydurma.
+- Yerler arası mesafeyi mantıklı tut, aynı bölgedeki yerleri aynı güne koy.
+- Türkçe yaz, açıklamalar 1-2 cümle olsun.
+- "ipuclari": helal yemek, namaz, kıyafet, ulaşım ve yerel kültür için 3-5 kısa pratik ipucu.
+
+SADECE şu JSON'u döndür:
+{{"gunler": [{{"gun": 1, "baslik": "kısa gün başlığı", "adimlar": [{{"saat": "09:00", "tur": "gezi|yemek|namaz|diger", "baslik": "yer veya etkinlik adı", "aciklama": "kısa açıklama", "kod": "R1 veya C2 veya boş"}}]}}], "ipuclari": ["..."]}}"""
+
+
+@app.post("/gezgin/rehber")
+async def gezgin_rehber(req: RehberRequest):
+    # Giriş + premium + istek sınırı ai_guard middleware'inde kontrol edilir.
+    if not (-90 <= req.lat <= 90 and -180 <= req.lng <= 180):
+        raise HTTPException(400, "Geçersiz konum")
+    gun = max(1, min(int(req.gun or 1), 3))
+    sehir = (req.sehir or "").strip()[:80] or "Bu şehir"
+    ilgiler = [str(i)[:30] for i in (req.ilgiler or [])][:5]
+    cache_key = f"rehber:{round(req.lat, 2)}:{round(req.lng, 2)}:{gun}:{','.join(sorted(ilgiler))}"
+    try:
+        cached = await redis_client.get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    restoranlar, camiler, namaz = await asyncio.gather(
+        _gezgin_cached_places(req.lat, req.lng, "restoran", 8000),
+        _gezgin_cached_places(req.lat, req.lng, "cami", 8000),
+        asyncio.to_thread(_rehber_prayer_times, req.lat, req.lng),
+    )
+    kodlar = {}
+    satirlar = []
+    for i, p in enumerate(restoranlar[:12], 1):
+        kodlar[f"R{i}"] = p
+        puan = f", {p['rating']}★" if p.get("rating") else ""
+        satirlar.append(f"R{i}: {p['name']} ({p.get('address', '')}{puan})")
+    for i, p in enumerate(camiler[:8], 1):
+        kodlar[f"C{i}"] = p
+        satirlar.append(f"C{i}: {p['name']} ({p.get('address', '')})")
+
+    namaz_txt = (", ".join(f"{k}: {v}" for k, v in namaz.items() if v) if namaz
+                 else "bilinmiyor (yaklaşık vakitler kullan ve kullanıcıya yerel vakitleri kontrol etmesini söyle)")
+    prompt = REHBER_PROMPT.format(sehir=sehir, gun=gun,
+                                  ilgiler=", ".join(ilgiler) if ilgiler else "genel",
+                                  namaz=namaz_txt,
+                                  mekanlar="\n".join(satirlar) if satirlar else "(liste boş)")
+    try:
+        response = await asyncio.to_thread(
+            ai_model.generate_content, prompt,
+            generation_config=GenerationConfig(temperature=0.6, max_output_tokens=8192,
+                                               response_mime_type="application/json"))
+        text = response.text.strip()
+        if "```" in text:
+            text = text.split("```")[1].replace("json", "", 1).strip()
+        plan = json.loads(text)
+    except Exception as e:
+        print(f"[REHBER] AI → {e}")
+        raise HTTPException(503, "Gezi planı şu an hazırlanamadı, tekrar deneyin")
+
+    # Kodları gerçek mekan bilgisine çevir
+    gunler = []
+    for g in plan.get("gunler", [])[:gun]:
+        adimlar = []
+        for a in g.get("adimlar", [])[:14]:
+            kod = str(a.get("kod") or "").strip().upper()
+            p = kodlar.get(kod)
+            adimlar.append({
+                "saat": str(a.get("saat", ""))[:5],
+                "tur": a.get("tur", "diger") if a.get("tur") in ("gezi", "yemek", "namaz", "diger") else "diger",
+                "baslik": p["name"] if p and not a.get("baslik") else str(a.get("baslik", ""))[:100],
+                "aciklama": str(a.get("aciklama", ""))[:300],
+                "place": ({"id": p["id"], "name": p["name"], "lat": p["lat"], "lng": p["lng"],
+                           "rating": p.get("rating")} if p else None),
+            })
+        gunler.append({"gun": g.get("gun", len(gunler) + 1), "baslik": str(g.get("baslik", ""))[:80],
+                       "adimlar": adimlar})
+    if not gunler:
+        raise HTTPException(503, "Gezi planı şu an hazırlanamadı, tekrar deneyin")
+
+    result = {"sehir": sehir, "namaz": namaz, "gunler": gunler,
+              "ipuclari": [str(x)[:200] for x in plan.get("ipuclari", [])][:5]}
+    try:
+        await redis_client.setex(cache_key, REHBER_CACHE_TTL, json.dumps(result))
+    except Exception:
+        pass
+    return result
